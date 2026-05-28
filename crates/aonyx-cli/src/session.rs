@@ -41,23 +41,51 @@ impl DisplayState {
 }
 
 /// Recognised slash commands inside an interactive session.
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub enum SlashCommand {
     /// Exit the session.
     Quit,
-    /// Drop the conversation history (keeping the system prompt).
+    /// Drop the conversation history (keeping the system prompt). Alias of `New`.
     Clear,
+    /// Same as `Clear` — sugar for "start a new conversation".
+    New,
     /// Print the help blurb.
     Help,
+    /// List configured providers and the current model.
+    Models,
+    /// List known sessions (V1: single-session, stub).
+    Sessions,
+    /// Export the current conversation to a Markdown file.
+    Export(Option<String>),
+    /// Toggle verbose tool-execution details.
+    Details,
+    /// Toggle reasoning-block visibility (stub in V1).
+    Thinking,
+    /// Open `$EDITOR` to compose a long message (wired in A3).
+    Editor,
+    /// Create a fresh `agent.yaml` in the current project.
+    Init,
 }
 
 impl SlashCommand {
     /// Parse a trimmed line that the user just typed.
     pub fn parse(line: &str) -> Option<Self> {
-        match line {
+        let (head, rest) = match line.split_once(' ') {
+            Some((h, r)) => (h, Some(r.trim())),
+            None => (line, None),
+        };
+        match head {
             "/quit" | "/q" | "/exit" => Some(Self::Quit),
             "/clear" | "/reset" => Some(Self::Clear),
+            "/new" | "/n" => Some(Self::New),
             "/help" | "/?" => Some(Self::Help),
+            "/models" | "/m" => Some(Self::Models),
+            "/sessions" | "/s" => Some(Self::Sessions),
+            "/export" => Some(Self::Export(rest.map(str::to_string))),
+            "/details" => Some(Self::Details),
+            "/thinking" => Some(Self::Thinking),
+            "/editor" | "/e" => Some(Self::Editor),
+            "/init" => Some(Self::Init),
             _ => None,
         }
     }
@@ -69,10 +97,15 @@ pub struct InteractiveSession {
     palace: Palace,
     messages: Vec<Message>,
     project_slug: String,
+    provider_name: String,
+    model_name: String,
+    turns: u32,
+    show_tool_details: bool,
 }
 
 impl InteractiveSession {
     /// Wire a runner from a provider + a freshly-opened palace.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         provider: Arc<dyn LlmProvider>,
         palace: Palace,
@@ -81,8 +114,10 @@ impl InteractiveSession {
         system_prompt: Option<String>,
         project_slug: impl Into<String>,
         skills: Vec<Skill>,
+        provider_name: impl Into<String>,
     ) -> Self {
         let project = project_slug.into();
+        let model_name = model.clone();
         let runner = AgentRunner::new(provider, ToolRegistry::default_set(), model)
             .with_max_iterations(max_iterations)
             .with_approval(ApprovalPolicy::DenyDestructive)
@@ -99,6 +134,10 @@ impl InteractiveSession {
             palace,
             messages,
             project_slug: project,
+            provider_name: provider_name.into(),
+            model_name,
+            turns: 0,
+            show_tool_details: false,
         }
     }
 
@@ -155,6 +194,7 @@ impl InteractiveSession {
             let result = self.run_turn(&mut stdout).await;
             match result {
                 Ok(()) => {
+                    self.turns += 1;
                     self.persist_turn(trimmed).await;
                 }
                 Err(e) => {
@@ -162,10 +202,34 @@ impl InteractiveSession {
                     stdout.write_all(msg.as_bytes()).await?;
                 }
             }
+            self.write_status_bar(&mut stdout).await?;
             stdout.write_all(b"\n").await?;
         }
 
         Ok(())
+    }
+
+    async fn write_status_bar<W: AsyncWriteExt + Unpin>(
+        &self,
+        out: &mut W,
+    ) -> std::io::Result<()> {
+        let cwd = std::env::current_dir()
+            .ok()
+            .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+            .unwrap_or_else(|| "?".to_string());
+        let details = if self.show_tool_details {
+            " · details:on"
+        } else {
+            ""
+        };
+        let bar = format!(
+            "\x1b[90m\u{2500} {provider} \u{00b7} {model} \u{00b7} turn {turn} \u{00b7} cwd:{cwd}{details} \u{2500}\x1b[0m\n",
+            provider = self.provider_name,
+            model = self.model_name,
+            turn = self.turns,
+        );
+        out.write_all(bar.as_bytes()).await?;
+        out.flush().await
     }
 
     async fn run_turn<W>(&mut self, out: &mut W) -> anyhow::Result<()>
@@ -200,19 +264,113 @@ impl InteractiveSession {
     ) -> anyhow::Result<bool> {
         match cmd {
             SlashCommand::Quit => Ok(false),
-            SlashCommand::Clear => {
+            SlashCommand::Clear | SlashCommand::New => {
                 self.reset_history();
+                self.turns = 0;
                 out.write_all(b"\x1b[90m(history cleared)\x1b[0m\n").await?;
                 Ok(true)
             }
             SlashCommand::Help => {
-                out.write_all(
-                    b"available commands:\n  /quit /q /exit   exit\n  /clear /reset    reset history (keep system prompt)\n  /help /?         this list\n",
-                )
-                .await?;
+                out.write_all(HELP_BLURB).await?;
+                Ok(true)
+            }
+            SlashCommand::Models => {
+                let line = format!(
+                    "\x1b[90mactive:\x1b[0m {} \u{00b7} {}\n\
+                     \x1b[90mavailable providers:\x1b[0m anthropic \u{00b7} openai \u{00b7} openrouter \u{00b7} ollama \u{00b7} lm-studio \u{00b7} claude-code\n\
+                     \x1b[90mswitch with:\x1b[0m edit ~/.aonyx/config.toml (live switch lands in V0.3)\n",
+                    self.provider_name, self.model_name,
+                );
+                out.write_all(line.as_bytes()).await?;
+                Ok(true)
+            }
+            SlashCommand::Sessions => {
+                out.write_all(b"\x1b[90msingle-session mode (V0.4 ships multi-session storage with /resume /list)\x1b[0m\n").await?;
+                Ok(true)
+            }
+            SlashCommand::Export(target) => {
+                let path = export_path(target);
+                match self.export_markdown(&path).await {
+                    Ok(()) => {
+                        let line = format!(
+                            "\x1b[90mexported:\x1b[0m {} ({} messages)\n",
+                            path.display(),
+                            self.messages.len()
+                        );
+                        out.write_all(line.as_bytes()).await?;
+                    }
+                    Err(e) => {
+                        let line = format!("\x1b[31mexport failed:\x1b[0m {e}\n");
+                        out.write_all(line.as_bytes()).await?;
+                    }
+                }
+                Ok(true)
+            }
+            SlashCommand::Details => {
+                self.show_tool_details = !self.show_tool_details;
+                let state = if self.show_tool_details { "on" } else { "off" };
+                let line = format!("\x1b[90mtool details: {state}\x1b[0m\n");
+                out.write_all(line.as_bytes()).await?;
+                Ok(true)
+            }
+            SlashCommand::Thinking => {
+                out.write_all(b"\x1b[90mreasoning visibility lands in V0.3 (Phase E)\x1b[0m\n").await?;
+                Ok(true)
+            }
+            SlashCommand::Editor => {
+                out.write_all(b"\x1b[90m/editor lands in V0.3 (Phase A3 - coming next)\x1b[0m\n").await?;
+                Ok(true)
+            }
+            SlashCommand::Init => {
+                let path = std::path::PathBuf::from("agent.yaml");
+                if path.exists() {
+                    let line = format!(
+                        "\x1b[33m{} already exists — leaving it alone\x1b[0m\n",
+                        path.display()
+                    );
+                    out.write_all(line.as_bytes()).await?;
+                } else {
+                    let yaml = format!(
+                        "# Aonyx Agent — per-project configuration\n\
+                         persona: \"You are an Aonyx agent helping with {} .\"\n\
+                         system_prompt: |\n  Be concise. Cite sources. Confirm destructive actions.\n\
+                         preferred_provider: {}\n\
+                         preferred_model: {}\n",
+                        self.project_slug, self.provider_name, self.model_name
+                    );
+                    if let Err(e) = tokio::fs::write(&path, yaml).await {
+                        let line = format!("\x1b[31minit failed:\x1b[0m {e}\n");
+                        out.write_all(line.as_bytes()).await?;
+                    } else {
+                        let line = format!("\x1b[90mcreated:\x1b[0m {}\n", path.display());
+                        out.write_all(line.as_bytes()).await?;
+                    }
+                }
                 Ok(true)
             }
         }
+    }
+
+    async fn export_markdown(&self, path: &std::path::Path) -> std::io::Result<()> {
+        let mut out = String::new();
+        out.push_str(&format!(
+            "# Aonyx Agent session — {project}\n\n",
+            project = self.project_slug
+        ));
+        out.push_str(&format!(
+            "_provider: {} \u{00b7} model: {} \u{00b7} turns: {}_\n\n---\n\n",
+            self.provider_name, self.model_name, self.turns,
+        ));
+        for m in &self.messages {
+            let role = match m.role {
+                Role::System => "system",
+                Role::User => "user",
+                Role::Assistant => "assistant",
+                Role::Tool => "tool",
+            };
+            out.push_str(&format!("### {role}\n\n{}\n\n", m.content));
+        }
+        tokio::fs::write(path, out).await
     }
 
     async fn persist_turn(&self, user_line: &str) {
@@ -223,6 +381,26 @@ impl InteractiveSession {
         };
         let _ = self.palace.diary_append(&self.project_slug, &summary).await;
     }
+}
+
+const HELP_BLURB: &[u8] = b"available commands:\n  \
+/quit /q /exit       exit\n  \
+/clear /reset /new   reset conversation (keep system prompt)\n  \
+/help /?             this list\n  \
+/models /m           current provider + model, list available\n  \
+/sessions /s         list sessions (V0.4)\n  \
+/export [path]       write the transcript to a Markdown file\n  \
+/details             toggle verbose tool-execution rendering\n  \
+/thinking            toggle reasoning visibility (V0.3)\n  \
+/editor /e           compose a long message in $EDITOR (V0.3)\n  \
+/init                drop an agent.yaml in the current project\n";
+
+fn export_path(target: Option<String>) -> std::path::PathBuf {
+    if let Some(t) = target.filter(|s| !s.is_empty()) {
+        return std::path::PathBuf::from(t);
+    }
+    let stamp = chrono::Utc::now().format("%Y%m%d-%H%M%S").to_string();
+    std::path::PathBuf::from(format!("aonyx-session-{stamp}.md"))
 }
 
 async fn display_event<W>(

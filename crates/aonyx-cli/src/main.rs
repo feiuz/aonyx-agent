@@ -177,6 +177,7 @@ async fn start_interactive(project_path: Option<PathBuf>) -> anyhow::Result<()> 
         config.system_prompt.clone(),
         project_slug,
         skills,
+        config.provider.clone(),
     );
     session.run().await
 }
