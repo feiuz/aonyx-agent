@@ -10,23 +10,21 @@ use std::sync::Arc;
 
 use aonyx_core::{SafetyClass, ToolCall};
 
+/// Predicate signature used by [`ApprovalPolicy::Custom`].
+pub type ApprovalPredicate = Arc<dyn Fn(&ToolCall, SafetyClass) -> bool + Send + Sync>;
+
 /// Approval policy for tool calls.
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub enum ApprovalPolicy {
     /// Allow every call regardless of class. Intended for trusted contexts
     /// (e.g. CI runs against a sandboxed workdir, or unit tests).
     AutoAllow,
     /// Allow [`SafetyClass::Safe`] and [`SafetyClass::Caution`], reject every
     /// destructive call. This is the V1 default for non-interactive runs.
+    #[default]
     DenyDestructive,
     /// Defer to a custom predicate — used by interactive CLI prompts.
-    Custom(Arc<dyn Fn(&ToolCall, SafetyClass) -> bool + Send + Sync>),
-}
-
-impl Default for ApprovalPolicy {
-    fn default() -> Self {
-        Self::DenyDestructive
-    }
+    Custom(ApprovalPredicate),
 }
 
 impl ApprovalPolicy {
