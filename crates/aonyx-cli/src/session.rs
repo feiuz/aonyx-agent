@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use aonyx_agent::{AgentRunner, ApprovalPolicy};
-use aonyx_core::{LlmProvider, Message, MemoryStore, Role};
+use aonyx_core::{LlmProvider, MemoryStore, Message, Role};
 use aonyx_memory::Palace;
 use aonyx_tools::ToolRegistry;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -134,9 +134,7 @@ impl InteractiveSession {
                             .await?;
                     }
                     if result.max_iterations_hit {
-                        stdout
-                            .write_all(b"(loop hit max_iterations)\n")
-                            .await?;
+                        stdout.write_all(b"(loop hit max_iterations)\n").await?;
                     }
                     self.persist_turn(trimmed).await;
                 }
@@ -180,10 +178,7 @@ impl InteractiveSession {
         } else {
             format!("turn: {user_line}")
         };
-        let _ = self
-            .palace
-            .diary_append(&self.project_slug, &summary)
-            .await;
+        let _ = self.palace.diary_append(&self.project_slug, &summary).await;
     }
 }
 
