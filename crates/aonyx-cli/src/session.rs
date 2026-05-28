@@ -1,14 +1,16 @@
-//! Interactive REPL session: read user input, drive [`AgentRunner`], stream
-//! the response back, persist a diary trail in the project palace.
+//! Interactive REPL session: read user input, drive [`AgentRunner`] in
+//! streaming mode, render text deltas + tool activity in real time, persist
+//! a diary trail in the project palace.
 
 use std::sync::Arc;
 
-use aonyx_agent::{AgentRunner, ApprovalPolicy};
-use aonyx_core::{LlmProvider, MemoryStore, Message, Role};
+use aonyx_agent::{AgentRunner, ApprovalPolicy, TurnEvent};
+use aonyx_core::{LlmProvider, MemoryStore, Message, Role, SafetyClass};
 use aonyx_memory::Palace;
 use aonyx_skills::Skill;
 use aonyx_tools::ToolRegistry;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::sync::mpsc;
 
 /// Recognised slash commands inside an interactive session.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -100,7 +102,7 @@ impl InteractiveSession {
         stdout.flush().await?;
 
         loop {
-            stdout.write_all(b"you> ").await?;
+            stdout.write_all(b"\x1b[1myou>\x1b[0m ").await?;
             stdout.flush().await?;
             let Some(line) = reader.next_line().await? else {
                 break;
@@ -119,32 +121,16 @@ impl InteractiveSession {
 
             self.messages
                 .push(Message::new(Role::User, trimmed.to_string()));
-            stdout.write_all(b"\naonyx> ").await?;
+            stdout.write_all(b"\n\x1b[1maonyx>\x1b[0m ").await?;
             stdout.flush().await?;
 
-            match self.runner.run(self.messages.clone()).await {
-                Ok(result) => {
-                    self.messages = result.messages;
-                    if let Some(last) = self
-                        .messages
-                        .iter()
-                        .rev()
-                        .find(|m| m.role == Role::Assistant)
-                    {
-                        stdout.write_all(last.content.as_bytes()).await?;
-                        stdout.write_all(b"\n").await?;
-                    } else {
-                        stdout
-                            .write_all(b"(no assistant text - model ended on a tool call)\n")
-                            .await?;
-                    }
-                    if result.max_iterations_hit {
-                        stdout.write_all(b"(loop hit max_iterations)\n").await?;
-                    }
+            let result = self.run_turn(&mut stdout).await;
+            match result {
+                Ok(()) => {
                     self.persist_turn(trimmed).await;
                 }
                 Err(e) => {
-                    let msg = format!("\n[error] {e}\n");
+                    let msg = format!("\n\x1b[31m[error]\x1b[0m {e}\n");
                     stdout.write_all(msg.as_bytes()).await?;
                 }
             }
@@ -154,7 +140,30 @@ impl InteractiveSession {
         Ok(())
     }
 
-    /// Returns `true` to continue the loop, `false` to exit.
+    async fn run_turn<W>(&mut self, out: &mut W) -> anyhow::Result<()>
+    where
+        W: AsyncWriteExt + Unpin,
+    {
+        let (tx, mut rx) = mpsc::channel::<TurnEvent>(128);
+        let messages_in = self.messages.clone();
+
+        let display = async {
+            while let Some(event) = rx.recv().await {
+                if let Err(e) = display_event(out, &event).await {
+                    return Err::<(), anyhow::Error>(anyhow::Error::from(e));
+                }
+            }
+            Ok::<(), anyhow::Error>(())
+        };
+        let drive = self.runner.run_streaming(messages_in, tx);
+
+        let (turn_res, display_res) = tokio::join!(drive, display);
+        display_res?;
+        let turn = turn_res?;
+        self.messages = turn.messages;
+        Ok(())
+    }
+
     async fn handle_slash<W: AsyncWriteExt + Unpin>(
         &mut self,
         cmd: SlashCommand,
@@ -164,7 +173,7 @@ impl InteractiveSession {
             SlashCommand::Quit => Ok(false),
             SlashCommand::Clear => {
                 self.reset_history();
-                out.write_all(b"(history cleared)\n").await?;
+                out.write_all(b"\x1b[90m(history cleared)\x1b[0m\n").await?;
                 Ok(true)
             }
             SlashCommand::Help => {
@@ -184,6 +193,77 @@ impl InteractiveSession {
             format!("turn: {user_line}")
         };
         let _ = self.palace.diary_append(&self.project_slug, &summary).await;
+    }
+}
+
+async fn display_event<W>(out: &mut W, event: &TurnEvent) -> std::io::Result<()>
+where
+    W: AsyncWriteExt + Unpin,
+{
+    match event {
+        TurnEvent::AssistantDelta(text) => {
+            out.write_all(text.as_bytes()).await?;
+            out.flush().await?;
+        }
+        TurnEvent::AssistantMessageEnd => {
+            out.write_all(b"\n").await?;
+            out.flush().await?;
+        }
+        TurnEvent::IterationStart(n) if *n > 1 => {
+            let line = format!("\x1b[90m[iter {n}]\x1b[0m\n");
+            out.write_all(line.as_bytes()).await?;
+            out.flush().await?;
+        }
+        TurnEvent::ToolStart { name, args, class } => {
+            let dot = match class {
+                SafetyClass::Safe => "\x1b[36m●\x1b[0m",
+                SafetyClass::Caution => "\x1b[33m●\x1b[0m",
+                SafetyClass::Destructive => "\x1b[31m●\x1b[0m",
+            };
+            let preview = abbreviate_value(args, 80);
+            let line = format!("{dot} \x1b[36m{name}\x1b[0m\x1b[90m({preview})\x1b[0m\n");
+            out.write_all(line.as_bytes()).await?;
+            out.flush().await?;
+        }
+        TurnEvent::ToolEnd { name, ok, summary } => {
+            let symbol = if *ok {
+                "\x1b[32m  \u{21B3}\x1b[0m"
+            } else {
+                "\x1b[31m  \u{21B3}\x1b[0m"
+            };
+            let line = format!("{symbol} \x1b[90m{name}: {summary}\x1b[0m\n");
+            out.write_all(line.as_bytes()).await?;
+            out.flush().await?;
+        }
+        TurnEvent::ToolRejected { name, class } => {
+            let line = format!("  \x1b[31mrejected:\x1b[0m \x1b[90m{name} ({class:?})\x1b[0m\n");
+            out.write_all(line.as_bytes()).await?;
+            out.flush().await?;
+        }
+        TurnEvent::Done {
+            max_iterations_hit: true,
+            iterations,
+        } => {
+            let line = format!("\x1b[33m(loop hit max_iterations = {iterations})\x1b[0m\n");
+            out.write_all(line.as_bytes()).await?;
+            out.flush().await?;
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn abbreviate_value(value: &serde_json::Value, max_chars: usize) -> String {
+    let mut s = match value {
+        serde_json::Value::String(s) => s.clone(),
+        other => other.to_string(),
+    };
+    s = s.replace('\n', " ");
+    if s.chars().count() > max_chars {
+        let cut: String = s.chars().take(max_chars).collect();
+        format!("{cut}…")
+    } else {
+        s
     }
 }
 
@@ -217,5 +297,21 @@ mod tests {
         assert_eq!(SlashCommand::parse("hello world"), None);
         assert_eq!(SlashCommand::parse(""), None);
         assert_eq!(SlashCommand::parse("/unknown"), None);
+    }
+
+    #[test]
+    fn abbreviate_value_truncates_long_strings() {
+        let v = serde_json::Value::String("x".repeat(200));
+        let s = abbreviate_value(&v, 50);
+        assert!(s.chars().count() <= 51, "got: {s}");
+        assert!(s.ends_with('…'));
+    }
+
+    #[test]
+    fn abbreviate_value_keeps_short_strings_intact() {
+        let v = serde_json::json!({ "path": "a.txt" });
+        let s = abbreviate_value(&v, 80);
+        assert!(s.contains("a.txt"));
+        assert!(!s.contains('…'));
     }
 }

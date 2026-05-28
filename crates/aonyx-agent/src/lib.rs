@@ -36,4 +36,4 @@ pub mod runner;
 pub mod subagent;
 
 pub use approval::ApprovalPolicy;
-pub use runner::{AgentRunner, TurnResult};
+pub use runner::{AgentRunner, TurnEvent, TurnResult};
