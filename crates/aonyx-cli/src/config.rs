@@ -44,6 +44,13 @@ pub struct Config {
     /// Ollama base URL (defaults to `http://localhost:11434`).
     #[serde(default)]
     pub ollama_base_url: Option<String>,
+    /// Path to the `claude` binary (defaults to `claude` on PATH).
+    #[serde(default)]
+    pub claude_code_binary: Option<String>,
+    /// Extra arguments forwarded to every `claude` invocation
+    /// (e.g. `["--max-turns", "5"]`).
+    #[serde(default)]
+    pub claude_code_extra_args: Vec<String>,
     /// OpenRouter `HTTP-Referer` attribution header.
     #[serde(default)]
     pub openrouter_referer: Option<String>,
@@ -73,6 +80,8 @@ impl Default for Config {
             openai_base_url: None,
             lm_studio_base_url: None,
             ollama_base_url: None,
+            claude_code_binary: None,
+            claude_code_extra_args: Vec::new(),
             openrouter_referer: None,
             openrouter_title: None,
             system_prompt: Some(DEFAULT_SYSTEM_PROMPT.to_string()),
@@ -141,6 +150,8 @@ mod tests {
             openai_base_url: None,
             lm_studio_base_url: None,
             ollama_base_url: Some("http://localhost:9999".into()),
+            claude_code_binary: None,
+            claude_code_extra_args: Vec::new(),
             openrouter_referer: None,
             openrouter_title: None,
             system_prompt: Some("be quiet".into()),

@@ -19,7 +19,10 @@ use aonyx_core::LlmProvider;
 use aonyx_llm::anthropic::AnthropicProvider;
 use aonyx_llm::lm_studio::LM_STUDIO_DEFAULT_BASE_URL;
 use aonyx_llm::openai::OPENAI_BASE_URL;
-use aonyx_llm::{OllamaProvider, OpenAiCompatProvider, OLLAMA_DEFAULT_BASE_URL};
+use aonyx_llm::{
+    ClaudeCodeProvider, OllamaProvider, OpenAiCompatProvider, CLAUDE_DEFAULT_BIN,
+    OLLAMA_DEFAULT_BASE_URL,
+};
 use aonyx_memory::Palace;
 use clap::{Parser, Subcommand};
 
@@ -248,9 +251,20 @@ fn build_provider(config: &Config) -> anyhow::Result<Arc<dyn LlmProvider>> {
                 base,
             )))
         }
+        "claude-code" | "claude_code" => {
+            let bin = config
+                .claude_code_binary
+                .clone()
+                .unwrap_or_else(|| CLAUDE_DEFAULT_BIN.to_string());
+            let mut p = ClaudeCodeProvider::new().with_binary(bin);
+            if !config.claude_code_extra_args.is_empty() {
+                p = p.with_extra_args(config.claude_code_extra_args.clone());
+            }
+            Ok(Arc::new(p))
+        }
         other => Err(anyhow::anyhow!(
             "provider '{other}' is not supported. \
-             Available: anthropic, openai, openrouter, ollama, lm-studio."
+             Available: anthropic, openai, openrouter, ollama, lm-studio, claude-code."
         )),
     }
 }
