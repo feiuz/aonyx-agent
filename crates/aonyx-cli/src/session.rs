@@ -9,8 +9,36 @@ use aonyx_core::{LlmProvider, MemoryStore, Message, Role, SafetyClass};
 use aonyx_memory::Palace;
 use aonyx_skills::Skill;
 use aonyx_tools::ToolRegistry;
+use termimad::MadSkin;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::mpsc;
+
+/// Per-turn rendering state. Reset between turns.
+struct DisplayState {
+    /// Raw text accumulated during streaming, used to re-render Markdown
+    /// at `AssistantMessageEnd`.
+    assistant_buffer: String,
+    /// Newline count in `assistant_buffer` — drives the cursor rewind on
+    /// re-render.
+    lines_during_stream: u32,
+    /// Termimad skin (style for headings, code, lists, …).
+    skin: MadSkin,
+}
+
+impl DisplayState {
+    fn new() -> Self {
+        Self {
+            assistant_buffer: String::new(),
+            lines_during_stream: 0,
+            skin: MadSkin::default_dark(),
+        }
+    }
+
+    fn reset(&mut self) {
+        self.assistant_buffer.clear();
+        self.lines_during_stream = 0;
+    }
+}
 
 /// Recognised slash commands inside an interactive session.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -146,10 +174,11 @@ impl InteractiveSession {
     {
         let (tx, mut rx) = mpsc::channel::<TurnEvent>(128);
         let messages_in = self.messages.clone();
+        let mut state = DisplayState::new();
 
         let display = async {
             while let Some(event) = rx.recv().await {
-                if let Err(e) = display_event(out, &event).await {
+                if let Err(e) = display_event(out, &mut state, &event).await {
                     return Err::<(), anyhow::Error>(anyhow::Error::from(e));
                 }
             }
@@ -196,18 +225,45 @@ impl InteractiveSession {
     }
 }
 
-async fn display_event<W>(out: &mut W, event: &TurnEvent) -> std::io::Result<()>
+async fn display_event<W>(
+    out: &mut W,
+    state: &mut DisplayState,
+    event: &TurnEvent,
+) -> std::io::Result<()>
 where
     W: AsyncWriteExt + Unpin,
 {
     match event {
         TurnEvent::AssistantDelta(text) => {
+            // Stream raw text so the user sees tokens arriving in real time…
             out.write_all(text.as_bytes()).await?;
             out.flush().await?;
+            // …and remember everything so we can re-render Markdown at the end.
+            state.assistant_buffer.push_str(text);
+            state.lines_during_stream += text.matches('\n').count() as u32;
         }
         TurnEvent::AssistantMessageEnd => {
-            out.write_all(b"\n").await?;
-            out.flush().await?;
+            if state.assistant_buffer.is_empty() {
+                out.write_all(b"\n").await?;
+                out.flush().await?;
+            } else {
+                // Rewind the cursor over every streamed row, clear, and re-print
+                // the rendered Markdown above the original "aonyx>" label.
+                if state.lines_during_stream > 0 {
+                    let up = format!("\x1b[{}A", state.lines_during_stream);
+                    out.write_all(up.as_bytes()).await?;
+                }
+                out.write_all(b"\r\x1b[J").await?;
+                out.write_all(b"\x1b[1maonyx>\x1b[0m ").await?;
+
+                let rendered = state.skin.term_text(&state.assistant_buffer).to_string();
+                out.write_all(rendered.as_bytes()).await?;
+                if !rendered.ends_with('\n') {
+                    out.write_all(b"\n").await?;
+                }
+                out.flush().await?;
+                state.reset();
+            }
         }
         TurnEvent::IterationStart(n) if *n > 1 => {
             let line = format!("\x1b[90m[iter {n}]\x1b[0m\n");
