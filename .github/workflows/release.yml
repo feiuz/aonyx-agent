@@ -1,0 +1,135 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to release (e.g. v0.1.0). Must already exist."
+        required: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            ext: ""
+            archive: tar.gz
+          - target: x86_64-apple-darwin
+            os: macos-13
+            ext: ""
+            archive: tar.gz
+          - target: aarch64-apple-darwin
+            os: macos-14
+            ext: ""
+            archive: tar.gz
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            ext: ".exe"
+            archive: zip
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Build aonyx-cli
+        run: cargo build --release --locked -p aonyx-cli --target ${{ matrix.target }}
+
+      - name: Resolve tag name
+        id: tag
+        shell: bash
+        run: |
+          if [ -n "${{ github.event.inputs.tag }}" ]; then
+            echo "name=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "name=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Archive (Unix)
+        if: matrix.archive == 'tar.gz'
+        shell: bash
+        run: |
+          name="aonyx-${{ steps.tag.outputs.name }}-${{ matrix.target }}"
+          mkdir -p "dist/$name"
+          cp "target/${{ matrix.target }}/release/aonyx${{ matrix.ext }}" "dist/$name/"
+          cp LICENSE README.md "dist/$name/"
+          tar -czf "dist/$name.tar.gz" -C dist "$name"
+          rm -rf "dist/$name"
+
+      - name: Archive (Windows)
+        if: matrix.archive == 'zip'
+        shell: pwsh
+        run: |
+          $name = "aonyx-${{ steps.tag.outputs.name }}-${{ matrix.target }}"
+          New-Item -ItemType Directory -Force -Path "dist/$name" | Out-Null
+          Copy-Item "target/${{ matrix.target }}/release/aonyx${{ matrix.ext }}" "dist/$name/"
+          Copy-Item LICENSE,README.md "dist/$name/"
+          Compress-Archive -Path "dist/$name" -DestinationPath "dist/$name.zip"
+          Remove-Item -Recurse -Force "dist/$name"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: aonyx-${{ matrix.target }}
+          path: dist/aonyx-*.*
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Compute SHA-256 for each artifact
+        shell: bash
+        run: |
+          cd dist
+          shasum -a 256 aonyx-*.* > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Resolve tag name
+        id: tag
+        shell: bash
+        run: |
+          if [ -n "${{ github.event.inputs.tag }}" ]; then
+            echo "name=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "name=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create or update GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.name }}
+          name: Aonyx Agent ${{ steps.tag.outputs.name }}
+          body_path: CHANGELOG.md
+          files: |
+            dist/aonyx-*.*
+            dist/SHA256SUMS.txt
+          generate_release_notes: true
+          draft: false
+          prerelease: ${{ contains(steps.tag.outputs.name, '-') }}

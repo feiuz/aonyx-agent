@@ -1,0 +1,29 @@
+# cargo-release configuration — https://github.com/crate-ci/cargo-release
+#
+# Usage (after `cargo install cargo-release`):
+#   cargo release patch --execute     # 0.1.0 → 0.1.1
+#   cargo release minor --execute     # 0.1.0 → 0.2.0
+#   cargo release major --execute     # 0.1.0 → 1.0.0
+#
+# Steps performed:
+#   1. Bumps the workspace version in Cargo.toml.
+#   2. Updates CHANGELOG.md heading.
+#   3. Creates a single commit + signed tag `vX.Y.Z`.
+# The tag is **not pushed automatically**; do it manually after review:
+#   git push origin main --tags
+# Pushing the tag triggers .github/workflows/release.yml.
+
+allow-branch = ["main"]
+consolidate-commits = true
+pre-release-commit-message = "chore: release v{{version}}"
+tag-message = "Aonyx Agent v{{version}}"
+tag-name = "v{{version}}"
+
+# We do not publish individual crates to crates.io yet — opt in per-crate later.
+publish = false
+
+# Push is manual so the release commit can be reviewed first.
+push = false
+
+# Pre-release hook: ensure tests are green before bumping.
+pre-release-hook = ["cargo", "test", "--workspace", "--all-features"]
