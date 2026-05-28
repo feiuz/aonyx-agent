@@ -1,35 +1,34 @@
-//! Full-screen TUI built on `ratatui` + `crossterm`.
+//! Full-screen TUI built on `ratatui` + `crossterm` + `tui-textarea`.
 //!
-//! Launched by `aonyx --tui` (Phase B0). The legacy raw stdin/stdout REPL
-//! in [`crate::session`] remains the default while this matures.
+//! Launched by `aonyx --tui`. The legacy raw stdin/stdout REPL in
+//! [`crate::session`] is still the default while this matures.
 //!
 //! ## Layout
 //!
 //! ```text
-//! ┌── Aonyx Agent ─────────────────── project:Agent-AI ──┐
-//! │  conversation viewport (scrollable, streamed)         │
-//! │                                                       │
+//! ┌── 🦦 Aonyx Agent ────────────── project:Agent-AI ────┐
+//! │  conversation viewport (scrollable)                   │
+//! │  + streaming Markdown + colored tool events           │
 //! ├───────────────────────────────────────────────────────┤
-//! │ you> _                                                │  ← composer
+//! │ ┌──────────────────────────────────────────────────┐ │
+//! │ │ you> _                                           │ │  ← composer
+//! │ │   (Shift+Enter for newline, ↑/↓ history)         │ │   (multi-line)
+//! │ └──────────────────────────────────────────────────┘ │
 //! ├───────────────────────────────────────────────────────┤
 //! │ claude-code · claude-sonnet-4-5 · turn 1 · running    │  ← status bar
 //! └───────────────────────────────────────────────────────┘
 //! ```
 //!
-//! - **Header** (1 line): app + project name.
-//! - **Viewport** (flex): conversation history + tool events; scrollable.
-//! - **Composer** (3 lines): single-line input for now.
-//! - **Status bar** (1 line): provider · model · turn · runner state.
+//! ## Key bindings (B1)
 //!
-//! ## Key bindings (V0)
-//!
-//! - `Enter` → submit message.
-//! - `Backspace` → erase last char.
-//! - `PgUp` / `PgDn` → scroll viewport.
-//! - `Ctrl+C` / `Ctrl+D` / `Esc` → quit.
-//!
-//! Multi-line composer, history navigation, smart paste, mouse and slash
-//! commands land in subsequent B sub-phases.
+//! - `Enter` → submit message (or run a slash command)
+//! - `Shift+Enter` / `Alt+Enter` → insert newline in the composer
+//! - `↑` / `↓` → step through the user-message history (only when the cursor
+//!   is on the top / bottom line of the composer)
+//! - `PgUp` / `PgDn` → scroll viewport
+//! - `Backspace`, `Delete`, arrows, `Home`, `End`, `Ctrl+W` (word back),
+//!   `Ctrl+U` (clear) → standard text edit, handled by `tui-textarea`.
+//! - `Esc` / `Ctrl+C` / `Ctrl+D` → quit.
 
 use std::io;
 use std::sync::Arc;
@@ -41,7 +40,8 @@ use aonyx_memory::Palace;
 use aonyx_skills::Skill;
 use aonyx_tools::ToolRegistry;
 use crossterm::event::{
-    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
+    KeyModifiers,
 };
 use crossterm::execute;
 use crossterm::terminal::{
@@ -55,6 +55,14 @@ use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use ratatui::{Frame, Terminal};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
+use tui_textarea::{CursorMove, TextArea};
+
+use crate::session::SlashCommand;
+
+const HISTORY_MAX: usize = 200;
+const VIEWPORT_MAX_LINES: usize = 2000;
+const MIN_COMPOSER_HEIGHT: u16 = 3;
+const MAX_COMPOSER_HEIGHT: u16 = 10;
 
 /// Construct + run a TUI session. Returns when the user quits or the
 /// terminal disconnects.
@@ -80,6 +88,15 @@ pub async fn run(
         messages.push(Message::new(Role::System, p));
     }
 
+    let mut composer = TextArea::default();
+    composer.set_block(
+        Block::default()
+            .borders(Borders::TOP | Borders::BOTTOM)
+            .border_style(Style::default().fg(Color::DarkGray)),
+    );
+    composer.set_cursor_line_style(Style::default());
+    composer.set_placeholder_text("type a message — Enter to send, Shift+Enter for newline");
+
     let app = TuiApp {
         runner: Arc::new(runner),
         palace,
@@ -88,15 +105,19 @@ pub async fn run(
         provider_name,
         model_name: model,
         turns: 0,
-        composer: String::new(),
+        composer,
         viewport: vec![Line::from(Span::styled(
-            "🦦 Aonyx Agent — type a message and press Enter. Esc / Ctrl+C to quit.",
+            "🦦 Aonyx Agent — Shift+Enter = newline · ↑/↓ history · Esc to quit · /help for commands",
             Style::default().fg(Color::DarkGray),
         ))],
         scroll: 0,
+        history: Vec::new(),
+        history_cursor: None,
+        scratch: Vec::new(),
         runner_event_rx: None,
         runner_handle: None,
         runner_active: false,
+        show_tool_details: false,
         quit: false,
     };
 
@@ -128,13 +149,18 @@ struct TuiApp {
     model_name: String,
     turns: u32,
 
-    composer: String,
+    composer: TextArea<'static>,
     viewport: Vec<Line<'static>>,
     scroll: u16,
+
+    history: Vec<String>,
+    history_cursor: Option<usize>,
+    scratch: Vec<String>,
 
     runner_event_rx: Option<mpsc::Receiver<TurnEvent>>,
     runner_handle: Option<JoinHandle<aonyx_core::Result<aonyx_agent::TurnResult>>>,
     runner_active: bool,
+    show_tool_details: bool,
 
     quit: bool,
 }
@@ -148,13 +174,12 @@ impl TuiApp {
             terminal.draw(|f| self.render(f))?;
             self.poll_runner().await;
 
-            // ~50 Hz refresh; keystrokes interrupt the wait immediately.
             if event::poll(Duration::from_millis(20))? {
                 match event::read()? {
                     Event::Key(key) if key.kind == KeyEventKind::Press => {
-                        self.handle_key(key.code, key.modifiers).await;
+                        self.handle_key(key).await;
                     }
-                    Event::Mouse(_) | Event::Resize(_, _) => { /* ignored in V0 */ }
+                    Event::Mouse(_) | Event::Resize(_, _) => { /* ignored in B1 */ }
                     _ => {}
                 }
             }
@@ -209,7 +234,6 @@ impl TuiApp {
                 self.append_to_assistant_line(&text);
             }
             TurnEvent::AssistantMessageEnd => {
-                // Force a fresh line so the next iteration's tool/text starts clean.
                 if !self.viewport.is_empty() {
                     let last_empty = self
                         .viewport
@@ -236,10 +260,15 @@ impl TuiApp {
             }
             TurnEvent::ToolEnd { name, ok, summary } => {
                 let arrow_color = if ok { Color::Green } else { Color::Red };
+                let trimmed = if self.show_tool_details {
+                    summary
+                } else {
+                    truncate(&summary, 120)
+                };
                 self.push_line(Line::from(vec![
                     Span::styled("  ↳ ", Style::default().fg(arrow_color)),
                     Span::styled(
-                        format!("{name}: {summary}"),
+                        format!("{name}: {trimmed}"),
                         Style::default().fg(Color::DarkGray),
                     ),
                 ]));
@@ -273,7 +302,6 @@ impl TuiApp {
     }
 
     fn append_to_assistant_line(&mut self, text: &str) {
-        // Make sure the line we're writing into starts with the bold "aonyx>" header.
         let needs_header = match self.viewport.last() {
             None => true,
             Some(l) => !l.spans.iter().any(|s| s.content.contains("aonyx>")),
@@ -285,8 +313,7 @@ impl TuiApp {
             )]));
         }
 
-        let pieces: Vec<&str> = text.split_inclusive('\n').collect();
-        for piece in pieces {
+        for piece in text.split_inclusive('\n') {
             let (chunk, has_newline) = match piece.strip_suffix('\n') {
                 Some(c) => (c, true),
                 None => (piece, false),
@@ -304,47 +331,142 @@ impl TuiApp {
 
     fn push_line(&mut self, line: Line<'static>) {
         self.viewport.push(line);
-        // Keep viewport bounded so memory does not grow forever during long
-        // sessions; 2000 lines is comfortable on every terminal we care about.
-        if self.viewport.len() > 2000 {
-            let drop = self.viewport.len() - 2000;
+        if self.viewport.len() > VIEWPORT_MAX_LINES {
+            let drop = self.viewport.len() - VIEWPORT_MAX_LINES;
             self.viewport.drain(..drop);
         }
     }
 
-    async fn handle_key(&mut self, code: KeyCode, mods: KeyModifiers) {
-        let ctrl = mods.contains(KeyModifiers::CONTROL);
-        match code {
-            KeyCode::Char('c') | KeyCode::Char('d') if ctrl => {
+    async fn handle_key(&mut self, key: KeyEvent) {
+        use KeyCode::*;
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+        let alt = key.modifiers.contains(KeyModifiers::ALT);
+
+        match key.code {
+            Esc => {
                 self.quit = true;
             }
-            KeyCode::Esc => {
+            Char('c') | Char('d') if ctrl => {
                 self.quit = true;
             }
-            KeyCode::PageUp => self.scroll = self.scroll.saturating_add(8),
-            KeyCode::PageDown => self.scroll = self.scroll.saturating_sub(8),
-            KeyCode::Enter => {
-                let input = std::mem::take(&mut self.composer);
-                let trimmed = input.trim();
-                if trimmed.is_empty() || self.runner_active {
-                    return;
-                }
-                self.push_line(Line::from(vec![
-                    Span::styled("you> ", Style::default().add_modifier(Modifier::BOLD)),
-                    Span::raw(trimmed.to_string()),
-                ]));
-                self.messages
-                    .push(Message::new(Role::User, trimmed.to_string()));
-                self.start_runner();
+            PageUp => self.scroll = self.scroll.saturating_add(8),
+            PageDown => self.scroll = self.scroll.saturating_sub(8),
+
+            Up if self.composer_at_top() && !shift => self.history_prev(),
+            Down if self.composer_at_bottom() && !shift => self.history_next(),
+
+            Enter if shift || alt => {
+                self.composer.insert_newline();
             }
-            KeyCode::Backspace => {
-                self.composer.pop();
+            Enter => {
+                self.submit_composer().await;
             }
-            KeyCode::Char(c) => {
-                self.composer.push(c);
+
+            _ => {
+                // Hand the event over to tui-textarea for typing, cursor
+                // motion, backspace, etc. Discard the boolean it returns
+                // ("did this modify the buffer") — we re-render every frame.
+                let _ = self.composer.input(key);
             }
-            _ => {}
         }
+    }
+
+    fn composer_at_top(&self) -> bool {
+        self.composer.cursor().0 == 0
+    }
+
+    fn composer_at_bottom(&self) -> bool {
+        let (row, _) = self.composer.cursor();
+        row >= self.composer.lines().len().saturating_sub(1)
+    }
+
+    fn set_composer_content(&mut self, content: &str) {
+        let lines: Vec<String> = if content.is_empty() {
+            vec![String::new()]
+        } else {
+            content.lines().map(String::from).collect()
+        };
+        let mut next = TextArea::new(lines);
+        next.set_block(
+            Block::default()
+                .borders(Borders::TOP | Borders::BOTTOM)
+                .border_style(Style::default().fg(Color::DarkGray)),
+        );
+        next.set_cursor_line_style(Style::default());
+        next.set_placeholder_text("type a message — Enter to send, Shift+Enter for newline");
+        next.move_cursor(CursorMove::Bottom);
+        next.move_cursor(CursorMove::End);
+        self.composer = next;
+    }
+
+    fn history_prev(&mut self) {
+        if self.history.is_empty() {
+            return;
+        }
+        let new_idx = match self.history_cursor {
+            None => self.history.len() - 1,
+            Some(0) => return,
+            Some(n) => n - 1,
+        };
+        if self.history_cursor.is_none() {
+            self.scratch = self.composer.lines().to_vec();
+        }
+        self.history_cursor = Some(new_idx);
+        let value = self.history[new_idx].clone();
+        self.set_composer_content(&value);
+    }
+
+    fn history_next(&mut self) {
+        match self.history_cursor {
+            None => {}
+            Some(n) if n + 1 >= self.history.len() => {
+                let scratch = self.scratch.clone().join("\n");
+                self.history_cursor = None;
+                self.set_composer_content(&scratch);
+            }
+            Some(n) => {
+                self.history_cursor = Some(n + 1);
+                let value = self.history[n + 1].clone();
+                self.set_composer_content(&value);
+            }
+        }
+    }
+
+    async fn submit_composer(&mut self) {
+        if self.runner_active {
+            return;
+        }
+        let content = self.composer.lines().join("\n");
+        let trimmed = content.trim();
+        if trimmed.is_empty() {
+            return;
+        }
+
+        // Track in history (skip exact duplicates of the previous entry).
+        if self.history.last().map(String::as_str) != Some(trimmed) {
+            self.history.push(trimmed.to_string());
+            if self.history.len() > HISTORY_MAX {
+                let drop = self.history.len() - HISTORY_MAX;
+                self.history.drain(..drop);
+            }
+        }
+        self.history_cursor = None;
+        self.scratch.clear();
+
+        if let Some(cmd) = SlashCommand::parse(trimmed) {
+            self.handle_slash(cmd).await;
+        } else {
+            self.push_line(Line::from(vec![
+                Span::styled("you> ", Style::default().add_modifier(Modifier::BOLD)),
+                Span::raw(trimmed.to_string()),
+            ]));
+            self.messages
+                .push(Message::new(Role::User, trimmed.to_string()));
+            self.start_runner();
+        }
+
+        self.set_composer_content("");
     }
 
     fn start_runner(&mut self) {
@@ -357,13 +479,133 @@ impl TuiApp {
         self.runner_active = true;
     }
 
-    fn render(&self, f: &mut Frame<'_>) {
+    async fn handle_slash(&mut self, cmd: SlashCommand) {
+        match cmd {
+            SlashCommand::Quit => self.quit = true,
+            SlashCommand::Clear | SlashCommand::New => {
+                let system = self
+                    .messages
+                    .first()
+                    .filter(|m| m.role == Role::System)
+                    .cloned();
+                self.messages.clear();
+                if let Some(s) = system {
+                    self.messages.push(s);
+                }
+                self.turns = 0;
+                self.viewport.clear();
+                self.push_dim("(history cleared)");
+            }
+            SlashCommand::Help => {
+                for line in HELP_LINES {
+                    self.push_dim(line);
+                }
+            }
+            SlashCommand::Models => {
+                self.push_dim(&format!(
+                    "active: {} · {}",
+                    self.provider_name, self.model_name
+                ));
+                self.push_dim(
+                    "available: anthropic · openai · openrouter · ollama · lm-studio · claude-code",
+                );
+                self.push_dim("switch with: edit ~/.aonyx/config.toml (live switch in V0.3)");
+            }
+            SlashCommand::Sessions => {
+                self.push_dim("single-session mode (multi-session lands in Phase D)");
+            }
+            SlashCommand::Export(target) => {
+                let path = export_path(target);
+                match self.export_markdown(&path).await {
+                    Ok(()) => self.push_dim(&format!(
+                        "exported: {} ({} messages)",
+                        path.display(),
+                        self.messages.len()
+                    )),
+                    Err(e) => self.push_line(error_line(format!("export failed: {e}"))),
+                }
+            }
+            SlashCommand::Details => {
+                self.show_tool_details = !self.show_tool_details;
+                let state = if self.show_tool_details { "on" } else { "off" };
+                self.push_dim(&format!("tool details: {state}"));
+            }
+            SlashCommand::Thinking => {
+                self.push_dim("reasoning visibility lands in Phase E");
+            }
+            SlashCommand::Editor => {
+                self.push_dim("`/editor` runs in legacy mode (`aonyx` without --tui) for now");
+            }
+            SlashCommand::Init => {
+                let path = std::path::PathBuf::from("agent.yaml");
+                if path.exists() {
+                    self.push_dim(&format!(
+                        "{} already exists — leaving it alone",
+                        path.display()
+                    ));
+                } else {
+                    let yaml = format!(
+                        "# Aonyx Agent — per-project configuration\n\
+                         persona: \"You are an Aonyx agent helping with {} .\"\n\
+                         system_prompt: |\n  Be concise. Cite sources. Confirm destructive actions.\n\
+                         preferred_provider: {}\n\
+                         preferred_model: {}\n",
+                        self.project_slug, self.provider_name, self.model_name
+                    );
+                    match tokio::fs::write(&path, yaml).await {
+                        Ok(()) => self.push_dim(&format!("created: {}", path.display())),
+                        Err(e) => self.push_line(error_line(format!("init failed: {e}"))),
+                    }
+                }
+            }
+        }
+    }
+
+    async fn export_markdown(&self, path: &std::path::Path) -> std::io::Result<()> {
+        let mut out = String::new();
+        out.push_str(&format!(
+            "# Aonyx Agent session — {project}\n\n",
+            project = self.project_slug
+        ));
+        out.push_str(&format!(
+            "_provider: {} · model: {} · turns: {}_\n\n---\n\n",
+            self.provider_name, self.model_name, self.turns,
+        ));
+        for m in &self.messages {
+            let role = match m.role {
+                Role::System => "system",
+                Role::User => "user",
+                Role::Assistant => "assistant",
+                Role::Tool => "tool",
+            };
+            out.push_str(&format!("### {role}\n\n{}\n\n", m.content));
+        }
+        tokio::fs::write(path, out).await
+    }
+
+    fn push_dim(&mut self, text: &str) {
+        self.push_line(Line::from(Span::styled(
+            text.to_string(),
+            Style::default().fg(Color::DarkGray),
+        )));
+    }
+
+    fn composer_height(&self) -> u16 {
+        let lines = self.composer.lines().len() as u16;
+        // +2 for the top + bottom border
+        lines
+            .saturating_add(2)
+            .clamp(MIN_COMPOSER_HEIGHT, MAX_COMPOSER_HEIGHT)
+    }
+
+    fn render(&mut self, f: &mut Frame<'_>) {
+        let composer_h = self.composer_height();
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Length(1),
                 Constraint::Min(0),
-                Constraint::Length(3),
+                Constraint::Length(composer_h),
                 Constraint::Length(1),
             ])
             .split(f.area());
@@ -379,8 +621,7 @@ impl TuiApp {
                 format!("  ·  project:{}", self.project_slug),
                 Style::default().fg(Color::DarkGray),
             ),
-        ]))
-        .block(Block::default().borders(Borders::BOTTOM));
+        ]));
         f.render_widget(header, chunks[0]);
 
         let viewport = Paragraph::new(Text::from(self.viewport.clone()))
@@ -388,41 +629,63 @@ impl TuiApp {
             .scroll((self.scroll, 0));
         f.render_widget(viewport, chunks[1]);
 
-        let composer_text = if self.runner_active {
-            Line::from(Span::styled(
-                "  (waiting for the runner to finish — hit Esc to quit)",
+        if self.runner_active {
+            let blocker = Paragraph::new(Line::from(Span::styled(
+                "  (runner busy — message will queue after it finishes)",
                 Style::default().fg(Color::DarkGray),
-            ))
+            )))
+            .block(
+                Block::default()
+                    .borders(Borders::TOP | Borders::BOTTOM)
+                    .border_style(Style::default().fg(Color::DarkGray)),
+            );
+            f.render_widget(blocker, chunks[2]);
         } else {
-            Line::from(vec![
-                Span::styled(
-                    "you> ",
-                    Style::default()
-                        .add_modifier(Modifier::BOLD)
-                        .fg(Color::White),
-                ),
-                Span::raw(self.composer.clone()),
-                Span::styled("█", Style::default().fg(Color::DarkGray)),
-            ])
-        };
-        let composer = Paragraph::new(composer_text)
-            .block(Block::default().borders(Borders::TOP | Borders::BOTTOM));
-        f.render_widget(composer, chunks[2]);
+            f.render_widget(&self.composer, chunks[2]);
+        }
 
         let state = if self.runner_active {
             "running"
         } else {
             "idle"
         };
-        let status = Paragraph::new(Line::from(vec![Span::styled(
+        let details = if self.show_tool_details {
+            " · details:on"
+        } else {
+            ""
+        };
+        let status = Paragraph::new(Line::from(Span::styled(
             format!(
-                " {} · {} · turn {} · {} ",
-                self.provider_name, self.model_name, self.turns, state
+                " {} · {} · turn {} · {}{} ",
+                self.provider_name, self.model_name, self.turns, state, details
             ),
             Style::default().fg(Color::DarkGray),
-        )]));
+        )));
         f.render_widget(status, chunks[3]);
     }
+}
+
+const HELP_LINES: &[&str] = &[
+    "available commands:",
+    "  /quit /q /exit       exit",
+    "  /clear /reset /new   reset conversation (keeps system prompt)",
+    "  /help /?             this list",
+    "  /models /m           active provider + model",
+    "  /sessions /s         multi-session UI (Phase D)",
+    "  /export [path]       dump the conversation to Markdown",
+    "  /details             toggle verbose tool output",
+    "  /thinking            reasoning visibility (Phase E)",
+    "  /editor /e           legacy-mode only for now",
+    "  /init                drop an agent.yaml in the project root",
+    "keys: Shift+Enter newline · ↑/↓ history · PgUp/PgDn scroll · Esc quit",
+];
+
+fn export_path(target: Option<String>) -> std::path::PathBuf {
+    if let Some(t) = target.filter(|s| !s.is_empty()) {
+        return std::path::PathBuf::from(t);
+    }
+    let stamp = chrono::Utc::now().format("%Y%m%d-%H%M%S").to_string();
+    std::path::PathBuf::from(format!("aonyx-session-{stamp}.md"))
 }
 
 fn abbreviate_value(value: &serde_json::Value, max_chars: usize) -> String {
@@ -431,11 +694,15 @@ fn abbreviate_value(value: &serde_json::Value, max_chars: usize) -> String {
         other => other.to_string(),
     };
     s = s.replace('\n', " ");
+    truncate(&s, max_chars)
+}
+
+fn truncate(s: &str, max_chars: usize) -> String {
     if s.chars().count() > max_chars {
         let cut: String = s.chars().take(max_chars).collect();
         format!("{cut}…")
     } else {
-        s
+        s.to_string()
     }
 }
 
@@ -463,5 +730,25 @@ mod tests {
         let line = error_line("boom".into());
         assert!(line.spans[0].content.contains("[error]"));
         assert!(line.spans[1].content.contains("boom"));
+    }
+
+    #[test]
+    fn truncate_keeps_short_strings() {
+        assert_eq!(truncate("hello", 80), "hello");
+        assert!(truncate(&"x".repeat(200), 50).ends_with('…'));
+    }
+
+    #[test]
+    fn export_path_defaults_to_timestamped_file() {
+        let p = export_path(None);
+        let name = p.file_name().unwrap().to_string_lossy().to_string();
+        assert!(name.starts_with("aonyx-session-"));
+        assert!(name.ends_with(".md"));
+    }
+
+    #[test]
+    fn export_path_uses_explicit_target_when_provided() {
+        let p = export_path(Some("transcript.md".into()));
+        assert_eq!(p, std::path::PathBuf::from("transcript.md"));
     }
 }

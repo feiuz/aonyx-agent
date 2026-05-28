@@ -33,3 +33,4 @@ termimad = "0.31"
 chrono = { workspace = true }
 ratatui = { workspace = true }
 crossterm = { workspace = true }
+tui-textarea = "0.7"
