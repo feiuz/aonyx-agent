@@ -28,6 +28,7 @@ use clap::{Parser, Subcommand};
 
 mod config;
 mod session;
+mod tui;
 
 use config::Config;
 use session::InteractiveSession;
@@ -39,6 +40,11 @@ struct Cli {
     /// Verbose logging (`debug` level).
     #[arg(short, long, global = true)]
     verbose: bool,
+
+    /// Open the new full-screen TUI (Phase B preview) instead of the
+    /// legacy line-based REPL.
+    #[arg(long)]
+    tui: bool,
 
     #[command(subcommand)]
     command: Option<Command>,
@@ -115,9 +121,10 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     init_tracing(cli.verbose);
 
+    let use_tui = cli.tui;
     match cli.command {
-        None => start_interactive(None).await,
-        Some(Command::New { path }) => start_interactive(path).await,
+        None => start_interactive(None, use_tui).await,
+        Some(Command::New { path }) => start_interactive(path, use_tui).await,
         Some(Command::Resume { id }) => {
             println!("aonyx resume {id:?} — coming in V1.1");
             Ok(())
@@ -150,7 +157,7 @@ fn init_tracing(verbose: bool) {
     tracing_subscriber::fmt().with_env_filter(filter).init();
 }
 
-async fn start_interactive(project_path: Option<PathBuf>) -> anyhow::Result<()> {
+async fn start_interactive(project_path: Option<PathBuf>, use_tui: bool) -> anyhow::Result<()> {
     let config = Config::load_or_init()?;
 
     let project_root = match project_path {
@@ -169,6 +176,21 @@ async fn start_interactive(project_path: Option<PathBuf>) -> anyhow::Result<()> 
     let project_slug = project_slug(&project_root);
 
     let skills = aonyx_skills::builtin_skills();
+
+    if use_tui {
+        return tui::run(
+            provider,
+            palace,
+            config.model.clone(),
+            config.max_iterations,
+            config.system_prompt.clone(),
+            project_slug,
+            skills,
+            config.provider.clone(),
+        )
+        .await;
+    }
+
     let mut session = InteractiveSession::new(
         provider,
         palace,

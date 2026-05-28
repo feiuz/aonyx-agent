@@ -95,6 +95,11 @@ pub struct TurnResult {
 
 /// Drives a session forward, multi-turn, until the model emits no tool call
 /// or the iteration cap is reached.
+///
+/// `Clone` is intentional: `Arc<AgentRunner>` is awkward because every field
+/// is already cheaply cloneable, and the TUI spawns runner work onto its own
+/// task which needs an owned value.
+#[derive(Clone)]
 pub struct AgentRunner {
     provider: Arc<dyn LlmProvider>,
     tools: ToolRegistry,
