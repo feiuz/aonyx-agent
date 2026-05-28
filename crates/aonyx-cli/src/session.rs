@@ -209,10 +209,7 @@ impl InteractiveSession {
         Ok(())
     }
 
-    async fn write_status_bar<W: AsyncWriteExt + Unpin>(
-        &self,
-        out: &mut W,
-    ) -> std::io::Result<()> {
+    async fn write_status_bar<W: AsyncWriteExt + Unpin>(&self, out: &mut W) -> std::io::Result<()> {
         let cwd = std::env::current_dir()
             .ok()
             .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
@@ -314,11 +311,12 @@ impl InteractiveSession {
                 Ok(true)
             }
             SlashCommand::Thinking => {
-                out.write_all(b"\x1b[90mreasoning visibility lands in V0.3 (Phase E)\x1b[0m\n").await?;
+                out.write_all(b"\x1b[90mreasoning visibility lands in V0.3 (Phase E)\x1b[0m\n")
+                    .await?;
                 Ok(true)
             }
             SlashCommand::Editor => {
-                out.write_all(b"\x1b[90m/editor lands in V0.3 (Phase A3 - coming next)\x1b[0m\n").await?;
+                self.run_editor_turn(out).await?;
                 Ok(true)
             }
             SlashCommand::Init => {
@@ -349,6 +347,76 @@ impl InteractiveSession {
                 Ok(true)
             }
         }
+    }
+
+    async fn run_editor_turn<W: AsyncWriteExt + Unpin>(
+        &mut self,
+        out: &mut W,
+    ) -> anyhow::Result<()> {
+        let editor = resolve_editor();
+        let stamp = chrono::Utc::now().format("%Y%m%d-%H%M%S-%3f").to_string();
+        let tmp = std::env::temp_dir().join(format!("aonyx-msg-{stamp}.md"));
+        let intro = "# Write your message below. Lines starting with `#?` are ignored.\n#? Save and exit your editor when you're done. Leave empty to cancel.\n\n";
+        tokio::fs::write(&tmp, intro.as_bytes()).await?;
+
+        let line = format!("\x1b[90mopening:\x1b[0m {} ({})\n", editor, tmp.display());
+        out.write_all(line.as_bytes()).await?;
+        out.flush().await?;
+
+        let status = tokio::process::Command::new(&editor)
+            .arg(&tmp)
+            .status()
+            .await;
+
+        let raw = match status {
+            Ok(s) if s.success() => tokio::fs::read_to_string(&tmp).await.unwrap_or_default(),
+            Ok(s) => {
+                let _ = tokio::fs::remove_file(&tmp).await;
+                let line = format!(
+                    "\x1b[31meditor exited with status {} - skipping\x1b[0m\n",
+                    s.code().unwrap_or(-1)
+                );
+                out.write_all(line.as_bytes()).await?;
+                return Ok(());
+            }
+            Err(e) => {
+                let _ = tokio::fs::remove_file(&tmp).await;
+                let line = format!(
+                    "\x1b[31mcould not launch {editor}:\x1b[0m {e}\n\
+                     \x1b[90mhint:\x1b[0m set $EDITOR or $VISUAL to override the default.\n"
+                );
+                out.write_all(line.as_bytes()).await?;
+                return Ok(());
+            }
+        };
+        let _ = tokio::fs::remove_file(&tmp).await;
+
+        let message = strip_editor_instructions(&raw);
+        if message.trim().is_empty() {
+            out.write_all(b"\x1b[90m(editor input empty - cancelled)\x1b[0m\n")
+                .await?;
+            return Ok(());
+        }
+
+        let preview = preview_first_line(&message);
+        let line = format!("\x1b[90mfrom editor:\x1b[0m \x1b[1m{preview}\x1b[0m\n");
+        out.write_all(line.as_bytes()).await?;
+
+        self.messages
+            .push(Message::new(Role::User, message.clone()));
+        out.write_all(b"\n\x1b[1maonyx>\x1b[0m ").await?;
+        out.flush().await?;
+        match self.run_turn(out).await {
+            Ok(()) => {
+                self.turns += 1;
+                self.persist_turn(&preview).await;
+            }
+            Err(e) => {
+                let msg = format!("\n\x1b[31m[error]\x1b[0m {e}\n");
+                out.write_all(msg.as_bytes()).await?;
+            }
+        }
+        Ok(())
     }
 
     async fn export_markdown(&self, path: &std::path::Path) -> std::io::Result<()> {
@@ -394,6 +462,45 @@ const HELP_BLURB: &[u8] = b"available commands:\n  \
 /thinking            toggle reasoning visibility (V0.3)\n  \
 /editor /e           compose a long message in $EDITOR (V0.3)\n  \
 /init                drop an agent.yaml in the current project\n";
+
+fn resolve_editor() -> String {
+    if let Ok(e) = std::env::var("VISUAL") {
+        if !e.trim().is_empty() {
+            return e;
+        }
+    }
+    if let Ok(e) = std::env::var("EDITOR") {
+        if !e.trim().is_empty() {
+            return e;
+        }
+    }
+    if cfg!(windows) {
+        "notepad.exe".to_string()
+    } else {
+        "vi".to_string()
+    }
+}
+
+/// Drop lines starting with `#?` (the prompt-only comment marker) and trim
+/// surrounding whitespace.
+fn strip_editor_instructions(raw: &str) -> String {
+    raw.lines()
+        .filter(|line| !line.trim_start().starts_with("#?"))
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim()
+        .to_string()
+}
+
+fn preview_first_line(text: &str) -> String {
+    let first = text.lines().next().unwrap_or("").trim();
+    if first.chars().count() > 80 {
+        let cut: String = first.chars().take(80).collect();
+        format!("{cut}…")
+    } else {
+        first.to_string()
+    }
+}
 
 fn export_path(target: Option<String>) -> std::path::PathBuf {
     if let Some(t) = target.filter(|s| !s.is_empty()) {
@@ -547,5 +654,90 @@ mod tests {
         let s = abbreviate_value(&v, 80);
         assert!(s.contains("a.txt"));
         assert!(!s.contains('…'));
+    }
+
+    #[test]
+    fn strip_editor_instructions_drops_marker_lines() {
+        let raw = "#? this is help\n#? second hint\nhello world\nmore text\n";
+        let cleaned = strip_editor_instructions(raw);
+        assert_eq!(cleaned, "hello world\nmore text");
+    }
+
+    #[test]
+    fn strip_editor_instructions_treats_empty_input_as_empty() {
+        assert!(strip_editor_instructions("#? only hint\n").is_empty());
+        assert!(strip_editor_instructions("").is_empty());
+    }
+
+    #[test]
+    fn preview_first_line_truncates_long_lines() {
+        let text = "a".repeat(200);
+        let p = preview_first_line(&text);
+        assert!(p.chars().count() <= 81);
+        assert!(p.ends_with('…'));
+    }
+
+    #[test]
+    fn preview_first_line_returns_first_line_only() {
+        let text = "hello\nworld";
+        assert_eq!(preview_first_line(text), "hello");
+    }
+
+    #[test]
+    fn resolve_editor_falls_back_to_platform_default() {
+        // Snapshot env vars and clear them so we hit the fallback branch.
+        let visual = std::env::var("VISUAL").ok();
+        let editor = std::env::var("EDITOR").ok();
+        std::env::remove_var("VISUAL");
+        std::env::remove_var("EDITOR");
+        let resolved = resolve_editor();
+        if cfg!(windows) {
+            assert_eq!(resolved, "notepad.exe");
+        } else {
+            assert_eq!(resolved, "vi");
+        }
+        if let Some(v) = visual {
+            std::env::set_var("VISUAL", v);
+        }
+        if let Some(e) = editor {
+            std::env::set_var("EDITOR", e);
+        }
+    }
+
+    #[test]
+    fn export_path_defaults_to_timestamped_file() {
+        let p = export_path(None);
+        let name = p.file_name().unwrap().to_string_lossy().to_string();
+        assert!(name.starts_with("aonyx-session-"));
+        assert!(name.ends_with(".md"));
+    }
+
+    #[test]
+    fn export_path_uses_explicit_target_when_provided() {
+        let p = export_path(Some("notes/talk.md".into()));
+        assert_eq!(p, std::path::PathBuf::from("notes/talk.md"));
+    }
+
+    #[test]
+    fn slash_command_parses_editor_aliases() {
+        for s in ["/editor", "/e"] {
+            assert_eq!(
+                SlashCommand::parse(s),
+                Some(SlashCommand::Editor),
+                "for {s}"
+            );
+        }
+    }
+
+    #[test]
+    fn slash_command_export_captures_path_argument() {
+        match SlashCommand::parse("/export out/transcript.md") {
+            Some(SlashCommand::Export(Some(p))) => assert_eq!(p, "out/transcript.md"),
+            other => panic!("unexpected: {other:?}"),
+        }
+        match SlashCommand::parse("/export") {
+            Some(SlashCommand::Export(None)) => {}
+            other => panic!("unexpected: {other:?}"),
+        }
     }
 }
