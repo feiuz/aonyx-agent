@@ -24,10 +24,13 @@ pub mod cross_link;
 pub mod diary;
 pub mod hybrid;
 pub mod kg;
+pub mod palace;
 pub mod splitter;
 pub mod time_machine;
 
 mod inmem;
 
+pub use diary::{DiaryEntry, DiaryEntryId, DiaryStore, SqliteDiaryStore};
 pub use inmem::InMemoryStore;
 pub use kg::{Direction, Entity, EntityId, KgStore, Relation, RelationId, SqliteKgStore};
+pub use palace::Palace;
