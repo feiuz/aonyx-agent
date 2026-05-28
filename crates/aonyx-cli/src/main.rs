@@ -17,6 +17,9 @@ use std::sync::Arc;
 
 use aonyx_core::LlmProvider;
 use aonyx_llm::anthropic::AnthropicProvider;
+use aonyx_llm::lm_studio::LM_STUDIO_DEFAULT_BASE_URL;
+use aonyx_llm::openai::OPENAI_BASE_URL;
+use aonyx_llm::{OllamaProvider, OpenAiCompatProvider, OLLAMA_DEFAULT_BASE_URL};
 use aonyx_memory::Palace;
 use clap::{Parser, Subcommand};
 
@@ -173,22 +176,79 @@ async fn start_interactive(project_path: Option<PathBuf>) -> anyhow::Result<()> 
     session.run().await
 }
 
+fn resolve_key(
+    stored: &Option<String>,
+    env_var: &str,
+    config_field: &str,
+) -> anyhow::Result<String> {
+    stored
+        .clone()
+        .or_else(|| std::env::var(env_var).ok())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "{config_field} missing — set it in ~/.aonyx/config.toml or export {env_var}"
+            )
+        })
+}
+
 fn build_provider(config: &Config) -> anyhow::Result<Arc<dyn LlmProvider>> {
     match config.provider.as_str() {
         "anthropic" => {
-            let key = config
-                .anthropic_api_key
-                .clone()
-                .ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "anthropic_api_key missing — set it in ~/.aonyx/config.toml or export ANTHROPIC_API_KEY"
-                    )
-                })?;
+            let key = resolve_key(
+                &config.anthropic_api_key,
+                "ANTHROPIC_API_KEY",
+                "anthropic_api_key",
+            )?;
             Ok(Arc::new(AnthropicProvider::new(key)))
         }
+        "openai" => {
+            let key = resolve_key(&config.openai_api_key, "OPENAI_API_KEY", "openai_api_key")?;
+            let base = config
+                .openai_base_url
+                .clone()
+                .unwrap_or_else(|| OPENAI_BASE_URL.to_string());
+            Ok(Arc::new(OpenAiCompatProvider::new("openai", key, base)))
+        }
+        "openrouter" => {
+            let key = resolve_key(
+                &config.openrouter_api_key,
+                "OPENROUTER_API_KEY",
+                "openrouter_api_key",
+            )?;
+            let mut p = OpenAiCompatProvider::new(
+                "openrouter",
+                key,
+                aonyx_llm::openrouter::OPENROUTER_BASE_URL,
+            );
+            if let Some(referer) = &config.openrouter_referer {
+                p = p.with_header("HTTP-Referer", referer);
+            }
+            if let Some(title) = &config.openrouter_title {
+                p = p.with_header("X-Title", title);
+            }
+            Ok(Arc::new(p))
+        }
+        "ollama" => {
+            let base = config
+                .ollama_base_url
+                .clone()
+                .unwrap_or_else(|| OLLAMA_DEFAULT_BASE_URL.to_string());
+            Ok(Arc::new(OllamaProvider::with_base_url(base)))
+        }
+        "lm-studio" | "lm_studio" => {
+            let base = config
+                .lm_studio_base_url
+                .clone()
+                .unwrap_or_else(|| LM_STUDIO_DEFAULT_BASE_URL.to_string());
+            Ok(Arc::new(OpenAiCompatProvider::new(
+                "lm-studio",
+                String::new(),
+                base,
+            )))
+        }
         other => Err(anyhow::anyhow!(
-            "provider '{other}' is not wired in V1 (only 'anthropic' is). \
-             OpenAI / Ollama / OpenRouter / LM Studio / Nous Portal land next."
+            "provider '{other}' is not supported. \
+             Available: anthropic, openai, openrouter, ollama, lm-studio."
         )),
     }
 }
