@@ -64,6 +64,17 @@ const VIEWPORT_MAX_LINES: usize = 2000;
 const MIN_COMPOSER_HEIGHT: u16 = 3;
 const MAX_COMPOSER_HEIGHT: u16 = 10;
 
+/// Frames for the running-runner spinner. Braille dots feel lively without
+/// burning CPU on the redraw.
+const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
+/// Pulse frames for in-flight tool dots — small to keep eye-strain low.
+const PULSE_FRAMES: &[&str] = &["●", "◉", "○", "◉"];
+
+/// Status-bar colour cycle: each frame rotates through the palette so the
+/// running indicator feels alive.
+const SPINNER_COLORS: &[Color] = &[Color::Magenta, Color::Cyan, Color::LightBlue, Color::Cyan];
+
 /// Construct + run a TUI session. Returns when the user quits or the
 /// terminal disconnects.
 #[allow(clippy::too_many_arguments)]
@@ -111,6 +122,8 @@ pub async fn run(
             Style::default().fg(Color::DarkGray),
         ))],
         scroll: 0,
+        auto_scroll: true,
+        viewport_height: 0,
         history: Vec::new(),
         history_cursor: None,
         scratch: Vec::new(),
@@ -118,6 +131,9 @@ pub async fn run(
         runner_handle: None,
         runner_active: false,
         show_tool_details: false,
+        tick: 0,
+        thinking_line: None,
+        first_delta_received: false,
         quit: false,
     };
 
@@ -152,6 +168,11 @@ struct TuiApp {
     composer: TextArea<'static>,
     viewport: Vec<Line<'static>>,
     scroll: u16,
+    /// `true` until the user explicitly scrolls away (PgUp). Re-enabled on
+    /// PgDn when the user reaches the bottom or on End.
+    auto_scroll: bool,
+    /// Updated on every `render()`; the auto-scroll math needs it.
+    viewport_height: u16,
 
     history: Vec<String>,
     history_cursor: Option<usize>,
@@ -161,6 +182,14 @@ struct TuiApp {
     runner_handle: Option<JoinHandle<aonyx_core::Result<aonyx_agent::TurnResult>>>,
     runner_active: bool,
     show_tool_details: bool,
+    /// Monotonic tick incremented each event-loop iteration; drives spinner
+    /// + pulse animations without burning CPU.
+    tick: u64,
+    /// Index in `viewport` of the "💭 thinking…" placeholder, if any.
+    thinking_line: Option<usize>,
+    /// `true` once the runner has sent its first AssistantDelta — used to
+    /// retire the thinking placeholder.
+    first_delta_received: bool,
 
     quit: bool,
 }
@@ -174,7 +203,16 @@ impl TuiApp {
             terminal.draw(|f| self.render(f))?;
             self.poll_runner().await;
 
-            if event::poll(Duration::from_millis(20))? {
+            // Shorter poll while the runner is busy so the spinner stays
+            // smooth (≈ 80 ms per frame ≈ 12 fps), longer while idle so we
+            // don't tax the CPU.
+            let timeout = if self.runner_active {
+                Duration::from_millis(80)
+            } else {
+                Duration::from_millis(50)
+            };
+
+            if event::poll(timeout)? {
                 match event::read()? {
                     Event::Key(key) if key.kind == KeyEventKind::Press => {
                         self.handle_key(key).await;
@@ -183,6 +221,7 @@ impl TuiApp {
                     _ => {}
                 }
             }
+            self.tick = self.tick.wrapping_add(1);
         }
         Ok(())
     }
@@ -224,13 +263,27 @@ impl TuiApp {
                 }
                 self.runner_event_rx = None;
                 self.runner_active = false;
+                self.retire_thinking_line();
             }
         }
+    }
+
+    fn retire_thinking_line(&mut self) {
+        if let Some(idx) = self.thinking_line.take() {
+            if idx < self.viewport.len() {
+                self.viewport.remove(idx);
+            }
+        }
+        self.first_delta_received = false;
     }
 
     fn apply_event(&mut self, event: TurnEvent) {
         match event {
             TurnEvent::AssistantDelta(text) => {
+                if !self.first_delta_received {
+                    self.retire_thinking_line();
+                    self.first_delta_received = true;
+                }
                 self.append_to_assistant_line(&text);
             }
             TurnEvent::AssistantMessageEnd => {
@@ -246,6 +299,8 @@ impl TuiApp {
                 }
             }
             TurnEvent::ToolStart { name, args, class } => {
+                self.retire_thinking_line();
+                self.first_delta_received = true;
                 let dot_color = match class {
                     SafetyClass::Safe => Color::Cyan,
                     SafetyClass::Caution => Color::Yellow,
@@ -334,7 +389,36 @@ impl TuiApp {
         if self.viewport.len() > VIEWPORT_MAX_LINES {
             let drop = self.viewport.len() - VIEWPORT_MAX_LINES;
             self.viewport.drain(..drop);
+            if let Some(idx) = self.thinking_line {
+                self.thinking_line = idx.checked_sub(drop);
+            }
         }
+    }
+
+    fn push_thinking_line(&mut self) {
+        let span = Span::styled(
+            "  💭 thinking…",
+            Style::default()
+                .fg(Color::Magenta)
+                .add_modifier(Modifier::ITALIC),
+        );
+        self.viewport.push(Line::from(span));
+        self.thinking_line = Some(self.viewport.len() - 1);
+        self.first_delta_received = false;
+    }
+
+    fn clamp_scroll_and_maybe_resume_auto(&mut self) {
+        let max = self.max_scroll();
+        if self.scroll >= max {
+            self.scroll = max;
+            self.auto_scroll = true;
+        }
+    }
+
+    fn max_scroll(&self) -> u16 {
+        let total = self.viewport.len() as u32;
+        let visible = self.viewport_height as u32;
+        (total.saturating_sub(visible)) as u16
     }
 
     async fn handle_key(&mut self, key: KeyEvent) {
@@ -350,8 +434,21 @@ impl TuiApp {
             Char('c') | Char('d') if ctrl => {
                 self.quit = true;
             }
-            PageUp => self.scroll = self.scroll.saturating_add(8),
-            PageDown => self.scroll = self.scroll.saturating_sub(8),
+            PageUp => {
+                self.auto_scroll = false;
+                self.scroll = self.scroll.saturating_sub(8);
+            }
+            PageDown => {
+                self.scroll = self.scroll.saturating_add(8);
+                self.clamp_scroll_and_maybe_resume_auto();
+            }
+            End => {
+                self.auto_scroll = true;
+            }
+            Home => {
+                self.auto_scroll = false;
+                self.scroll = 0;
+            }
 
             Up if self.composer_at_top() && !shift => self.history_prev(),
             Down if self.composer_at_bottom() && !shift => self.history_next(),
@@ -458,11 +555,18 @@ impl TuiApp {
             self.handle_slash(cmd).await;
         } else {
             self.push_line(Line::from(vec![
-                Span::styled("you> ", Style::default().add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    "you> ",
+                    Style::default()
+                        .add_modifier(Modifier::BOLD)
+                        .fg(Color::Green),
+                ),
                 Span::raw(trimmed.to_string()),
             ]));
             self.messages
                 .push(Message::new(Role::User, trimmed.to_string()));
+            self.push_thinking_line();
+            self.auto_scroll = true;
             self.start_runner();
         }
 
@@ -610,11 +714,34 @@ impl TuiApp {
             ])
             .split(f.area());
 
+        self.viewport_height = chunks[1].height;
+
+        if self.auto_scroll {
+            self.scroll = self.max_scroll();
+        }
+
+        // Pulse the latest tool dot while the runner is active.
+        if self.runner_active {
+            let pulse = PULSE_FRAMES[(self.tick / 3) as usize % PULSE_FRAMES.len()];
+            if let Some(last) = self.viewport.last_mut() {
+                if let Some(first) = last.spans.first_mut() {
+                    let stripped = first.content.trim_start();
+                    if stripped.starts_with('●')
+                        || stripped.starts_with('◉')
+                        || stripped.starts_with('○')
+                    {
+                        first.content = format!("{pulse} ").into();
+                    }
+                }
+            }
+        }
+
+        let header_color = SPINNER_COLORS[(self.tick / 6) as usize % SPINNER_COLORS.len()];
         let header = Paragraph::new(Line::from(vec![
             Span::styled(
                 "🦦 Aonyx Agent",
                 Style::default()
-                    .fg(Color::White)
+                    .fg(header_color)
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
@@ -630,37 +757,81 @@ impl TuiApp {
         f.render_widget(viewport, chunks[1]);
 
         if self.runner_active {
-            let blocker = Paragraph::new(Line::from(Span::styled(
-                "  (runner busy — message will queue after it finishes)",
-                Style::default().fg(Color::DarkGray),
-            )))
+            let spinner_idx = self.tick as usize % SPINNER_FRAMES.len();
+            let spinner = SPINNER_FRAMES[spinner_idx];
+            let pulse_color = SPINNER_COLORS[(self.tick / 3) as usize % SPINNER_COLORS.len()];
+            let blocker = Paragraph::new(Line::from(vec![
+                Span::styled(
+                    format!("  {spinner} "),
+                    Style::default()
+                        .fg(pulse_color)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    "runner busy — Esc to quit",
+                    Style::default().fg(Color::DarkGray),
+                ),
+            ]))
             .block(
                 Block::default()
                     .borders(Borders::TOP | Borders::BOTTOM)
-                    .border_style(Style::default().fg(Color::DarkGray)),
+                    .border_style(Style::default().fg(pulse_color)),
             );
             f.render_widget(blocker, chunks[2]);
         } else {
+            self.composer.set_block(
+                Block::default()
+                    .borders(Borders::TOP | Borders::BOTTOM)
+                    .border_style(Style::default().fg(Color::Cyan)),
+            );
             f.render_widget(&self.composer, chunks[2]);
         }
 
-        let state = if self.runner_active {
-            "running"
-        } else {
-            "idle"
-        };
         let details = if self.show_tool_details {
             " · details:on"
         } else {
             ""
         };
-        let status = Paragraph::new(Line::from(Span::styled(
-            format!(
-                " {} · {} · turn {} · {}{} ",
-                self.provider_name, self.model_name, self.turns, state, details
-            ),
-            Style::default().fg(Color::DarkGray),
-        )));
+        let scroll_marker = if self.auto_scroll {
+            ""
+        } else {
+            " · scroll:manual"
+        };
+        let status_line = if self.runner_active {
+            let spinner_idx = self.tick as usize % SPINNER_FRAMES.len();
+            let spinner = SPINNER_FRAMES[spinner_idx];
+            let spin_color = SPINNER_COLORS[(self.tick / 3) as usize % SPINNER_COLORS.len()];
+            Line::from(vec![
+                Span::styled(
+                    format!(" {spinner} "),
+                    Style::default().fg(spin_color).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!(
+                        "{} · {} · turn {} · running{}{} ",
+                        self.provider_name, self.model_name, self.turns, details, scroll_marker
+                    ),
+                    Style::default().fg(Color::White),
+                ),
+            ])
+        } else {
+            Line::from(vec![
+                Span::styled(" ▸ ", Style::default().fg(Color::Green)),
+                Span::styled(
+                    format!(
+                        "{} · {} · turn {} · idle{}{} ",
+                        self.provider_name, self.model_name, self.turns, details, scroll_marker
+                    ),
+                    Style::default().fg(Color::Gray),
+                ),
+            ])
+        };
+        let bg = if self.runner_active {
+            Color::Rgb(20, 20, 50)
+        } else {
+            Color::Rgb(20, 30, 40)
+        };
+        let status = Paragraph::new(status_line).style(Style::default().bg(bg));
         f.render_widget(status, chunks[3]);
     }
 }
