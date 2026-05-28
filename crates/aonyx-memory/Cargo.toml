@@ -18,9 +18,10 @@ chrono = { workspace = true }
 uuid = { workspace = true }
 tracing = { workspace = true }
 tokio = { workspace = true }
+rusqlite = { workspace = true }
 
-# Real backends (rusqlite, fastembed-rs, hnsw_rs, tree-sitter) will be added as
-# each subsystem is implemented; the V1 scaffold ships an in-memory stub.
+# fastembed-rs, hnsw_rs, tree-sitter join when their subsystems land.
 
 [dev-dependencies]
 tokio = { workspace = true }
+tempfile = "3"

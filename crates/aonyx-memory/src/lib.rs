@@ -30,3 +30,4 @@ pub mod time_machine;
 mod inmem;
 
 pub use inmem::InMemoryStore;
+pub use kg::{Direction, Entity, EntityId, KgStore, Relation, RelationId, SqliteKgStore};
