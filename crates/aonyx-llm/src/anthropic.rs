@@ -55,11 +55,13 @@ struct AnthropicMessage<'a> {
 
 fn map_role(role: Role) -> Option<&'static str> {
     match role {
+        // `System` messages move to the top-level `system` field (handled by the caller).
+        Role::System => None,
         Role::User => Some("user"),
         Role::Assistant => Some("assistant"),
-        // `System` messages move to the top-level `system` field.
-        // `Tool` messages are not yet wired in V1.
-        Role::System | Role::Tool => None,
+        // V1 routes tool results through the `user` role (textual transcript).
+        // V1.1 will emit proper `tool_use` / `tool_result` content blocks.
+        Role::Tool => Some("user"),
     }
 }
 

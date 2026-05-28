@@ -35,4 +35,5 @@ pub mod compaction;
 pub mod runner;
 pub mod subagent;
 
-pub use runner::AgentRunner;
+pub use approval::ApprovalPolicy;
+pub use runner::{AgentRunner, TurnResult};
