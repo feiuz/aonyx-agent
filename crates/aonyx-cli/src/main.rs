@@ -275,7 +275,8 @@ fn handle_config(action: ConfigAction) -> anyhow::Result<()> {
 }
 
 async fn handle_memory(action: MemoryAction) -> anyhow::Result<()> {
-    use aonyx_memory::{DiaryStore, KgStore};
+    use aonyx_core::MemoryStore;
+    use aonyx_memory::{ChunksStore, DiaryStore, KgStore};
 
     let project_root = std::env::current_dir()?;
     let palace_dir = Palace::default_project_dir(&project_root);
@@ -286,13 +287,28 @@ async fn handle_memory(action: MemoryAction) -> anyhow::Result<()> {
         MemoryAction::Stats => {
             let entities = palace.kg.count_entities().await?;
             let diary_entries = palace.diary.count(&slug).await?;
+            let chunks = palace.chunks.count(None).await?;
             println!("palace dir: {}", palace_dir.display());
             println!("project:    {slug}");
             println!("kg entities:    {entities}");
             println!("diary entries:  {diary_entries}");
+            println!("chunks (FTS5):  {chunks}");
         }
         MemoryAction::Search { query } => {
-            println!("memory search '{query}' — hybrid search lands in P2");
+            let hits = palace.hybrid_search(&query, 10).await?;
+            if hits.is_empty() {
+                println!("(no matches — ingest some chunks first; vector search lands in V1.1)");
+            } else {
+                for (idx, (content, score)) in hits.iter().enumerate() {
+                    let preview: String = content.chars().take(160).collect();
+                    let ellipsis = if content.chars().count() > 160 {
+                        "…"
+                    } else {
+                        ""
+                    };
+                    println!("{:>2}. [score {:.3}] {preview}{ellipsis}", idx + 1, score);
+                }
+            }
         }
     }
     Ok(())

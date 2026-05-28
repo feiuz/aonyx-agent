@@ -20,6 +20,7 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs, rust_2018_idioms)]
 
+pub mod chunks;
 pub mod cross_link;
 pub mod diary;
 pub mod hybrid;
@@ -30,6 +31,7 @@ pub mod time_machine;
 
 mod inmem;
 
+pub use chunks::{Chunk, ChunkId, ChunksStore, ScoredChunk, SqliteChunksStore};
 pub use diary::{DiaryEntry, DiaryEntryId, DiaryStore, SqliteDiaryStore};
 pub use inmem::InMemoryStore;
 pub use kg::{Direction, Entity, EntityId, KgStore, Relation, RelationId, SqliteKgStore};

@@ -17,6 +17,7 @@ use std::path::{Path, PathBuf};
 use aonyx_core::{AonyxError, MemoryStore, Result};
 use async_trait::async_trait;
 
+use crate::chunks::{ChunksStore, SqliteChunksStore};
 use crate::diary::{DiaryEntry, DiaryStore, SqliteDiaryStore};
 use crate::kg::SqliteKgStore;
 
@@ -27,6 +28,8 @@ pub struct Palace {
     pub kg: SqliteKgStore,
     /// Narrative diary store.
     pub diary: SqliteDiaryStore,
+    /// Searchable chunks store (BM25 via FTS5).
+    pub chunks: SqliteChunksStore,
 }
 
 impl Palace {
@@ -39,7 +42,8 @@ impl Palace {
             .map_err(|e| AonyxError::Memory(format!("create palace dir {dir:?}: {e}")))?;
         let kg = SqliteKgStore::open(dir.join("kg.db"))?;
         let diary = SqliteDiaryStore::open(dir.join("diary.db"))?;
-        Ok(Self { kg, diary })
+        let chunks = SqliteChunksStore::open(dir.join("chunks.db"))?;
+        Ok(Self { kg, diary, chunks })
     }
 
     /// Open an entirely in-memory palace — for tests.
@@ -47,6 +51,7 @@ impl Palace {
         Ok(Self {
             kg: SqliteKgStore::open_in_memory()?,
             diary: SqliteDiaryStore::open_in_memory()?,
+            chunks: SqliteChunksStore::open_in_memory()?,
         })
     }
 
@@ -63,10 +68,14 @@ impl MemoryStore for Palace {
         Ok(())
     }
 
-    async fn hybrid_search(&self, _query: &str, _k: usize) -> Result<Vec<(String, f32)>> {
-        // V2 will compose BM25 (FTS5) + vector search + RRF.
-        // V1 returns an empty result set so the agent loop can call it safely.
-        Ok(Vec::new())
+    async fn hybrid_search(&self, query: &str, k: usize) -> Result<Vec<(String, f32)>> {
+        // V1: BM25 only via SQLite FTS5. V1.1 will fuse with fastembed-rs +
+        // HNSW vectors via RRF (k=60) + temporal boost.
+        let hits = self.chunks.search_bm25(None, query, k).await?;
+        Ok(hits
+            .into_iter()
+            .map(|h| (h.chunk.content, h.score))
+            .collect())
     }
 }
 
@@ -80,6 +89,26 @@ mod tests {
         let palace = Palace::open_in_memory().unwrap();
         assert_eq!(palace.kg.count_entities().await.unwrap(), 0);
         assert_eq!(palace.diary.count("demo").await.unwrap(), 0);
+        assert_eq!(palace.chunks.count(None).await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn hybrid_search_finds_bm25_matches() {
+        use crate::chunks::{Chunk, ChunksStore};
+        let palace = Palace::open_in_memory().unwrap();
+        palace
+            .chunks
+            .append(Chunk::new(
+                "demo",
+                "src/runner.rs",
+                "the agent runner loops until no tool call remains",
+            ))
+            .await
+            .unwrap();
+        let hits = palace.hybrid_search("agent runner", 5).await.unwrap();
+        assert!(!hits.is_empty());
+        assert!(hits[0].0.contains("runner"));
+        assert!(hits[0].1 > 0.0);
     }
 
     #[tokio::test]
@@ -114,6 +143,7 @@ mod tests {
         let palace = Palace::open(&palace_dir).unwrap();
         assert!(palace_dir.join("kg.db").exists());
         assert!(palace_dir.join("diary.db").exists());
+        assert!(palace_dir.join("chunks.db").exists());
         palace
             .diary_append("demo", "persistent note")
             .await
