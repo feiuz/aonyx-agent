@@ -6,6 +6,7 @@ use std::sync::Arc;
 use aonyx_agent::{AgentRunner, ApprovalPolicy};
 use aonyx_core::{LlmProvider, MemoryStore, Message, Role};
 use aonyx_memory::Palace;
+use aonyx_skills::Skill;
 use aonyx_tools::ToolRegistry;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
@@ -49,10 +50,14 @@ impl InteractiveSession {
         max_iterations: usize,
         system_prompt: Option<String>,
         project_slug: impl Into<String>,
+        skills: Vec<Skill>,
     ) -> Self {
+        let project = project_slug.into();
         let runner = AgentRunner::new(provider, ToolRegistry::default_set(), model)
             .with_max_iterations(max_iterations)
-            .with_approval(ApprovalPolicy::DenyDestructive);
+            .with_approval(ApprovalPolicy::DenyDestructive)
+            .with_skills(skills)
+            .with_project(&project);
 
         let mut messages = Vec::new();
         if let Some(prompt) = system_prompt {
@@ -63,7 +68,7 @@ impl InteractiveSession {
             runner,
             palace,
             messages,
-            project_slug: project_slug.into(),
+            project_slug: project,
         }
     }
 

@@ -16,6 +16,7 @@ use std::sync::Arc;
 use aonyx_core::{
     AonyxError, ChatRequest, LlmProvider, Message, Result, Role, ToolCall, ToolHandler, ToolResult,
 };
+use aonyx_skills::{Skill, SkillEngine};
 use aonyx_tools::ToolRegistry;
 use futures::StreamExt;
 use serde_json::{json, Value};
@@ -38,6 +39,8 @@ pub struct TurnResult {
 pub struct AgentRunner {
     provider: Arc<dyn LlmProvider>,
     tools: ToolRegistry,
+    skills: Vec<Skill>,
+    project: Option<String>,
     approval: ApprovalPolicy,
     model: String,
     max_iterations: usize,
@@ -53,6 +56,8 @@ impl AgentRunner {
         Self {
             provider,
             tools,
+            skills: Vec::new(),
+            project: None,
             approval: ApprovalPolicy::default(),
             model: model.into(),
             max_iterations: 10,
@@ -68,6 +73,19 @@ impl AgentRunner {
     /// Override the per-turn iteration cap.
     pub fn with_max_iterations(mut self, n: usize) -> Self {
         self.max_iterations = n.max(1);
+        self
+    }
+
+    /// Register a skill catalogue. Active skills are matched per turn against
+    /// the latest user message + the (optional) project slug.
+    pub fn with_skills(mut self, skills: Vec<Skill>) -> Self {
+        self.skills = skills;
+        self
+    }
+
+    /// Set the project slug used for project-pattern skill triggers.
+    pub fn with_project(mut self, project: impl Into<String>) -> Self {
+        self.project = Some(project.into());
         self
     }
 
@@ -87,8 +105,33 @@ impl AgentRunner {
             .collect()
     }
 
+    fn inject_active_skills(&self, messages: &mut Vec<Message>) {
+        if self.skills.is_empty() {
+            return;
+        }
+        let latest_user = messages
+            .iter()
+            .rev()
+            .find(|m| m.role == Role::User)
+            .map(|m| m.content.as_str())
+            .unwrap_or("");
+
+        let engine = SkillEngine::new(self.skills.clone());
+        let active = engine.match_active(latest_user, self.project.as_deref());
+        if active.is_empty() {
+            return;
+        }
+        let block = active
+            .iter()
+            .map(|s| format!("# Skill: {}\n\n{}", s.name, s.body))
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        messages.insert(0, Message::new(Role::System, block));
+    }
+
     /// Run the loop. `messages` is the full input transcript (system + user).
     pub async fn run(&self, mut messages: Vec<Message>) -> Result<TurnResult> {
+        self.inject_active_skills(&mut messages);
         let tools = self.tools_schema();
         let mut iterations: usize = 0;
 

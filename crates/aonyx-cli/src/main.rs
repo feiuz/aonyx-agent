@@ -165,6 +165,7 @@ async fn start_interactive(project_path: Option<PathBuf>) -> anyhow::Result<()> 
     let palace = Palace::open(&palace_dir)?;
     let project_slug = project_slug(&project_root);
 
+    let skills = aonyx_skills::builtin_skills();
     let mut session = InteractiveSession::new(
         provider,
         palace,
@@ -172,6 +173,7 @@ async fn start_interactive(project_path: Option<PathBuf>) -> anyhow::Result<()> 
         config.max_iterations,
         config.system_prompt.clone(),
         project_slug,
+        skills,
     );
     session.run().await
 }

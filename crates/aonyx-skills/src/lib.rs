@@ -37,4 +37,47 @@ pub mod engine;
 pub mod loader;
 pub mod schema;
 
+pub use engine::SkillEngine;
+pub use loader::SkillLoader;
 pub use schema::{Skill, Trigger};
+
+/// Return the V1 catalogue of built-in skills (`code-review`, `doc-writer`,
+/// `data-analyst`, `incident-response`), parsed from the markdown files
+/// embedded in the binary at compile time.
+///
+/// User-installed skills (e.g. under `~/.aonyx/skills/`) can be loaded
+/// separately via [`SkillLoader::load_dir`] and concatenated to this list.
+pub fn builtin_skills() -> Vec<Skill> {
+    const SOURCES: [&str; 4] = [
+        include_str!("../skills/built_in/code-review.skill.md"),
+        include_str!("../skills/built_in/doc-writer.skill.md"),
+        include_str!("../skills/built_in/data-analyst.skill.md"),
+        include_str!("../skills/built_in/incident-response.skill.md"),
+    ];
+    SOURCES
+        .iter()
+        .filter_map(|raw| SkillLoader::parse(raw).ok())
+        .collect()
+}
+
+#[cfg(test)]
+mod lib_tests {
+    use super::*;
+
+    #[test]
+    fn builtin_skills_loads_all_four() {
+        let skills = builtin_skills();
+        assert_eq!(skills.len(), 4);
+        let mut ids: Vec<&str> = skills.iter().map(|s| s.id.as_str()).collect();
+        ids.sort();
+        assert_eq!(
+            ids,
+            vec![
+                "code-review",
+                "data-analyst",
+                "doc-writer",
+                "incident-response"
+            ]
+        );
+    }
+}
