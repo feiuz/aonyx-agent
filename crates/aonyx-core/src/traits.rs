@@ -1,6 +1,7 @@
 //! Cross-cutting traits implemented by other crates.
 
 use async_trait::async_trait;
+use futures::stream::BoxStream;
 use serde::{Deserialize, Serialize};
 
 use crate::{Message, Result, SafetyClass, ToolCall, ToolResult};
@@ -13,9 +14,14 @@ pub struct ChatRequest {
     /// Conversation messages.
     pub messages: Vec<Message>,
     /// JSON-schema-described tools available for this turn.
+    #[serde(default)]
     pub tools: Vec<serde_json::Value>,
     /// Sampling temperature.
+    #[serde(default)]
     pub temperature: Option<f32>,
+    /// Hard upper bound on output tokens.
+    #[serde(default)]
+    pub max_tokens: Option<u32>,
 }
 
 /// A streamed delta from an LLM provider.
@@ -29,6 +35,9 @@ pub struct ChatChunk {
     pub finished: bool,
 }
 
+/// A boxed, `'static` chat stream — the canonical return type of every provider.
+pub type ChatStream = BoxStream<'static, Result<ChatChunk>>;
+
 /// Abstract LLM provider (Anthropic, OpenAI, Ollama, …).
 ///
 /// `#[async_trait]` keeps the trait object-safe so we can store providers
@@ -38,25 +47,8 @@ pub trait LlmProvider: Send + Sync {
     /// Stable provider name (e.g. `"anthropic"`, `"ollama"`).
     fn name(&self) -> &str;
 
-    /// Stream a chat completion. The default impl is intentionally absent —
-    /// every provider must implement it.
-    async fn chat_stream(
-        &self,
-        req: ChatRequest,
-    ) -> Result<Box<dyn futures_stream_chunk::ChunkStream>>;
-}
-
-/// Re-export a thin type alias so trait objects don't expose `futures::Stream` directly.
-pub mod futures_stream_chunk {
-    //! Indirection placeholder; replaced by a real `Stream<Item = Result<ChatChunk>>`
-    //! when `aonyx-llm` ships its first real provider.
-    use super::ChatChunk;
-
-    /// Sealed marker trait for chunk streams.
-    pub trait ChunkStream: Send {
-        /// Pull the next chunk (blocking placeholder; will become async-poll-based).
-        fn next_chunk(&mut self) -> Option<crate::Result<ChatChunk>>;
-    }
+    /// Stream a chat completion.
+    async fn chat_stream(&self, req: ChatRequest) -> Result<ChatStream>;
 }
 
 /// Memory palace store — implemented by `aonyx-memory`.

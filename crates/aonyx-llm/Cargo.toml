@@ -16,6 +16,8 @@ thiserror = { workspace = true }
 async-trait = { workspace = true }
 tracing = { workspace = true }
 tokio = { workspace = true }
+reqwest = { workspace = true }
+futures = { workspace = true }
+async-stream = "0.3"
 
-# Provider HTTP clients will be added when the first provider lands (anthropic,
-# openai, openrouter, ollama, lm-studio, nous-portal).
+# OpenAI / OpenRouter / Ollama / LM Studio / Nous Portal providers land next.

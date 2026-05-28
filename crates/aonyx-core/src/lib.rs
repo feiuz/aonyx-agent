@@ -13,5 +13,5 @@ pub mod traits;
 pub mod types;
 
 pub use error::{AonyxError, Result};
-pub use traits::{LlmProvider, MemoryStore, SkillSource, ToolHandler};
+pub use traits::{ChatChunk, ChatRequest, ChatStream, LlmProvider, MemoryStore, SkillSource, ToolHandler};
 pub use types::{Message, Role, SafetyClass, Session, ToolCall, ToolResult};
