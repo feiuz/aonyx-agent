@@ -3,7 +3,7 @@
 > **The agent with a real memory palace.**
 > An open-source, memory-first AI agent: Knowledge Graph + Hybrid Search + Time-machine. Single binary, multi-provider LLM, MIT licensed.
 
-[![CI](https://github.com/aonyx/aonyx-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/aonyx/aonyx-agent/actions/workflows/ci.yml)
+[![CI](https://github.com/feiuz/aonyx-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/feiuz/aonyx-agent/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-stable-orange.svg)](rust-toolchain.toml)
 
@@ -22,7 +22,7 @@ Most agents remember in flat files (`MEMORY.md`, plain notes). Aonyx Agent treat
 | Across projects | Isolated | **Cross-linking** sémantique inter-projets |
 | User model | Token concat | Preferences + diary, per project |
 
-Inspired by [Hermes Agent](https://github.com/NousResearch/hermes-agent) (Nous Research) for the multi-channel/skill-loop patterns, and by [Aonyx RAG](https://github.com/aonyx) for the memory architecture.
+Inspired by [Hermes Agent](https://github.com/NousResearch/hermes-agent) (Nous Research) for the multi-channel/skill-loop patterns, and by Aonyx RAG (a private memory system) for the memory architecture.
 
 ---
 
