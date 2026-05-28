@@ -1,24 +1,36 @@
 //! `aonyx` — the Aonyx Agent command-line binary.
 //!
 //! ```text
-//! aonyx                  open an interactive session (current dir)
+//! aonyx                  open an interactive session in the current dir
 //! aonyx new <path>       start a new session scoped to <path>
-//! aonyx resume [id]      resume a previous session
-//! aonyx config <subcmd>  manage configuration (provider, model, keys)
-//! aonyx memory <subcmd>  inspect / search / export / import the palace
-//! aonyx skills <subcmd>  list / install / enable / disable skills
-//! aonyx mcp <subcmd>     run the MCP server or connect to a remote one
+//! aonyx resume [id]      resume a previous session                 (V1.1)
+//! aonyx config <subcmd>  manage configuration                       (V1.1)
+//! aonyx memory <subcmd>  inspect / search / export / import         (V1.1)
+//! aonyx skills <subcmd>  list / install / enable / disable          (V1.1)
+//! aonyx mcp <subcmd>     run the MCP server or connect to a remote  (V1.1)
 //! ```
 
 #![forbid(unsafe_code)]
 
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use aonyx_core::LlmProvider;
+use aonyx_llm::anthropic::AnthropicProvider;
+use aonyx_memory::Palace;
 use clap::{Parser, Subcommand};
+
+mod config;
+mod session;
+
+use config::Config;
+use session::InteractiveSession;
 
 /// Aonyx Agent — the agent with a real memory palace.
 #[derive(Debug, Parser)]
 #[command(name = "aonyx", version, about, long_about = None)]
 struct Cli {
-    /// Verbose logging.
+    /// Verbose logging (`debug` level).
     #[arg(short, long, global = true)]
     verbose: bool,
 
@@ -31,7 +43,7 @@ enum Command {
     /// Start a new session scoped to a project path.
     New {
         /// Project directory (default: current directory).
-        path: Option<std::path::PathBuf>,
+        path: Option<PathBuf>,
     },
     /// Resume a previous session.
     Resume {
@@ -62,12 +74,10 @@ enum Command {
 
 #[derive(Debug, Subcommand)]
 enum ConfigAction {
-    /// List current configuration.
-    List,
-    /// Read a single key.
-    Get { key: String },
-    /// Set a key.
-    Set { key: String, value: String },
+    /// Print the config path and contents.
+    Show,
+    /// Print the config path.
+    Path,
 }
 
 #[derive(Debug, Subcommand)]
@@ -76,34 +86,22 @@ enum MemoryAction {
     Stats,
     /// Hybrid-search across chunks.
     Search { query: String },
-    /// Export the palace to a portable archive.
-    Export { out: std::path::PathBuf },
-    /// Import a palace archive.
-    Import { input: std::path::PathBuf },
 }
 
 #[derive(Debug, Subcommand)]
 enum SkillsAction {
     /// List known skills.
     List,
-    /// Install a skill from a URL or path.
-    Install { source: String },
-    /// Enable a skill by id.
-    Enable { id: String },
-    /// Disable a skill by id.
-    Disable { id: String },
 }
 
 #[derive(Debug, Subcommand)]
 enum McpAction {
-    /// Serve the Aonyx MCP server on stdio or a port.
+    /// Serve the Aonyx MCP server.
     Serve {
-        /// TCP port; if omitted, serve over stdio.
+        /// TCP port; omit for stdio.
         #[arg(short, long)]
         port: Option<u16>,
     },
-    /// Connect to a remote MCP server.
-    Connect { url: String },
 }
 
 #[tokio::main]
@@ -112,29 +110,28 @@ async fn main() -> anyhow::Result<()> {
     init_tracing(cli.verbose);
 
     match cli.command {
-        None => interactive_session().await,
-        Some(Command::New { path }) => {
-            println!("aonyx new {:?} — coming in V1", path);
-            Ok(())
-        }
+        None => start_interactive(None).await,
+        Some(Command::New { path }) => start_interactive(path).await,
         Some(Command::Resume { id }) => {
-            println!("aonyx resume {:?} — coming in V1", id);
+            println!("aonyx resume {id:?} — coming in V1.1");
             Ok(())
         }
-        Some(Command::Config { action }) => {
-            println!("aonyx config {:?} — coming in V1", action);
-            Ok(())
-        }
-        Some(Command::Memory { action }) => {
-            println!("aonyx memory {:?} — coming in V1", action);
-            Ok(())
-        }
+        Some(Command::Config { action }) => handle_config(action),
+        Some(Command::Memory { action }) => handle_memory(action).await,
         Some(Command::Skills { action }) => {
-            println!("aonyx skills {:?} — coming in V1", action);
+            match action {
+                SkillsAction::List => {
+                    println!("aonyx skills list — coming in V1.1");
+                }
+            }
             Ok(())
         }
         Some(Command::Mcp { action }) => {
-            println!("aonyx mcp {:?} — coming in V1", action);
+            match action {
+                McpAction::Serve { port } => {
+                    println!("aonyx mcp serve port={port:?} — coming in V1.1");
+                }
+            }
             Ok(())
         }
     }
@@ -147,10 +144,96 @@ fn init_tracing(verbose: bool) {
     tracing_subscriber::fmt().with_env_filter(filter).init();
 }
 
-async fn interactive_session() -> anyhow::Result<()> {
-    println!("🦦  Aonyx Agent — pre-alpha");
-    println!();
-    println!("This is a scaffold. The interactive loop lands in Vague 1.");
-    println!("See `.bmad/prd.md` for the MVP plan.");
+async fn start_interactive(project_path: Option<PathBuf>) -> anyhow::Result<()> {
+    let config = Config::load_or_init()?;
+
+    let project_root = match project_path {
+        Some(p) => {
+            if !p.exists() {
+                std::fs::create_dir_all(&p)?;
+            }
+            std::fs::canonicalize(&p)?
+        }
+        None => std::env::current_dir()?,
+    };
+
+    let provider = build_provider(&config)?;
+    let palace_dir = Palace::default_project_dir(&project_root);
+    let palace = Palace::open(&palace_dir)?;
+    let project_slug = project_slug(&project_root);
+
+    let mut session = InteractiveSession::new(
+        provider,
+        palace,
+        config.model.clone(),
+        config.max_iterations,
+        config.system_prompt.clone(),
+        project_slug,
+    );
+    session.run().await
+}
+
+fn build_provider(config: &Config) -> anyhow::Result<Arc<dyn LlmProvider>> {
+    match config.provider.as_str() {
+        "anthropic" => {
+            let key = config
+                .anthropic_api_key
+                .clone()
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "anthropic_api_key missing — set it in ~/.aonyx/config.toml or export ANTHROPIC_API_KEY"
+                    )
+                })?;
+            Ok(Arc::new(AnthropicProvider::new(key)))
+        }
+        other => Err(anyhow::anyhow!(
+            "provider '{other}' is not wired in V1 (only 'anthropic' is). \
+             OpenAI / Ollama / OpenRouter / LM Studio / Nous Portal land next."
+        )),
+    }
+}
+
+fn project_slug(root: &std::path::Path) -> String {
+    root.file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "session".to_string())
+}
+
+fn handle_config(action: ConfigAction) -> anyhow::Result<()> {
+    let path = Config::config_path()?;
+    match action {
+        ConfigAction::Path => {
+            println!("{}", path.display());
+        }
+        ConfigAction::Show => {
+            let cfg = Config::load_or_init()?;
+            println!("# {}\n", path.display());
+            println!("{}", toml::to_string_pretty(&cfg)?);
+        }
+    }
+    Ok(())
+}
+
+async fn handle_memory(action: MemoryAction) -> anyhow::Result<()> {
+    use aonyx_memory::{DiaryStore, KgStore};
+
+    let project_root = std::env::current_dir()?;
+    let palace_dir = Palace::default_project_dir(&project_root);
+    let palace = Palace::open(&palace_dir)?;
+    let slug = project_slug(&project_root);
+
+    match action {
+        MemoryAction::Stats => {
+            let entities = palace.kg.count_entities().await?;
+            let diary_entries = palace.diary.count(&slug).await?;
+            println!("palace dir: {}", palace_dir.display());
+            println!("project:    {slug}");
+            println!("kg entities:    {entities}");
+            println!("diary entries:  {diary_entries}");
+        }
+        MemoryAction::Search { query } => {
+            println!("memory search '{query}' — hybrid search lands in P2");
+        }
+    }
     Ok(())
 }
