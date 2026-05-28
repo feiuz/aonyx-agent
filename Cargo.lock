@@ -206,10 +206,13 @@ version = "0.1.0"
 dependencies = [
  "aonyx-core",
  "async-trait",
+ "regex",
  "serde",
  "serde_json",
  "serde_yaml",
+ "tempfile",
  "tracing",
+ "walkdir",
 ]
 
 [[package]]
