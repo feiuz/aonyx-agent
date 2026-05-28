@@ -1,0 +1,23 @@
+[package]
+name = "aonyx-agent"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Aonyx Agent — agent loop, compaction, classifier, approval gate, subagents"
+
+[dependencies]
+aonyx-core = { workspace = true }
+aonyx-llm = { workspace = true }
+aonyx-memory = { workspace = true }
+aonyx-skills = { workspace = true }
+aonyx-tools = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+async-trait = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }

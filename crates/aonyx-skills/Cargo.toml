@@ -1,0 +1,17 @@
+[package]
+name = "aonyx-skills"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Aonyx Agent — SKILL.md engine, loader, trigger matching, auto-generation"
+
+[dependencies]
+aonyx-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+async-trait = { workspace = true }
+tracing = { workspace = true }

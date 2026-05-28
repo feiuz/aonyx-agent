@@ -1,0 +1,79 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/aonyx-core",
+    "crates/aonyx-memory",
+    "crates/aonyx-llm",
+    "crates/aonyx-tools",
+    "crates/aonyx-skills",
+    "crates/aonyx-agent",
+    "crates/aonyx-mcp",
+    "crates/aonyx-cli",
+    "crates/aonyx-tui",
+    "crates/aonyx-adapters",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80"
+license = "MIT"
+authors = ["Aonyx Agent contributors"]
+repository = "https://github.com/aonyx/aonyx-agent"
+homepage = "https://aonyx-agent.dev"
+description = "The agent with a real memory palace — Knowledge Graph + Hybrid Search + Time-machine"
+keywords = ["ai", "agent", "llm", "memory", "knowledge-graph"]
+categories = ["command-line-utilities", "science"]
+
+[workspace.dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+async-trait = "0.1"
+futures = "0.3"
+
+# Serde / config
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+toml = "0.8"
+
+# Errors / logging
+anyhow = "1"
+thiserror = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+
+# HTTP
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+
+# CLI / TUI
+clap = { version = "4", features = ["derive", "env", "wrap_help"] }
+ratatui = "0.28"
+crossterm = "0.28"
+
+# Storage
+rusqlite = { version = "0.32", features = ["bundled", "chrono", "serde_json"] }
+
+# Time / IDs
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+
+# Local workspace crates
+aonyx-core = { path = "crates/aonyx-core", version = "0.1.0" }
+aonyx-memory = { path = "crates/aonyx-memory", version = "0.1.0" }
+aonyx-llm = { path = "crates/aonyx-llm", version = "0.1.0" }
+aonyx-tools = { path = "crates/aonyx-tools", version = "0.1.0" }
+aonyx-skills = { path = "crates/aonyx-skills", version = "0.1.0" }
+aonyx-agent = { path = "crates/aonyx-agent", version = "0.1.0" }
+aonyx-mcp = { path = "crates/aonyx-mcp", version = "0.1.0" }
+aonyx-tui = { path = "crates/aonyx-tui", version = "0.1.0" }
+aonyx-adapters = { path = "crates/aonyx-adapters", version = "0.1.0" }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
+
+[profile.dev]
+opt-level = 1

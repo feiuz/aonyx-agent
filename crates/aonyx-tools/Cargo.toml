@@ -1,0 +1,17 @@
+[package]
+name = "aonyx-tools"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Aonyx Agent — built-in tools (fs, bash, git, exec, web, memory)"
+
+[dependencies]
+aonyx-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+async-trait = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true }

@@ -1,0 +1,27 @@
+[package]
+name = "aonyx-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Aonyx Agent — the `aonyx` command-line binary"
+
+[[bin]]
+name = "aonyx"
+path = "src/main.rs"
+
+[dependencies]
+aonyx-core = { workspace = true }
+aonyx-agent = { workspace = true }
+aonyx-memory = { workspace = true }
+aonyx-llm = { workspace = true }
+aonyx-skills = { workspace = true }
+aonyx-tools = { workspace = true }
+aonyx-mcp = { workspace = true }
+clap = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }

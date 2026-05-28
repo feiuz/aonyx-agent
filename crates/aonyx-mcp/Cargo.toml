@@ -1,0 +1,21 @@
+[package]
+name = "aonyx-mcp"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Aonyx Agent — MCP client (consume servers) and server (expose self)"
+
+[dependencies]
+aonyx-core = { workspace = true }
+aonyx-tools = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+async-trait = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true }
+
+# The official `rmcp` crate will be added when we wire the first concrete
+# transport (stdio / HTTP / SSE).

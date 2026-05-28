@@ -1,0 +1,40 @@
+# Rust
+/target
+**/*.rs.bk
+*.pdb
+
+# IDE
+.idea/
+.vscode/
+*.iml
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Aonyx runtime data
+.aonyx/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Env / secrets
+.env
+.env.local
+.env.*.local
+
+# Claude Code local overrides (per-dev permissions)
+.claude/settings.local.json
+
+# Build / dist
+dist/
+*.log
+
+# Test snapshots staged but unaccepted
+**/snapshots/*.new
+
+# Local fixtures
+/tmp/
+/scratch/

@@ -1,0 +1,15 @@
+[package]
+name = "aonyx-tui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Aonyx Agent — interactive terminal UI (ratatui) — Vague 1.5"
+
+[dependencies]
+aonyx-core = { workspace = true }
+tracing = { workspace = true }
+
+# `ratatui` + `crossterm` will be added in Vague 1.5 when the TUI lands.
