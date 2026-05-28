@@ -243,7 +243,11 @@ fn parse_uuid(s: &str) -> rusqlite::Result<Uuid> {
 }
 
 fn parse_ts(s: Option<String>) -> Option<DateTime<Utc>> {
-    s.and_then(|raw| DateTime::parse_from_rfc3339(&raw).ok().map(|d| d.with_timezone(&Utc)))
+    s.and_then(|raw| {
+        DateTime::parse_from_rfc3339(&raw)
+            .ok()
+            .map(|d| d.with_timezone(&Utc))
+    })
 }
 
 fn entity_from_row(row: &Row<'_>) -> rusqlite::Result<Entity> {
@@ -538,18 +542,9 @@ mod tests {
             .await
             .unwrap();
 
-        let out = store
-            .relations_for(a_id, Direction::Out)
-            .await
-            .unwrap();
-        let into = store
-            .relations_for(b_id, Direction::In)
-            .await
-            .unwrap();
-        let both = store
-            .relations_for(a_id, Direction::Both)
-            .await
-            .unwrap();
+        let out = store.relations_for(a_id, Direction::Out).await.unwrap();
+        let into = store.relations_for(b_id, Direction::In).await.unwrap();
+        let both = store.relations_for(a_id, Direction::Both).await.unwrap();
 
         assert_eq!(out.len(), 1);
         assert_eq!(into.len(), 1);

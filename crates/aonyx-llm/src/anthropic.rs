@@ -8,9 +8,7 @@
 //! `content_block_stop`, `message_delta`, `ping`) are intentionally ignored in
 //! V1 — they carry metadata we don't need yet.
 
-use aonyx_core::{
-    AonyxError, ChatChunk, ChatRequest, ChatStream, LlmProvider, Result, Role,
-};
+use aonyx_core::{AonyxError, ChatChunk, ChatRequest, ChatStream, LlmProvider, Result, Role};
 use async_stream::try_stream;
 use async_trait::async_trait;
 use futures::StreamExt;
