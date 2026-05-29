@@ -116,6 +116,7 @@ const SLASH_CANDIDATES: &[&str] = &[
     "/load",
     "/kg",
     "/tools",
+    "/skills",
     "/mouse",
     "/ingest",
     "/editor",
@@ -262,6 +263,49 @@ struct ToolsPanel {
 }
 
 impl ToolsPanel {
+    fn close(&mut self) {
+        self.open = false;
+        self.selected = 0;
+    }
+
+    fn move_up(&mut self) {
+        if self.selected > 0 {
+            self.selected -= 1;
+        }
+    }
+
+    fn move_down(&mut self) {
+        if self.selected + 1 < self.entries.len() {
+            self.selected += 1;
+        }
+    }
+}
+
+/// One row of the `/skills` panel (Phase X).
+#[derive(Debug, Clone)]
+struct SkillEntry {
+    /// Skill id (stable, used as the toggle key).
+    id: String,
+    /// Human-readable name.
+    name: String,
+    /// First few trigger keywords, joined for display.
+    triggers: String,
+    /// Live disabled state — flipped by `space` / `Enter`.
+    disabled: bool,
+}
+
+/// Floating `/skills` panel state (Phase X).
+#[derive(Debug, Default)]
+struct SkillsPanel {
+    /// `true` while the overlay is visible.
+    open: bool,
+    /// One row per loaded skill, sorted by name.
+    entries: Vec<SkillEntry>,
+    /// Currently-highlighted row index.
+    selected: usize,
+}
+
+impl SkillsPanel {
     fn close(&mut self) {
         self.open = false;
         self.selected = 0;
@@ -458,6 +502,11 @@ fn build_palette_entries() -> Vec<PaletteEntry> {
             action: PaletteAction::Slash(SlashCommand::Tools),
         },
         PaletteEntry {
+            label: "/skills".into(),
+            hint: "Open the skills panel (enable / disable skills)".into(),
+            action: PaletteAction::Slash(SlashCommand::Skills),
+        },
+        PaletteEntry {
             label: "/mouse".into(),
             hint: "Toggle mouse capture (off = native drag-to-select)".into(),
             action: PaletteAction::Slash(SlashCommand::Mouse),
@@ -513,11 +562,17 @@ pub async fn run(
     // shallow: handlers are Arc-shared and the disabled set lives
     // behind Arc<Mutex<_>>.
     let tool_registry = ToolRegistry::default_set();
+    // Phase X — keep a copy of the skill catalogue for the `/skills`
+    // panel before the runner takes ownership.
+    let skills_catalogue = skills.clone();
     let runner = AgentRunner::new(provider, tool_registry.clone(), model.clone())
         .with_max_iterations(max_iterations)
         .with_approval(ApprovalPolicy::interactive(approver))
         .with_skills(skills)
         .with_project(&project_slug);
+    // Phase X — share the runner's live skill-toggle set so `/skills`
+    // can enable / disable skills mid-session.
+    let disabled_skills = runner.skill_toggle_handle();
 
     let messages: Vec<Message> = session_messages;
 
@@ -581,6 +636,9 @@ pub async fn run(
         kg_panel: KgPanel::default(),
         tool_registry,
         tools_panel: ToolsPanel::default(),
+        skills: skills_catalogue,
+        disabled_skills,
+        skills_panel: SkillsPanel::default(),
         recent_session_ids: Vec::new(),
         approval_rx,
         pending_approval: None,
@@ -697,6 +755,15 @@ struct TuiApp {
     tool_registry: ToolRegistry,
     /// Floating `/tools` panel state (Phase Q).
     tools_panel: ToolsPanel,
+
+    /// Full skill catalogue handed to the runner (Phase X).
+    skills: Vec<Skill>,
+    /// Shared set of disabled skill ids — an `Arc` clone of the
+    /// runner's, so `/skills` toggles take effect on the next turn
+    /// (Phase X).
+    disabled_skills: Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
+    /// Floating `/skills` panel state (Phase X).
+    skills_panel: SkillsPanel,
 
     /// Cache of recent session id-prefixes (`(short_id, title)`) used
     /// by `/load` argument autocomplete (Phase R). Refreshed at
@@ -1096,6 +1163,12 @@ impl TuiApp {
         // Tools panel (Phase Q) swallows every key while open.
         if self.tools_panel.open {
             self.handle_tools_panel_key(key);
+            return;
+        }
+
+        // Skills panel (Phase X) swallows every key while open.
+        if self.skills_panel.open {
+            self.handle_skills_panel_key(key);
             return;
         }
 
@@ -1804,6 +1877,9 @@ impl TuiApp {
             SlashCommand::Tools => {
                 self.open_tools_panel();
             }
+            SlashCommand::Skills => {
+                self.open_skills_panel();
+            }
             SlashCommand::Mouse => {
                 self.toggle_mouse_capture();
             }
@@ -2035,6 +2111,85 @@ impl TuiApp {
         self.tools_panel.entries = entries;
         self.tools_panel.selected = 0;
         self.tools_panel.open = true;
+    }
+
+    /// Snapshot the skill catalogue into a sorted `SkillEntry` list and
+    /// open the panel (Phase X).
+    fn open_skills_panel(&mut self) {
+        let disabled = self
+            .disabled_skills
+            .lock()
+            .map(|d| d.clone())
+            .unwrap_or_default();
+        let mut entries: Vec<SkillEntry> = self
+            .skills
+            .iter()
+            .map(|s| {
+                let triggers = if s.trigger.always_on {
+                    "always-on".to_string()
+                } else if s.trigger.keywords.is_empty() {
+                    "(no keywords)".to_string()
+                } else {
+                    s.trigger
+                        .keywords
+                        .iter()
+                        .take(4)
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                };
+                SkillEntry {
+                    disabled: disabled.contains(&s.id),
+                    id: s.id.clone(),
+                    name: s.name.clone(),
+                    triggers,
+                }
+            })
+            .collect();
+        entries.sort_by(|a, b| a.name.cmp(&b.name));
+        self.skills_panel.entries = entries;
+        self.skills_panel.selected = 0;
+        self.skills_panel.open = true;
+    }
+
+    /// Drive the `/skills` panel: ↑/↓ navigate, space / Enter toggle,
+    /// Esc / q close (Phase X). Toggling flips the shared disabled set
+    /// the runner consults each turn.
+    fn handle_skills_panel_key(&mut self, key: KeyEvent) {
+        use KeyCode::*;
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        match key.code {
+            Esc | Char('q') => self.skills_panel.close(),
+            Char('c') | Char('d') if ctrl => {
+                self.skills_panel.close();
+                self.quit = true;
+            }
+            Up | Char('k') => self.skills_panel.move_up(),
+            Down | Char('j') => self.skills_panel.move_down(),
+            Char(' ') | Enter => {
+                if let Some(entry) = self.skills_panel.entries.get(self.skills_panel.selected) {
+                    let id = entry.id.clone();
+                    let name = entry.name.clone();
+                    let now_disabled = {
+                        let mut set = match self.disabled_skills.lock() {
+                            Ok(s) => s,
+                            Err(_) => return,
+                        };
+                        if set.contains(&id) {
+                            set.remove(&id);
+                            false
+                        } else {
+                            set.insert(id);
+                            true
+                        }
+                    };
+                    self.skills_panel.entries[self.skills_panel.selected].disabled = now_disabled;
+                    let state = if now_disabled { "disabled" } else { "enabled" };
+                    self.push_dim(&format!("  · skill {name} {state}"));
+                }
+            }
+            _ => {}
+        }
     }
 
     /// Drive the `/tools` panel: ↑/↓ navigate, space / Enter toggle,
@@ -2810,6 +2965,9 @@ impl TuiApp {
         if self.tools_panel.open {
             self.render_tools_panel(f);
         }
+        if self.skills_panel.open {
+            self.render_skills_panel(f);
+        }
         if self.pending_approval.is_some() {
             self.render_approval_overlay(f);
         }
@@ -3017,6 +3175,94 @@ impl TuiApp {
         f.render_widget(para, popup);
     }
 
+    /// Draw the `/skills` panel (Phase X) — list of loaded skills with
+    /// an `[on]` / `[off]` switch and their trigger keywords.
+    fn render_skills_panel(&self, f: &mut Frame<'_>) {
+        let area = f.area();
+        let width = (area.width as u32 * 70 / 100).clamp(40, 96) as u16;
+        let height = (area.height as u32 * 60 / 100).clamp(8, 22) as u16;
+        let x = area.x + (area.width.saturating_sub(width)) / 2;
+        let y = area.y + (area.height.saturating_sub(height)) / 2;
+        let popup = Rect::new(x, y, width, height);
+        f.render_widget(ratatui::widgets::Clear, popup);
+
+        let header_style = Style::default()
+            .fg(self.theme.assistant_prefix)
+            .add_modifier(Modifier::BOLD);
+        let dim_style = Style::default().fg(self.theme.dim);
+        let on_style = Style::default()
+            .fg(self.theme.user_prefix)
+            .add_modifier(Modifier::BOLD);
+        let off_style = Style::default()
+            .fg(Color::Red)
+            .add_modifier(Modifier::BOLD);
+        let name_style = Style::default().fg(self.theme.header_fg);
+
+        let total = self.skills_panel.entries.len();
+        let disabled = self
+            .skills_panel
+            .entries
+            .iter()
+            .filter(|e| e.disabled)
+            .count();
+        let title = format!(
+            " /skills · {total} loaded · {} active · {} off ",
+            total - disabled,
+            disabled
+        );
+        let footer = Line::from(Span::styled(
+            " ↑/↓ navigate · Space/Enter toggle · Esc / q close ",
+            dim_style,
+        ));
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(self.theme.suggestion_border))
+            .title(title)
+            .title_alignment(Alignment::Left)
+            .title_bottom(footer);
+
+        let max_rows = popup.height.saturating_sub(2) as usize;
+        let scroll = self
+            .skills_panel
+            .selected
+            .saturating_sub(max_rows.saturating_sub(1));
+        let visible_end = (scroll + max_rows).min(total);
+        let visible = if total == 0 {
+            &[][..]
+        } else {
+            &self.skills_panel.entries[scroll..visible_end]
+        };
+
+        let lines: Vec<Line> = if visible.is_empty() {
+            vec![Line::from(Span::styled(
+                "  (no skills loaded — drop SKILL.md files in ~/.aonyx/skills/)",
+                dim_style,
+            ))]
+        } else {
+            visible
+                .iter()
+                .enumerate()
+                .map(|(i, entry)| {
+                    let selected = scroll + i == self.skills_panel.selected;
+                    let marker = if selected { "▸ " } else { "  " };
+                    let state_span = if entry.disabled {
+                        Span::styled(" [off] ", off_style)
+                    } else {
+                        Span::styled(" [on]  ", on_style)
+                    };
+                    Line::from(vec![
+                        Span::styled(marker, header_style),
+                        Span::styled(format!("{:<18}", entry.name), name_style),
+                        state_span,
+                        Span::styled(format!(" {}", entry.triggers), dim_style),
+                    ])
+                })
+                .collect()
+        };
+        let para = Paragraph::new(Text::from(lines)).block(block);
+        f.render_widget(para, popup);
+    }
+
     /// Draw the inline approval overlay (Phase P) — a compact centered
     /// box showing the tool name, the abbreviated args, the safety
     /// class, and a `[Y/n]` prompt.
@@ -3168,6 +3414,7 @@ const HELP_LINES: &[&str] = &[
     "  /load /switch <id>   switch to a session by id prefix (Phase L)",
     "  /kg /palace          open the memory-palace visualization (Phase O)",
     "  /tools               enable / disable registered tools live (Phase Q)",
+    "  /skills              enable / disable loaded skills live (Phase X)",
     "  /mouse /select       toggle mouse capture (off = native text selection, Phase U)",
     "  /ingest <path>       add a local file to the project palace (Phase V)",
     "  /editor /e           legacy-mode only for now",

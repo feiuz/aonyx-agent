@@ -87,6 +87,8 @@ pub enum SlashCommand {
     /// Ingest a local file into the project palace as chunks
     /// (Phase V). TUI-only.
     Ingest(Option<String>),
+    /// Open the floating skills panel (Phase X). TUI-only.
+    Skills,
 }
 
 impl SlashCommand {
@@ -117,6 +119,7 @@ impl SlashCommand {
             "/tools" => Some(Self::Tools),
             "/mouse" | "/select" => Some(Self::Mouse),
             "/ingest" => Some(Self::Ingest(rest.map(str::to_string))),
+            "/skills" => Some(Self::Skills),
             _ => None,
         }
     }
@@ -382,6 +385,11 @@ impl InteractiveSession {
             }
             SlashCommand::Ingest(_) => {
                 out.write_all(b"\x1b[90m/ingest runs in TUI mode (aonyx --tui)\x1b[0m\n")
+                    .await?;
+                Ok(true)
+            }
+            SlashCommand::Skills => {
+                out.write_all(b"\x1b[90m/skills runs in TUI mode (aonyx --tui)\x1b[0m\n")
                     .await?;
                 Ok(true)
             }

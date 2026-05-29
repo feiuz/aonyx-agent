@@ -104,6 +104,10 @@ pub struct AgentRunner {
     provider: Arc<dyn LlmProvider>,
     tools: ToolRegistry,
     skills: Vec<Skill>,
+    /// Skill ids the user has switched off for this session — shared
+    /// behind an `Arc<Mutex<_>>` so the TUI `/skills` panel (Phase X)
+    /// can flip them live and the next turn picks up the change.
+    disabled_skills: Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
     project: Option<String>,
     approval: ApprovalPolicy,
     model: String,
@@ -121,11 +125,21 @@ impl AgentRunner {
             provider,
             tools,
             skills: Vec::new(),
+            disabled_skills: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
             project: None,
             approval: ApprovalPolicy::default(),
             model: model.into(),
             max_iterations: 10,
         }
+    }
+
+    /// Share a live skill-toggle set with the caller. Skill ids present
+    /// in the set are skipped during per-turn matching, letting the TUI
+    /// enable / disable skills mid-session (Phase X).
+    pub fn skill_toggle_handle(
+        &self,
+    ) -> Arc<std::sync::Mutex<std::collections::HashSet<String>>> {
+        Arc::clone(&self.disabled_skills)
     }
 
     /// Override the approval policy.
@@ -180,7 +194,23 @@ impl AgentRunner {
             .map(|m| m.content.as_str())
             .unwrap_or("");
 
-        let engine = SkillEngine::new(self.skills.clone());
+        // Phase X — drop skills the user toggled off before matching.
+        let disabled = self
+            .disabled_skills
+            .lock()
+            .map(|d| d.clone())
+            .unwrap_or_default();
+        let live_skills: Vec<Skill> = self
+            .skills
+            .iter()
+            .filter(|s| !disabled.contains(&s.id))
+            .cloned()
+            .collect();
+        if live_skills.is_empty() {
+            return;
+        }
+
+        let engine = SkillEngine::new(live_skills);
         let active = engine.match_active(latest_user, self.project.as_deref());
         if active.is_empty() {
             return;
@@ -462,6 +492,71 @@ mod tests {
             out.push(ev);
         }
         out
+    }
+
+    fn always_on_skill(id: &str, body: &str) -> Skill {
+        let mut s = Skill {
+            id: id.to_string(),
+            name: id.to_string(),
+            enabled: true,
+            tools: Vec::new(),
+            trigger: Default::default(),
+            body: body.to_string(),
+        };
+        s.trigger.always_on = true;
+        s
+    }
+
+    #[test]
+    fn inject_active_skills_adds_an_always_on_skill() {
+        let runner = AgentRunner::new(
+            Arc::new(FakeProvider::new(vec![])),
+            ToolRegistry::default_set(),
+            "any-model",
+        )
+        .with_skills(vec![always_on_skill("greeter", "ALWAYS GREET")]);
+        let mut messages = vec![Message::new(Role::User, "hi")];
+        runner.inject_active_skills(&mut messages);
+        assert_eq!(messages[0].role, Role::System);
+        assert!(messages[0].content.contains("ALWAYS GREET"));
+    }
+
+    #[test]
+    fn disabled_skill_is_not_injected() {
+        let runner = AgentRunner::new(
+            Arc::new(FakeProvider::new(vec![])),
+            ToolRegistry::default_set(),
+            "any-model",
+        )
+        .with_skills(vec![always_on_skill("greeter", "ALWAYS GREET")]);
+        // Toggle the skill off through the shared handle.
+        runner
+            .skill_toggle_handle()
+            .lock()
+            .unwrap()
+            .insert("greeter".to_string());
+        let mut messages = vec![Message::new(Role::User, "hi")];
+        runner.inject_active_skills(&mut messages);
+        // No system block injected; the lone user message stands.
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].role, Role::User);
+    }
+
+    #[test]
+    fn re_enabling_a_skill_restores_injection() {
+        let runner = AgentRunner::new(
+            Arc::new(FakeProvider::new(vec![])),
+            ToolRegistry::default_set(),
+            "any-model",
+        )
+        .with_skills(vec![always_on_skill("greeter", "ALWAYS GREET")]);
+        let handle = runner.skill_toggle_handle();
+        handle.lock().unwrap().insert("greeter".to_string());
+        handle.lock().unwrap().remove("greeter");
+        let mut messages = vec![Message::new(Role::User, "hi")];
+        runner.inject_active_skills(&mut messages);
+        assert_eq!(messages[0].role, Role::System);
+        assert!(messages[0].content.contains("ALWAYS GREET"));
     }
 
     #[tokio::test]
