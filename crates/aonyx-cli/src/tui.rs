@@ -39,6 +39,7 @@ use aonyx_agent::{AgentRunner, ApprovalPolicy, TurnEvent};
 use aonyx_core::{LlmProvider, MemoryStore, Message, Role, SafetyClass, ToolCall};
 use async_trait::async_trait;
 use aonyx_memory::{
+    chunks::{Chunk, ChunksStore},
     kg::{Entity, EntityId, KgStore, Relation},
     Palace, SessionId, SessionStore, SqliteSessionStore,
 };
@@ -93,6 +94,11 @@ const UNIFIED_DIFF_MAX_LINES: usize = 18;
 /// (Phase G).
 const UNIFIED_DIFF_CONTEXT: usize = 1;
 
+/// Soft char cap per `/ingest` chunk (Phase V). Paragraph boundaries are
+/// preferred — we accumulate paragraphs until the next one would push
+/// past this limit, then flush.
+const INGEST_CHUNK_MAX_CHARS: usize = 2_000;
+
 const SLASH_CANDIDATES: &[&str] = &[
     "/quit",
     "/clear",
@@ -111,6 +117,7 @@ const SLASH_CANDIDATES: &[&str] = &[
     "/kg",
     "/tools",
     "/mouse",
+    "/ingest",
     "/editor",
     "/init",
 ];
@@ -454,6 +461,11 @@ fn build_palette_entries() -> Vec<PaletteEntry> {
             label: "/mouse".into(),
             hint: "Toggle mouse capture (off = native drag-to-select)".into(),
             action: PaletteAction::Slash(SlashCommand::Mouse),
+        },
+        PaletteEntry {
+            label: "/ingest".into(),
+            hint: "Ingest a local file into the project palace".into(),
+            action: PaletteAction::Slash(SlashCommand::Ingest(None)),
         },
         PaletteEntry {
             label: "/quit".into(),
@@ -1206,7 +1218,7 @@ impl TuiApp {
     /// Return the autocomplete pool for the argument of a known slash
     /// command (Phase R). Empty vec when the command has no static
     /// arg domain (`/help`, `/clear`, …).
-    fn slash_arg_pool(&self, cmd: &str) -> Vec<String> {
+    fn slash_arg_pool(&mut self, cmd: &str) -> Vec<String> {
         match cmd {
             "themes" | "theme" | "t" => theme::available_names()
                 .into_iter()
@@ -1217,6 +1229,10 @@ impl TuiApp {
                 .iter()
                 .map(|(id, _)| id.clone())
                 .collect(),
+            // Phase V — `/ingest <path>` reuses the @-style file cache
+            // so the user can fuzzy-pick the target without typing the
+            // path by hand.
+            "ingest" => self.file_candidates(),
             _ => Vec::new(),
         }
     }
@@ -1783,6 +1799,13 @@ impl TuiApp {
             SlashCommand::Mouse => {
                 self.toggle_mouse_capture();
             }
+            SlashCommand::Ingest(target) => {
+                let Some(path) = target.filter(|s| !s.trim().is_empty()) else {
+                    self.push_dim("usage: /ingest <path> — adds the file to the project palace");
+                    return;
+                };
+                self.ingest_file(path.trim()).await;
+            }
             SlashCommand::Undo => match aonyx_tools::undo::pop_last_snapshot() {
                 Ok(Some(snap)) => match aonyx_tools::undo::restore(&snap) {
                     Ok(()) => {
@@ -1857,6 +1880,41 @@ impl TuiApp {
             }
             _ => {}
         }
+    }
+
+    /// Read a local file, split it into paragraph-friendly chunks, and
+    /// append every chunk to the project palace (Phase V). Surfaces a
+    /// one-line summary in the viewport.
+    async fn ingest_file(&mut self, path: &str) {
+        let text = match tokio::fs::read_to_string(path).await {
+            Ok(t) => t,
+            Err(e) => {
+                self.push_line(error_line(format!("ingest {path}: {e}")));
+                return;
+            }
+        };
+        if text.trim().is_empty() {
+            self.push_dim(&format!("ingest {path}: (empty file — nothing to add)"));
+            return;
+        }
+        let kind = ingest_kind_from_path(path);
+        let chunks = split_into_chunks(&text, INGEST_CHUNK_MAX_CHARS);
+        let chunk_count = chunks.len();
+        let mut appended = 0usize;
+        for content in chunks {
+            let chunk = Chunk::new(&self.project_slug, path, content).with_kind(kind);
+            match self.palace.chunks.append(chunk).await {
+                Ok(_) => appended += 1,
+                Err(e) => {
+                    self.push_line(error_line(format!("ingest chunk: {e}")));
+                }
+            }
+        }
+        let total_chars = text.chars().count();
+        self.push_dim(&format!(
+            "📥 ingested {path} → {appended}/{chunk_count} chunk(s) · kind={kind} · {} chars",
+            total_chars
+        ));
     }
 
     /// Flip terminal mouse capture on/off so the host terminal can do
@@ -2542,6 +2600,7 @@ impl TuiApp {
                 Some(Trigger::SlashArg(cmd)) => match cmd.as_str() {
                     "themes" | "theme" | "t" => "themes",
                     "load" | "switch" => "sessions",
+                    "ingest" => "files",
                     _ => "args",
                 },
                 None => "",
@@ -3052,6 +3111,7 @@ const HELP_LINES: &[&str] = &[
     "  /kg /palace          open the memory-palace visualization (Phase O)",
     "  /tools               enable / disable registered tools live (Phase Q)",
     "  /mouse /select       toggle mouse capture (off = native text selection, Phase U)",
+    "  /ingest <path>       add a local file to the project palace (Phase V)",
     "  /editor /e           legacy-mode only for now",
     "  /init                drop an agent.yaml in the project root",
     "inline:",
@@ -3206,6 +3266,70 @@ fn cursor_byte_offset(textarea: &TextArea<'_>) -> usize {
 /// Returns the trigger kind, its byte position, and the substring between it
 /// and the cursor (the active query). Bails out when whitespace is reached
 /// before finding a trigger so an `@` mid-sentence does not fire.
+/// Split `text` into paragraph-friendly chunks for `/ingest`
+/// (Phase V). Joins adjacent paragraphs into the same chunk while
+/// they fit under `max_chars`, flushes once the next paragraph would
+/// blow the budget. Single paragraphs longer than `max_chars` are
+/// emitted as their own (over-budget) chunk rather than being split
+/// mid-sentence.
+fn split_into_chunks(text: &str, max_chars: usize) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut current = String::new();
+    for para in text.split("\n\n") {
+        let para = para.trim();
+        if para.is_empty() {
+            continue;
+        }
+        if current.is_empty() {
+            current.push_str(para);
+        } else if current.chars().count() + 2 + para.chars().count() > max_chars {
+            out.push(std::mem::take(&mut current));
+            current.push_str(para);
+        } else {
+            current.push_str("\n\n");
+            current.push_str(para);
+        }
+    }
+    if !current.is_empty() {
+        out.push(current);
+    }
+    out
+}
+
+/// Pick a `Chunk.kind` from the file extension so search results stay
+/// browsable later (Phase V).
+fn ingest_kind_from_path(path: &str) -> &'static str {
+    let lower = path.to_ascii_lowercase();
+    if lower.ends_with(".md")
+        || lower.ends_with(".markdown")
+        || lower.ends_with(".mdx")
+        || lower.ends_with(".rst")
+    {
+        "doc"
+    } else if lower.ends_with(".txt") || lower.ends_with(".log") {
+        "note"
+    } else if lower.ends_with(".rs")
+        || lower.ends_with(".ts")
+        || lower.ends_with(".js")
+        || lower.ends_with(".tsx")
+        || lower.ends_with(".jsx")
+        || lower.ends_with(".py")
+        || lower.ends_with(".go")
+        || lower.ends_with(".java")
+        || lower.ends_with(".kt")
+        || lower.ends_with(".rb")
+        || lower.ends_with(".php")
+        || lower.ends_with(".c")
+        || lower.ends_with(".h")
+        || lower.ends_with(".cpp")
+        || lower.ends_with(".hpp")
+    {
+        "code"
+    } else {
+        "doc"
+    }
+}
+
 /// Detect `/cmd ` patterns at the start of the current line. Returns
 /// `Some((cmd, arg_pos, query))` when the cursor sits past the command
 /// plus at least one space, where `arg_pos` is the byte offset of the
@@ -3532,6 +3656,54 @@ mod tests {
         p.refilter();
         assert_eq!(p.filtered.len(), 0);
         assert_eq!(p.selected, 0);
+    }
+
+    #[test]
+    fn split_into_chunks_keeps_paragraph_boundaries() {
+        let text = "first para\n\nsecond para\n\nthird para";
+        let chunks = split_into_chunks(text, 1000);
+        // Everything fits under the cap -> one chunk.
+        assert_eq!(chunks.len(), 1);
+        assert!(chunks[0].contains("first para"));
+        assert!(chunks[0].contains("third para"));
+    }
+
+    #[test]
+    fn split_into_chunks_flushes_when_next_paragraph_would_overflow() {
+        // 50 chars per para, cap 70 -> each para in its own chunk.
+        let para = "x".repeat(50);
+        let text = format!("{para}\n\n{para}\n\n{para}");
+        let chunks = split_into_chunks(&text, 70);
+        assert_eq!(chunks.len(), 3);
+    }
+
+    #[test]
+    fn split_into_chunks_drops_empty_paragraphs() {
+        let text = "alpha\n\n\n\nbeta";
+        let chunks = split_into_chunks(text, 1000);
+        assert_eq!(chunks.len(), 1);
+        assert!(chunks[0].contains("alpha"));
+        assert!(chunks[0].contains("beta"));
+    }
+
+    #[test]
+    fn ingest_kind_from_path_picks_doc_for_markdown() {
+        assert_eq!(ingest_kind_from_path("README.md"), "doc");
+        assert_eq!(ingest_kind_from_path("path/to/notes.markdown"), "doc");
+        assert_eq!(ingest_kind_from_path("guide.MDX"), "doc");
+    }
+
+    #[test]
+    fn ingest_kind_from_path_picks_code_for_source_files() {
+        assert_eq!(ingest_kind_from_path("main.rs"), "code");
+        assert_eq!(ingest_kind_from_path("src/lib.py"), "code");
+        assert_eq!(ingest_kind_from_path("app.TS"), "code");
+    }
+
+    #[test]
+    fn ingest_kind_from_path_picks_note_for_plain_text() {
+        assert_eq!(ingest_kind_from_path("scratch.txt"), "note");
+        assert_eq!(ingest_kind_from_path("/var/log/foo.log"), "note");
     }
 
     #[test]

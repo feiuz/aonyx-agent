@@ -82,6 +82,9 @@ pub enum SlashCommand {
     /// Toggle terminal mouse capture so native drag-select / copy works
     /// (Phase U). TUI-only.
     Mouse,
+    /// Ingest a local file into the project palace as chunks
+    /// (Phase V). TUI-only.
+    Ingest(Option<String>),
 }
 
 impl SlashCommand {
@@ -111,6 +114,7 @@ impl SlashCommand {
             "/kg" | "/palace" => Some(Self::Kg),
             "/tools" => Some(Self::Tools),
             "/mouse" | "/select" => Some(Self::Mouse),
+            "/ingest" => Some(Self::Ingest(rest.map(str::to_string))),
             _ => None,
         }
     }
@@ -371,6 +375,11 @@ impl InteractiveSession {
             }
             SlashCommand::Mouse => {
                 out.write_all(b"\x1b[90m/mouse runs in TUI mode (aonyx --tui)\x1b[0m\n")
+                    .await?;
+                Ok(true)
+            }
+            SlashCommand::Ingest(_) => {
+                out.write_all(b"\x1b[90m/ingest runs in TUI mode (aonyx --tui)\x1b[0m\n")
                     .await?;
                 Ok(true)
             }
