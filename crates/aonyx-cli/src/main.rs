@@ -178,7 +178,7 @@ async fn start_interactive(project_path: Option<PathBuf>, use_tui: bool) -> anyh
     let palace = Palace::open(&palace_dir)?;
     let project_slug = project_slug(&project_root);
 
-    let skills = aonyx_skills::builtin_skills();
+    let skills = load_all_skills();
 
     // Cross-run session storage at ~/.aonyx/sessions.db.
     let sessions_db_path = Config::config_dir()?.join("sessions.db");
@@ -336,6 +336,32 @@ fn project_slug(root: &std::path::Path) -> String {
     root.file_name()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_else(|| "session".to_string())
+}
+
+/// Build the active skill catalogue: the four built-ins plus any
+/// user-authored `SKILL.md` / `*.skill.md` files under
+/// `~/.aonyx/skills/` (Phase DD). User skills sharing a built-in `id`
+/// override it, so a user can customise a shipped skill by dropping a
+/// same-id file in their config dir.
+fn load_all_skills() -> Vec<aonyx_skills::Skill> {
+    let builtins = aonyx_skills::builtin_skills();
+    let user_dir = match Config::config_dir() {
+        Ok(d) => d.join("skills"),
+        Err(_) => return builtins,
+    };
+    if !user_dir.is_dir() {
+        return builtins;
+    }
+    match aonyx_skills::SkillLoader::load_dir(&user_dir) {
+        Ok(user_skills) => aonyx_skills::merge_skills(builtins, user_skills),
+        Err(e) => {
+            eprintln!(
+                "aonyx: could not load user skills from {}: {e}",
+                user_dir.display()
+            );
+            builtins
+        }
+    }
 }
 
 fn handle_config(action: ConfigAction) -> anyhow::Result<()> {

@@ -60,6 +60,23 @@ pub fn builtin_skills() -> Vec<Skill> {
         .collect()
 }
 
+/// Merge user-authored skills into a base catalogue (Phase DD).
+///
+/// A user skill whose `id` matches a base skill **overrides** it
+/// (replacing it in place to preserve ordering); otherwise it is
+/// appended. Use this to layer `~/.aonyx/skills/` on top of
+/// [`builtin_skills`].
+pub fn merge_skills(mut base: Vec<Skill>, overlay: Vec<Skill>) -> Vec<Skill> {
+    for s in overlay {
+        if let Some(slot) = base.iter_mut().find(|b| b.id == s.id) {
+            *slot = s;
+        } else {
+            base.push(s);
+        }
+    }
+    base
+}
+
 #[cfg(test)]
 mod lib_tests {
     use super::*;
@@ -79,5 +96,44 @@ mod lib_tests {
                 "incident-response"
             ]
         );
+    }
+
+    fn skill(id: &str, name: &str) -> Skill {
+        Skill {
+            id: id.to_string(),
+            name: name.to_string(),
+            enabled: true,
+            tools: Vec::new(),
+            trigger: Trigger::default(),
+            body: String::new(),
+        }
+    }
+
+    #[test]
+    fn merge_skills_appends_new_ids() {
+        let base = vec![skill("a", "A")];
+        let merged = merge_skills(base, vec![skill("b", "B")]);
+        assert_eq!(merged.len(), 2);
+        assert_eq!(merged[0].id, "a");
+        assert_eq!(merged[1].id, "b");
+    }
+
+    #[test]
+    fn merge_skills_overrides_same_id_in_place() {
+        let base = vec![skill("a", "A original"), skill("b", "B")];
+        let merged = merge_skills(base, vec![skill("a", "A overridden")]);
+        assert_eq!(merged.len(), 2);
+        // Override keeps position 0 and replaces the name.
+        assert_eq!(merged[0].id, "a");
+        assert_eq!(merged[0].name, "A overridden");
+        assert_eq!(merged[1].id, "b");
+    }
+
+    #[test]
+    fn merge_skills_with_empty_overlay_is_identity() {
+        let base = vec![skill("a", "A")];
+        let merged = merge_skills(base, vec![]);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].id, "a");
     }
 }
