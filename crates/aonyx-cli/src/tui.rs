@@ -67,10 +67,18 @@ const MAX_COMPOSER_HEIGHT: u16 = 10;
 const SUGGESTION_LIMIT: usize = 8;
 const FILE_CACHE_LIMIT: usize = 5000;
 const FILE_CACHE_MAX_DEPTH: usize = 8;
-/// Per-side line cap for the diff preview rendered under `fs_edit`/
-/// `fs_write` ToolStart events (F2). Anything beyond is folded into a dim
-/// `(…+N more lines)` marker.
+/// Per-side line cap for the `fs_write` previewed content (F2). Anything
+/// beyond is folded into a dim `(…+N more lines)` marker.
 const DIFF_MAX_LINES: usize = 6;
+
+/// Total line cap for the unified `fs_edit` diff (Phase G). Counts every
+/// rendered row regardless of tag; once exceeded, remaining changes
+/// collapse into a `(…+N more)` summary.
+const UNIFIED_DIFF_MAX_LINES: usize = 18;
+
+/// Context lines emitted around each hunk in the unified `fs_edit` diff
+/// (Phase G).
+const UNIFIED_DIFF_CONTEXT: usize = 1;
 
 const SLASH_CANDIDATES: &[&str] = &[
     "/quit",
@@ -1427,8 +1435,7 @@ impl TuiApp {
                     .get("new_string")
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
-                self.push_diff_lines("- ", old, Color::Red);
-                self.push_diff_lines("+ ", new, Color::Green);
+                self.push_unified_diff(old, new);
             }
             "fs_write" => {
                 let content = args.get("content").and_then(|v| v.as_str()).unwrap_or("");
@@ -1457,6 +1464,92 @@ impl TuiApp {
                 Span::styled(
                     format!("… (+{omitted} more line{})", if omitted == 1 { "" } else { "s" }),
                     Style::default().fg(self.theme.dim).add_modifier(Modifier::ITALIC),
+                ),
+            ]));
+        }
+    }
+
+    /// Render a unified diff between `old` and `new` (Phase G).
+    ///
+    /// Groups changes into hunks with [`UNIFIED_DIFF_CONTEXT`] context lines
+    /// each, separated by a dim `…` marker. Lines are tagged `-` (red),
+    /// `+` (green), or ` ` (dim context). Truncates at
+    /// [`UNIFIED_DIFF_MAX_LINES`] with a trailing `(+N more)` summary so a
+    /// 200-line refactor doesn't flood the viewport.
+    fn push_unified_diff(&mut self, old: &str, new: &str) {
+        use similar::{ChangeTag, TextDiff};
+
+        let frame_style = Style::default().fg(self.theme.dim);
+        let diff = TextDiff::from_lines(old, new);
+        let groups = diff.grouped_ops(UNIFIED_DIFF_CONTEXT);
+
+        if groups.is_empty() {
+            self.push_line(Line::from(vec![
+                Span::styled("  │ ", frame_style),
+                Span::styled(
+                    "(no change)",
+                    Style::default()
+                        .fg(self.theme.dim)
+                        .add_modifier(Modifier::ITALIC),
+                ),
+            ]));
+            return;
+        }
+
+        let mut emitted = 0usize;
+        let mut truncated = 0usize;
+
+        for (i, group) in groups.iter().enumerate() {
+            if i > 0 && emitted < UNIFIED_DIFF_MAX_LINES {
+                self.push_line(Line::from(vec![
+                    Span::styled("  │ ", frame_style),
+                    Span::styled(
+                        "  …",
+                        Style::default()
+                            .fg(self.theme.dim)
+                            .add_modifier(Modifier::ITALIC),
+                    ),
+                ]));
+                emitted += 1;
+            }
+            for op in group {
+                for change in diff.iter_changes(op) {
+                    if emitted >= UNIFIED_DIFF_MAX_LINES {
+                        truncated += 1;
+                        continue;
+                    }
+                    let (prefix, color, bold) = match change.tag() {
+                        ChangeTag::Delete => ("- ", Color::Red, true),
+                        ChangeTag::Insert => ("+ ", Color::Green, true),
+                        ChangeTag::Equal => ("  ", self.theme.dim, false),
+                    };
+                    let text = change.to_string();
+                    let text = text.trim_end_matches(['\n', '\r']);
+                    let mut style = Style::default().fg(color);
+                    if bold {
+                        style = style.add_modifier(Modifier::BOLD);
+                    }
+                    self.push_line(Line::from(vec![
+                        Span::styled("  │ ", frame_style),
+                        Span::styled(prefix, style),
+                        Span::styled(text.to_string(), Style::default().fg(color)),
+                    ]));
+                    emitted += 1;
+                }
+            }
+        }
+
+        if truncated > 0 {
+            self.push_line(Line::from(vec![
+                Span::styled("  │ ", frame_style),
+                Span::styled(
+                    format!(
+                        "… (+{truncated} more change{})",
+                        if truncated == 1 { "" } else { "s" }
+                    ),
+                    Style::default()
+                        .fg(self.theme.dim)
+                        .add_modifier(Modifier::ITALIC),
                 ),
             ]));
         }
