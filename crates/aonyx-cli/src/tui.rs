@@ -57,6 +57,7 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tui_textarea::{CursorMove, TextArea};
 
+use crate::pricing::{self, Pricing};
 use crate::session::SlashCommand;
 use crate::theme::{self, Theme};
 
@@ -364,6 +365,8 @@ pub async fn run(
         .as_deref()
         .map(theme::by_name)
         .unwrap_or(theme::DEFAULT);
+    // Cache pricing once — provider + model can't change mid-session.
+    let cached_pricing = pricing::lookup(&provider_name, &model);
 
     let mut app = TuiApp {
         runner: Arc::new(runner),
@@ -408,6 +411,9 @@ pub async fn run(
         vim_mode: VimMode::Off,
         viewport_rect: None,
         palette_results_rect: None,
+        total_input_tokens: 0,
+        total_output_tokens: 0,
+        pricing: cached_pricing,
         quit: false,
     };
 
@@ -508,6 +514,14 @@ struct TuiApp {
     /// Last drawn rectangle of the palette results pane — used to map a
     /// click to the row index (Phase H).
     palette_results_rect: Option<Rect>,
+
+    /// Cumulative input tokens estimated for this session (Phase K).
+    total_input_tokens: u64,
+    /// Cumulative output tokens estimated for this session (Phase K).
+    total_output_tokens: u64,
+    /// Cached pricing for the active provider+model, looked up once at
+    /// startup. `None` for local / free providers (Phase K).
+    pricing: Option<Pricing>,
 
     quit: bool,
 }
@@ -657,6 +671,11 @@ impl TuiApp {
                     // ones at AssistantMessageEnd.
                     self.assistant_msg_start = Some(self.viewport.len());
                 }
+                // Phase K — accumulate output tokens live as the model
+                // streams.
+                self.total_output_tokens = self
+                    .total_output_tokens
+                    .saturating_add(pricing::estimate_tokens(&text));
                 self.current_assistant_text.push_str(&text);
                 self.append_to_assistant_line(&text);
             }
@@ -1181,6 +1200,15 @@ impl TuiApp {
         let (tx, rx) = mpsc::channel::<TurnEvent>(256);
         let runner = Arc::clone(&self.runner);
         let messages = self.messages.clone();
+        // Phase K — pre-flight estimate of the input tokens the runner
+        // is about to send. The agent loop may grow the messages list
+        // with tool results before sending again, but charging once at
+        // turn start is a sane approximation of the first request.
+        let input_estimate: u64 = messages
+            .iter()
+            .map(|m| pricing::estimate_tokens(&m.content))
+            .sum();
+        self.total_input_tokens = self.total_input_tokens.saturating_add(input_estimate);
         let handle = tokio::spawn(async move { runner.run_streaming(messages, tx).await });
         self.runner_event_rx = Some(rx);
         self.runner_handle = Some(handle);
@@ -1544,6 +1572,31 @@ impl TuiApp {
         )));
     }
 
+    /// Build the `· ~Xk tok · ~$Y.YY` suffix for the status bar.
+    ///
+    /// Stays empty until at least one turn has produced tokens — no
+    /// point staring at `0 tok · <$0.01` during the opening prompt.
+    /// Cost is omitted for providers without pricing (local + claude-
+    /// code).
+    fn cost_marker_string(&self) -> String {
+        let total = self.total_input_tokens + self.total_output_tokens;
+        if total == 0 {
+            return String::new();
+        }
+        let tokens = pricing::format_tokens(total);
+        match self.pricing {
+            Some(p) => {
+                let cost = pricing::estimate_cost(
+                    p,
+                    self.total_input_tokens,
+                    self.total_output_tokens,
+                );
+                format!(" · ~{tokens} tok · ~{}", pricing::format_cost(cost))
+            }
+            None => format!(" · ~{tokens} tok"),
+        }
+    }
+
     /// Render a unified-style diff preview underneath an `fs_edit` /
     /// `fs_write` ToolStart line. F2.
     ///
@@ -1848,6 +1901,9 @@ impl TuiApp {
             Some(tag) => format!(" · vim:{tag}"),
             None => String::new(),
         };
+        // Phase K — token + cost indicator. Cost only shown when we
+        // have a price for this provider/model.
+        let cost_marker = self.cost_marker_string();
         let status_line = if self.runner_active {
             let spinner_idx = self.tick as usize % SPINNER_FRAMES.len();
             let spinner = SPINNER_FRAMES[spinner_idx];
@@ -1860,13 +1916,14 @@ impl TuiApp {
                 ),
                 Span::styled(
                     format!(
-                        "{} · {} · turn {} · running{}{}{} ",
+                        "{} · {} · turn {} · running{}{}{}{} ",
                         self.provider_name,
                         self.model_name,
                         self.turns,
                         details,
                         scroll_marker,
-                        vim_marker
+                        vim_marker,
+                        cost_marker
                     ),
                     Style::default().fg(self.theme.header_fg),
                 ),
@@ -1876,13 +1933,14 @@ impl TuiApp {
                 Span::styled(" ▸ ", Style::default().fg(self.theme.user_prefix)),
                 Span::styled(
                     format!(
-                        "{} · {} · turn {} · idle{}{}{} ",
+                        "{} · {} · turn {} · idle{}{}{}{} ",
                         self.provider_name,
                         self.model_name,
                         self.turns,
                         details,
                         scroll_marker,
-                        vim_marker
+                        vim_marker,
+                        cost_marker
                     ),
                     Style::default().fg(self.theme.status_fg),
                 ),
