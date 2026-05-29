@@ -28,6 +28,7 @@ use clap::{Parser, Subcommand};
 
 mod config;
 mod session;
+mod theme;
 mod tui;
 
 use config::Config;
@@ -219,6 +220,9 @@ async fn start_interactive(project_path: Option<PathBuf>, use_tui: bool) -> anyh
             session_id,
             session_messages,
             session_turns,
+            config.theme.clone(),
+            config.show_thinking,
+            config.desktop_notifications,
         )
         .await;
     }

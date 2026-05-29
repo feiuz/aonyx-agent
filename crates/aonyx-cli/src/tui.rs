@@ -32,7 +32,7 @@
 
 use std::io;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use aonyx_agent::{AgentRunner, ApprovalPolicy, TurnEvent};
 use aonyx_core::{LlmProvider, MemoryStore, Message, Role, SafetyClass};
@@ -58,6 +58,7 @@ use tokio::task::JoinHandle;
 use tui_textarea::{CursorMove, TextArea};
 
 use crate::session::SlashCommand;
+use crate::theme::{self, Theme};
 
 const HISTORY_MAX: usize = 200;
 const VIEWPORT_MAX_LINES: usize = 2000;
@@ -97,10 +98,6 @@ const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦
 /// Pulse frames for in-flight tool dots — small to keep eye-strain low.
 const PULSE_FRAMES: &[&str] = &["●", "◉", "○", "◉"];
 
-/// Status-bar colour cycle: each frame rotates through the palette so the
-/// running indicator feels alive.
-const SPINNER_COLORS: &[Color] = &[Color::Magenta, Color::Cyan, Color::LightBlue, Color::Cyan];
-
 /// Construct + run a TUI session. Returns when the user quits or the
 /// terminal disconnects.
 #[allow(clippy::too_many_arguments)]
@@ -117,6 +114,9 @@ pub async fn run(
     session_id: SessionId,
     session_messages: Vec<Message>,
     session_turns: u32,
+    theme_name: Option<String>,
+    show_thinking: bool,
+    desktop_notifications: bool,
 ) -> anyhow::Result<()> {
     let runner = AgentRunner::new(provider, ToolRegistry::default_set(), model.clone())
         .with_max_iterations(max_iterations)
@@ -135,6 +135,11 @@ pub async fn run(
     composer.set_cursor_line_style(Style::default());
     composer.set_placeholder_text("type a message — Enter to send, Shift+Enter for newline");
 
+    let active_theme = theme_name
+        .as_deref()
+        .map(theme::by_name)
+        .unwrap_or(theme::DEFAULT);
+
     let app = TuiApp {
         runner: Arc::new(runner),
         palace,
@@ -145,6 +150,9 @@ pub async fn run(
         turns: session_turns,
         session_store,
         session_id,
+        theme: active_theme,
+        show_thinking,
+        desktop_notifications,
         composer,
         viewport: vec![Line::from(Span::styled(
             "🦦 Aonyx Agent — Shift+Enter = newline · ↑/↓ history · Esc to quit · /help for commands",
@@ -170,6 +178,7 @@ pub async fn run(
         suggestion_kind: None,
         suggestion_trigger_pos: 0,
         file_cache: None,
+        turn_started_at: None,
         quit: false,
     };
 
@@ -202,6 +211,9 @@ struct TuiApp {
     turns: u32,
     session_store: SqliteSessionStore,
     session_id: SessionId,
+    theme: Theme,
+    show_thinking: bool,
+    desktop_notifications: bool,
 
     composer: TextArea<'static>,
     viewport: Vec<Line<'static>>,
@@ -246,6 +258,9 @@ struct TuiApp {
     suggestion_trigger_pos: usize,
     /// Lazily-populated walk of cwd file paths for `@` suggestions.
     file_cache: Option<Vec<String>>,
+    /// Wall-clock start of the current runner task, used to gate desktop
+    /// notifications on long turns.
+    turn_started_at: Option<Instant>,
 
     quit: bool,
 }
@@ -318,12 +333,24 @@ impl TuiApp {
                             .session_store
                             .update(self.session_id, self.messages.clone(), self.turns)
                             .await;
+                        self.maybe_notify("Aonyx Agent", "Turn finished", Duration::from_secs(5));
                     }
-                    Ok(Err(e)) => self.push_line(error_line(format!("{e}"))),
-                    Err(e) => self.push_line(error_line(format!("join: {e}"))),
+                    Ok(Err(e)) => {
+                        self.maybe_notify("Aonyx Agent (error)", &format!("{e}"), Duration::ZERO);
+                        self.push_line(error_line(format!("{e}")));
+                    }
+                    Err(e) => {
+                        self.maybe_notify(
+                            "Aonyx Agent (error)",
+                            &format!("join: {e}"),
+                            Duration::ZERO,
+                        );
+                        self.push_line(error_line(format!("join: {e}")));
+                    }
                 }
                 self.runner_event_rx = None;
                 self.runner_active = false;
+                self.turn_started_at = None;
                 self.retire_thinking_line();
             }
         }
@@ -358,7 +385,7 @@ impl TuiApp {
         self.viewport.push(Line::from(Span::styled(
             "aonyx>",
             Style::default()
-                .fg(Color::Magenta)
+                .fg(self.theme.assistant_prefix)
                 .add_modifier(Modifier::BOLD),
         )));
 
@@ -465,7 +492,9 @@ impl TuiApp {
         if needs_header {
             self.viewport.push(Line::from(vec![Span::styled(
                 "aonyx> ",
-                Style::default().add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(self.theme.assistant_prefix)
+                    .add_modifier(Modifier::BOLD),
             )]));
         }
 
@@ -500,7 +529,7 @@ impl TuiApp {
         let span = Span::styled(
             "  💭 thinking…",
             Style::default()
-                .fg(Color::Magenta)
+                .fg(self.theme.thinking)
                 .add_modifier(Modifier::ITALIC),
         );
         self.viewport.push(Line::from(span));
@@ -767,7 +796,7 @@ impl TuiApp {
                     "you> ",
                     Style::default()
                         .add_modifier(Modifier::BOLD)
-                        .fg(Color::Green),
+                        .fg(self.theme.user_prefix),
                 ),
                 Span::raw(display_text.clone()),
             ]));
@@ -806,7 +835,7 @@ impl TuiApp {
                 "you> ",
                 Style::default()
                     .add_modifier(Modifier::BOLD)
-                    .fg(Color::Green),
+                    .fg(self.theme.user_prefix),
             ),
             Span::styled(format!("!{cmd}"), Style::default().fg(Color::Yellow)),
         ]));
@@ -836,6 +865,23 @@ impl TuiApp {
         self.runner_event_rx = Some(rx);
         self.runner_handle = Some(handle);
         self.runner_active = true;
+        self.turn_started_at = Some(Instant::now());
+    }
+
+    fn maybe_notify(&self, summary: &str, body: &str, min_elapsed: Duration) {
+        if !self.desktop_notifications {
+            return;
+        }
+        if let Some(started) = self.turn_started_at {
+            if started.elapsed() < min_elapsed {
+                return;
+            }
+        }
+        let _ = notify_rust::Notification::new()
+            .summary(summary)
+            .body(body)
+            .timeout(notify_rust::Timeout::Milliseconds(4000))
+            .show();
     }
 
     async fn handle_slash(&mut self, cmd: SlashCommand) {
@@ -930,8 +976,34 @@ impl TuiApp {
                 self.push_dim(&format!("tool details: {state}"));
             }
             SlashCommand::Thinking => {
-                self.push_dim("reasoning visibility lands in Phase E");
+                self.show_thinking = !self.show_thinking;
+                let state = if self.show_thinking { "on" } else { "off" };
+                self.push_dim(&format!(
+                    "reasoning visibility: {state} (requires a provider that emits thinking blocks)"
+                ));
             }
+            SlashCommand::Themes(target) => match target {
+                Some(name) => {
+                    let new_theme = theme::by_name(&name);
+                    let resolved_to_default = !name.eq_ignore_ascii_case(new_theme.name);
+                    self.theme = new_theme;
+                    if resolved_to_default {
+                        self.push_dim(&format!(
+                            "unknown theme '{name}' — staying on {}",
+                            new_theme.name
+                        ));
+                    } else {
+                        self.push_dim(&format!("theme: {}", new_theme.name));
+                    }
+                }
+                None => {
+                    self.push_dim(&format!(
+                        "active theme: {} · available: {}",
+                        self.theme.name,
+                        theme::available_names().join(" · ")
+                    ));
+                }
+            },
             SlashCommand::Editor => {
                 self.push_dim("`/editor` runs in legacy mode (`aonyx` without --tui) for now");
             }
@@ -1037,7 +1109,11 @@ impl TuiApp {
             }
         }
 
-        let header_color = SPINNER_COLORS[(self.tick / 6) as usize % SPINNER_COLORS.len()];
+        let header_color = if self.runner_active {
+            self.theme.accents[(self.tick / 6) as usize % self.theme.accents.len()]
+        } else {
+            self.theme.header_fg
+        };
         let header = Paragraph::new(Line::from(vec![
             Span::styled(
                 "🦦 Aonyx Agent",
@@ -1047,7 +1123,7 @@ impl TuiApp {
             ),
             Span::styled(
                 format!("  ·  project:{}", self.project_slug),
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(self.theme.dim),
             ),
         ]));
         f.render_widget(header, chunks[0]);
@@ -1088,7 +1164,7 @@ impl TuiApp {
             let popup = Paragraph::new(Text::from(lines)).block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .border_style(Style::default().fg(Color::Magenta))
+                    .border_style(Style::default().fg(self.theme.suggestion_border))
                     .title(title),
             );
             f.render_widget(popup, chunks[2]);
@@ -1097,7 +1173,8 @@ impl TuiApp {
         if self.runner_active {
             let spinner_idx = self.tick as usize % SPINNER_FRAMES.len();
             let spinner = SPINNER_FRAMES[spinner_idx];
-            let pulse_color = SPINNER_COLORS[(self.tick / 3) as usize % SPINNER_COLORS.len()];
+            let pulse_color =
+                self.theme.accents[(self.tick / 3) as usize % self.theme.accents.len()];
             let blocker = Paragraph::new(Line::from(vec![
                 Span::styled(
                     format!("  {spinner} "),
@@ -1107,7 +1184,7 @@ impl TuiApp {
                 ),
                 Span::styled(
                     "runner busy — Esc to quit",
-                    Style::default().fg(Color::DarkGray),
+                    Style::default().fg(self.theme.dim),
                 ),
             ]))
             .block(
@@ -1120,7 +1197,7 @@ impl TuiApp {
             self.composer.set_block(
                 Block::default()
                     .borders(Borders::TOP | Borders::BOTTOM)
-                    .border_style(Style::default().fg(Color::Cyan)),
+                    .border_style(Style::default().fg(self.theme.composer_border)),
             );
             f.render_widget(&self.composer, chunks[3]);
         }
@@ -1138,7 +1215,8 @@ impl TuiApp {
         let status_line = if self.runner_active {
             let spinner_idx = self.tick as usize % SPINNER_FRAMES.len();
             let spinner = SPINNER_FRAMES[spinner_idx];
-            let spin_color = SPINNER_COLORS[(self.tick / 3) as usize % SPINNER_COLORS.len()];
+            let spin_color =
+                self.theme.accents[(self.tick / 3) as usize % self.theme.accents.len()];
             Line::from(vec![
                 Span::styled(
                     format!(" {spinner} "),
@@ -1149,25 +1227,25 @@ impl TuiApp {
                         "{} · {} · turn {} · running{}{} ",
                         self.provider_name, self.model_name, self.turns, details, scroll_marker
                     ),
-                    Style::default().fg(Color::White),
+                    Style::default().fg(self.theme.header_fg),
                 ),
             ])
         } else {
             Line::from(vec![
-                Span::styled(" ▸ ", Style::default().fg(Color::Green)),
+                Span::styled(" ▸ ", Style::default().fg(self.theme.user_prefix)),
                 Span::styled(
                     format!(
                         "{} · {} · turn {} · idle{}{} ",
                         self.provider_name, self.model_name, self.turns, details, scroll_marker
                     ),
-                    Style::default().fg(Color::Gray),
+                    Style::default().fg(self.theme.status_fg),
                 ),
             ])
         };
         let bg = if self.runner_active {
-            Color::Rgb(20, 20, 50)
+            self.theme.status_busy_bg
         } else {
-            Color::Rgb(20, 30, 40)
+            self.theme.status_bg
         };
         let status = Paragraph::new(status_line).style(Style::default().bg(bg));
         f.render_widget(status, chunks[4]);

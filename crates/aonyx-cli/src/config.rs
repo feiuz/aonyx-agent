@@ -63,6 +63,15 @@ pub struct Config {
     /// Maximum agent-loop iterations per user turn.
     #[serde(default = "default_max_iterations")]
     pub max_iterations: usize,
+    /// TUI theme name (`default`, `catppuccin`, `dracula`, `gruvbox`).
+    #[serde(default)]
+    pub theme: Option<String>,
+    /// Show reasoning blocks (when a provider emits them) under each turn.
+    #[serde(default)]
+    pub show_thinking: bool,
+    /// Emit a desktop notification when a turn finishes or errors out.
+    #[serde(default)]
+    pub desktop_notifications: bool,
 }
 
 fn default_max_iterations() -> usize {
@@ -86,6 +95,9 @@ impl Default for Config {
             openrouter_title: None,
             system_prompt: Some(DEFAULT_SYSTEM_PROMPT.to_string()),
             max_iterations: default_max_iterations(),
+            theme: None,
+            show_thinking: false,
+            desktop_notifications: false,
         }
     }
 }
@@ -156,6 +168,9 @@ mod tests {
             openrouter_title: None,
             system_prompt: Some("be quiet".into()),
             max_iterations: 5,
+            theme: Some("dracula".into()),
+            show_thinking: true,
+            desktop_notifications: false,
         };
         let s = toml::to_string(&original).unwrap();
         let parsed: Config = toml::from_str(&s).unwrap();

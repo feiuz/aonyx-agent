@@ -65,6 +65,8 @@ pub enum SlashCommand {
     Editor,
     /// Create a fresh `agent.yaml` in the current project.
     Init,
+    /// Switch the TUI theme (`/themes <name>`); without args lists them.
+    Themes(Option<String>),
 }
 
 impl SlashCommand {
@@ -86,6 +88,7 @@ impl SlashCommand {
             "/thinking" => Some(Self::Thinking),
             "/editor" | "/e" => Some(Self::Editor),
             "/init" => Some(Self::Init),
+            "/themes" | "/theme" | "/t" => Some(Self::Themes(rest.map(str::to_string))),
             _ => None,
         }
     }
@@ -317,6 +320,11 @@ impl InteractiveSession {
             }
             SlashCommand::Editor => {
                 self.run_editor_turn(out).await?;
+                Ok(true)
+            }
+            SlashCommand::Themes(_) => {
+                out.write_all(b"\x1b[90m/themes runs in TUI mode (aonyx --tui)\x1b[0m\n")
+                    .await?;
                 Ok(true)
             }
             SlashCommand::Init => {
