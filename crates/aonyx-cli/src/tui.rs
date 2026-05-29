@@ -41,14 +41,14 @@ use aonyx_skills::Skill;
 use aonyx_tools::ToolRegistry;
 use crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
-    KeyModifiers,
+    KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use ratatui::backend::CrosstermBackend;
-use ratatui::layout::{Alignment, Constraint, Direction, Layout};
+use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
@@ -385,6 +385,8 @@ pub async fn run(
         turn_started_at: None,
         palette: Palette::new(),
         vim_mode: VimMode::Off,
+        viewport_rect: None,
+        palette_results_rect: None,
         quit: false,
     };
 
@@ -474,6 +476,13 @@ struct TuiApp {
     /// Vim editing mode toggle (F3). Off by default.
     vim_mode: VimMode,
 
+    /// Last drawn rectangle of the conversation viewport — used by
+    /// mouse-wheel routing (Phase H).
+    viewport_rect: Option<Rect>,
+    /// Last drawn rectangle of the palette results pane — used to map a
+    /// click to the row index (Phase H).
+    palette_results_rect: Option<Rect>,
+
     quit: bool,
 }
 
@@ -500,7 +509,10 @@ impl TuiApp {
                     Event::Key(key) if key.kind == KeyEventKind::Press => {
                         self.handle_key(key).await;
                     }
-                    Event::Mouse(_) | Event::Resize(_, _) => { /* ignored in B1 */ }
+                    Event::Mouse(m) => {
+                        self.handle_mouse(m).await;
+                    }
+                    Event::Resize(_, _) => { /* ratatui re-renders next frame */ }
                     _ => {}
                 }
             }
@@ -1326,6 +1338,54 @@ impl TuiApp {
         }
     }
 
+    /// Route a mouse event (Phase H).
+    ///
+    /// * Scroll wheel — always scrolls the viewport, 3 lines per tick.
+    ///   `ScrollDown` re-arms `auto_scroll` if it reaches the bottom.
+    /// * Left click inside the palette results pane — selects the
+    ///   corresponding row and dispatches it (single-click accept, like
+    ///   VS Code's Cmd+P). Clicks outside the palette close it.
+    async fn handle_mouse(&mut self, m: MouseEvent) {
+        match m.kind {
+            MouseEventKind::ScrollUp => {
+                self.auto_scroll = false;
+                self.scroll = self.scroll.saturating_sub(3);
+            }
+            MouseEventKind::ScrollDown => {
+                self.scroll = self.scroll.saturating_add(3);
+                self.clamp_scroll_and_maybe_resume_auto();
+            }
+            MouseEventKind::Down(MouseButton::Left) if self.palette.open => {
+                if let Some(rect) = self.palette_results_rect {
+                    if rect_contains(rect, m.column, m.row) {
+                        let row_in_pane = m.row.saturating_sub(rect.y) as usize;
+                        // The results pane scrolls so the selected row sits
+                        // within the visible window — mirror that math to
+                        // map a y-offset back to a `filtered` index.
+                        let max_rows = rect.height as usize;
+                        let scroll = self
+                            .palette
+                            .selected
+                            .saturating_sub(max_rows.saturating_sub(1));
+                        let target = scroll + row_in_pane;
+                        if target < self.palette.filtered.len() {
+                            self.palette.selected = target;
+                            let action = self.palette.current().map(|e| e.action.clone());
+                            self.palette.close();
+                            if let Some(action) = action {
+                                self.dispatch_palette_action(action).await;
+                            }
+                        }
+                    } else {
+                        // Clicking outside the palette dismisses it.
+                        self.palette.close();
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
     /// Drive vim Normal mode (F3): viewport navigation while the composer
     /// is parked. `i`/`a` returns to Insert, `q` quits the session.
     fn handle_vim_normal_key(&mut self, key: KeyEvent) {
@@ -1582,6 +1642,7 @@ impl TuiApp {
             .split(f.area());
 
         self.viewport_height = chunks[1].height;
+        self.viewport_rect = Some(chunks[1]);
 
         if self.auto_scroll {
             self.scroll = self.max_scroll();
@@ -1766,7 +1827,7 @@ impl TuiApp {
     }
 
     /// Draw the floating Ctrl+P command palette centered on screen.
-    fn render_palette(&self, f: &mut Frame<'_>) {
+    fn render_palette(&mut self, f: &mut Frame<'_>) {
         let area = f.area();
         // Centered 60% wide × 50% tall, clamped so it fits small terminals.
         let width = (area.width as u32 * 60 / 100).clamp(40, 90) as u16;
@@ -1867,7 +1928,26 @@ impl TuiApp {
                 .title_bottom(footer),
         );
         f.render_widget(results, inner[1]);
+        // Cache rects for mouse hit-testing (Phase H). The results area is
+        // the inner content of the block — strip 1 cell on each side for
+        // the border.
+        self.palette_results_rect = Some(rect_shrink(inner[1], 1));
     }
+}
+
+/// Shrink `r` by `n` cells on every side, clamped to zero. Used to map a
+/// `Block`-bordered widget back to its content area for mouse hit-testing.
+fn rect_shrink(r: Rect, n: u16) -> Rect {
+    let x = r.x.saturating_add(n);
+    let y = r.y.saturating_add(n);
+    let width = r.width.saturating_sub(n.saturating_mul(2));
+    let height = r.height.saturating_sub(n.saturating_mul(2));
+    Rect::new(x, y, width, height)
+}
+
+/// Return `true` when `(x, y)` falls inside the rectangle.
+fn rect_contains(r: Rect, x: u16, y: u16) -> bool {
+    x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height
 }
 
 const HELP_LINES: &[&str] = &[
@@ -2307,6 +2387,31 @@ mod tests {
         p.refilter();
         assert_eq!(p.filtered.len(), 0);
         assert_eq!(p.selected, 0);
+    }
+
+    #[test]
+    fn rect_contains_inclusive_on_low_corner_exclusive_on_high() {
+        let r = Rect::new(10, 5, 4, 3); // covers x in [10,14), y in [5,8)
+        assert!(rect_contains(r, 10, 5));
+        assert!(rect_contains(r, 13, 7));
+        assert!(!rect_contains(r, 14, 5));
+        assert!(!rect_contains(r, 10, 8));
+        assert!(!rect_contains(r, 9, 5));
+    }
+
+    #[test]
+    fn rect_shrink_strips_n_cells_each_side() {
+        let r = Rect::new(10, 5, 20, 10);
+        let inner = rect_shrink(r, 1);
+        assert_eq!(inner, Rect::new(11, 6, 18, 8));
+    }
+
+    #[test]
+    fn rect_shrink_clamps_to_zero_when_too_small() {
+        let r = Rect::new(0, 0, 2, 2);
+        let inner = rect_shrink(r, 4);
+        assert_eq!(inner.width, 0);
+        assert_eq!(inner.height, 0);
     }
 
     #[test]
