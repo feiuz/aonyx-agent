@@ -142,14 +142,19 @@ async fn main() -> anyhow::Result<()> {
             }
             Ok(())
         }
-        Some(Command::Mcp { action }) => {
-            match action {
-                McpAction::Serve { port } => {
-                    println!("aonyx mcp serve port={port:?} — coming in V1.1");
+        Some(Command::Mcp { action }) => match action {
+            McpAction::Serve { port } => {
+                if port.is_some() {
+                    eprintln!("aonyx: TCP transport not yet supported — serving over stdio");
                 }
+                // Phase HH — expose the built-in tool catalogue over the
+                // stdio MCP transport. Blocks until stdin closes.
+                eprintln!("aonyx: MCP server ready on stdio (fs / bash / git)");
+                aonyx_mcp::server::serve_default()
+                    .await
+                    .map_err(|e| anyhow::anyhow!("mcp serve: {e}"))
             }
-            Ok(())
-        }
+        },
     }
 }
 
@@ -157,7 +162,12 @@ fn init_tracing(verbose: bool) {
     let level = if verbose { "debug" } else { "info" };
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(level));
-    tracing_subscriber::fmt().with_env_filter(filter).init();
+    // Logs go to stderr so they never corrupt stdout — which doubles as
+    // the JSON-RPC channel under `aonyx mcp serve` (Phase HH).
+    tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_writer(std::io::stderr)
+        .init();
 }
 
 async fn start_interactive(project_path: Option<PathBuf>, use_tui: bool) -> anyhow::Result<()> {
