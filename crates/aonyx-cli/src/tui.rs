@@ -98,6 +98,167 @@ const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦
 /// Pulse frames for in-flight tool dots — small to keep eye-strain low.
 const PULSE_FRAMES: &[&str] = &["●", "◉", "○", "◉"];
 
+/// What happens when the user accepts a palette entry. Carries enough
+/// information to be dispatched without re-parsing anything.
+#[derive(Debug, Clone)]
+enum PaletteAction {
+    /// Run an existing slash command.
+    Slash(SlashCommand),
+    /// Switch to a bundled theme by name.
+    SwitchTheme(String),
+}
+
+/// One row in the Ctrl+P palette.
+#[derive(Debug, Clone)]
+struct PaletteEntry {
+    /// Bold label shown on the left.
+    label: String,
+    /// Dim hint shown on the right.
+    hint: String,
+    /// What to dispatch when accepted.
+    action: PaletteAction,
+}
+
+/// Floating Ctrl+P command palette state.
+#[derive(Debug)]
+struct Palette {
+    /// `true` while the overlay is visible.
+    open: bool,
+    /// User-typed filter.
+    query: String,
+    /// Static list of every action surfaced to the palette.
+    entries: Vec<PaletteEntry>,
+    /// Indices into `entries` matching `query` (ranked by score).
+    filtered: Vec<usize>,
+    /// Index inside `filtered` of the highlighted row.
+    selected: usize,
+}
+
+impl Palette {
+    fn new() -> Self {
+        let entries = build_palette_entries();
+        let filtered = (0..entries.len()).collect();
+        Self {
+            open: false,
+            query: String::new(),
+            entries,
+            filtered,
+            selected: 0,
+        }
+    }
+
+    fn show(&mut self) {
+        self.open = true;
+        self.query.clear();
+        self.filtered = (0..self.entries.len()).collect();
+        self.selected = 0;
+    }
+
+    fn close(&mut self) {
+        self.open = false;
+        self.query.clear();
+        self.selected = 0;
+    }
+
+    fn refilter(&mut self) {
+        if self.query.is_empty() {
+            self.filtered = (0..self.entries.len()).collect();
+        } else {
+            let labels: Vec<String> = self
+                .entries
+                .iter()
+                .map(|e| format!("{} {}", e.label, e.hint))
+                .collect();
+            self.filtered = fuzzy_top_idx(&self.query, &labels, self.entries.len());
+        }
+        if self.selected >= self.filtered.len() {
+            self.selected = 0;
+        }
+    }
+
+    fn move_up(&mut self) {
+        if self.selected > 0 {
+            self.selected -= 1;
+        }
+    }
+
+    fn move_down(&mut self) {
+        if self.selected + 1 < self.filtered.len() {
+            self.selected += 1;
+        }
+    }
+
+    fn current(&self) -> Option<&PaletteEntry> {
+        self.filtered
+            .get(self.selected)
+            .and_then(|i| self.entries.get(*i))
+    }
+}
+
+/// Static catalogue of palette actions. Order = default sort when no query.
+fn build_palette_entries() -> Vec<PaletteEntry> {
+    let mut out = vec![
+        PaletteEntry {
+            label: "/new".into(),
+            hint: "Start a fresh conversation".into(),
+            action: PaletteAction::Slash(SlashCommand::New),
+        },
+        PaletteEntry {
+            label: "/help".into(),
+            hint: "Show every command".into(),
+            action: PaletteAction::Slash(SlashCommand::Help),
+        },
+        PaletteEntry {
+            label: "/models".into(),
+            hint: "Active provider + model".into(),
+            action: PaletteAction::Slash(SlashCommand::Models),
+        },
+        PaletteEntry {
+            label: "/sessions".into(),
+            hint: "List sessions for this project".into(),
+            action: PaletteAction::Slash(SlashCommand::Sessions),
+        },
+        PaletteEntry {
+            label: "/export".into(),
+            hint: "Export conversation to Markdown".into(),
+            action: PaletteAction::Slash(SlashCommand::Export(None)),
+        },
+        PaletteEntry {
+            label: "/details".into(),
+            hint: "Toggle verbose tool output".into(),
+            action: PaletteAction::Slash(SlashCommand::Details),
+        },
+        PaletteEntry {
+            label: "/thinking".into(),
+            hint: "Toggle reasoning visibility".into(),
+            action: PaletteAction::Slash(SlashCommand::Thinking),
+        },
+        PaletteEntry {
+            label: "/editor".into(),
+            hint: "Open $EDITOR (legacy mode)".into(),
+            action: PaletteAction::Slash(SlashCommand::Editor),
+        },
+        PaletteEntry {
+            label: "/init".into(),
+            hint: "Drop agent.yaml in project root".into(),
+            action: PaletteAction::Slash(SlashCommand::Init),
+        },
+        PaletteEntry {
+            label: "/quit".into(),
+            hint: "Exit Aonyx".into(),
+            action: PaletteAction::Slash(SlashCommand::Quit),
+        },
+    ];
+    for name in theme::available_names() {
+        out.push(PaletteEntry {
+            label: format!("Theme: {name}"),
+            hint: format!("Switch palette to {name}"),
+            action: PaletteAction::SwitchTheme(name.to_string()),
+        });
+    }
+    out
+}
+
 /// Construct + run a TUI session. Returns when the user quits or the
 /// terminal disconnects.
 #[allow(clippy::too_many_arguments)]
@@ -179,6 +340,7 @@ pub async fn run(
         suggestion_trigger_pos: 0,
         file_cache: None,
         turn_started_at: None,
+        palette: Palette::new(),
         quit: false,
     };
 
@@ -261,6 +423,9 @@ struct TuiApp {
     /// Wall-clock start of the current runner task, used to gate desktop
     /// notifications on long turns.
     turn_started_at: Option<Instant>,
+
+    /// Floating Ctrl+P palette (F1).
+    palette: Palette,
 
     quit: bool,
 }
@@ -558,7 +723,18 @@ impl TuiApp {
         let alt = key.modifiers.contains(KeyModifiers::ALT);
         let suggestions_open = !self.suggestions.is_empty();
 
+        // Palette swallows every key while open. Handled first so Ctrl+C/Esc
+        // don't quit the session by accident when the palette is showing.
+        if self.palette.open {
+            self.handle_palette_key(key).await;
+            return;
+        }
+
         match key.code {
+            // Ctrl+P opens the floating command palette (F1).
+            Char('p') if ctrl => {
+                self.palette.show();
+            }
             // While the suggestions popup is open, Esc just closes it.
             Esc if suggestions_open => {
                 self.dismiss_suggestions();
@@ -1032,6 +1208,50 @@ impl TuiApp {
         }
     }
 
+    /// Drive the floating Ctrl+P palette: typing filters, ↑/↓ navigate,
+    /// Enter accepts, Esc / Ctrl+P closes.
+    async fn handle_palette_key(&mut self, key: KeyEvent) {
+        use KeyCode::*;
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        match key.code {
+            Esc => self.palette.close(),
+            Char('p') if ctrl => self.palette.close(),
+            Char('c') | Char('d') if ctrl => {
+                self.palette.close();
+                self.quit = true;
+            }
+            Up => self.palette.move_up(),
+            Down => self.palette.move_down(),
+            Enter => {
+                let action = self.palette.current().map(|e| e.action.clone());
+                self.palette.close();
+                if let Some(action) = action {
+                    self.dispatch_palette_action(action).await;
+                }
+            }
+            Backspace => {
+                self.palette.query.pop();
+                self.palette.refilter();
+            }
+            Char(c) if !ctrl => {
+                self.palette.query.push(c);
+                self.palette.refilter();
+            }
+            _ => {}
+        }
+    }
+
+    /// Execute a `PaletteAction` exactly as if the user had typed the
+    /// equivalent slash command.
+    async fn dispatch_palette_action(&mut self, action: PaletteAction) {
+        match action {
+            PaletteAction::Slash(cmd) => self.handle_slash(cmd).await,
+            PaletteAction::SwitchTheme(name) => {
+                self.handle_slash(SlashCommand::Themes(Some(name))).await;
+            }
+        }
+    }
+
     async fn export_markdown(&self, path: &std::path::Path) -> std::io::Result<()> {
         let mut out = String::new();
         out.push_str(&format!(
@@ -1249,6 +1469,116 @@ impl TuiApp {
         };
         let status = Paragraph::new(status_line).style(Style::default().bg(bg));
         f.render_widget(status, chunks[4]);
+
+        // Palette floats on top of everything else — rendered last so it
+        // wins the z-order.
+        if self.palette.open {
+            self.render_palette(f);
+        }
+    }
+
+    /// Draw the floating Ctrl+P command palette centered on screen.
+    fn render_palette(&self, f: &mut Frame<'_>) {
+        let area = f.area();
+        // Centered 60% wide × 50% tall, clamped so it fits small terminals.
+        let width = (area.width as u32 * 60 / 100).clamp(40, 90) as u16;
+        let height = (area.height as u32 * 50 / 100).clamp(8, 20) as u16;
+        let x = area.x + (area.width.saturating_sub(width)) / 2;
+        let y = area.y + (area.height.saturating_sub(height)) / 2;
+        let popup = ratatui::layout::Rect::new(x, y, width, height);
+
+        // Clear the underlying region so transparent borders don't leak.
+        f.render_widget(ratatui::widgets::Clear, popup);
+
+        let inner = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(3), Constraint::Min(1)])
+            .split(popup);
+
+        // Query input on top.
+        let query_text = if self.palette.query.is_empty() {
+            "type to filter…".to_string()
+        } else {
+            self.palette.query.clone()
+        };
+        let query_style = if self.palette.query.is_empty() {
+            Style::default().fg(self.theme.dim)
+        } else {
+            Style::default()
+                .fg(self.theme.header_fg)
+                .add_modifier(Modifier::BOLD)
+        };
+        let count_label = format!(
+            " {} / {} ",
+            self.palette.filtered.len(),
+            self.palette.entries.len()
+        );
+        let query = Paragraph::new(Line::from(vec![
+            Span::styled("  › ", Style::default().fg(self.theme.user_prefix)),
+            Span::styled(query_text, query_style),
+        ]))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(self.theme.suggestion_border))
+                .title(" Ctrl+P · Command palette ")
+                .title_alignment(Alignment::Left)
+                .title_bottom(Line::from(Span::styled(
+                    count_label,
+                    Style::default().fg(self.theme.dim),
+                )))
+                .title_alignment(Alignment::Left),
+        );
+        f.render_widget(query, inner[0]);
+
+        // Results.
+        let max_rows = inner[1].height.saturating_sub(2) as usize;
+        let total = self.palette.filtered.len();
+        let scroll = self.palette.selected.saturating_sub(max_rows.saturating_sub(1));
+        let visible_end = (scroll + max_rows).min(total);
+        let visible = &self.palette.filtered[scroll..visible_end];
+
+        let lines: Vec<Line> = if visible.is_empty() {
+            vec![Line::from(Span::styled(
+                "  (no match)",
+                Style::default().fg(self.theme.dim),
+            ))]
+        } else {
+            visible
+                .iter()
+                .enumerate()
+                .map(|(i, idx)| {
+                    let entry = &self.palette.entries[*idx];
+                    let selected = scroll + i == self.palette.selected;
+                    let marker = if selected { "▸ " } else { "  " };
+                    let label_style = if selected {
+                        Style::default()
+                            .fg(self.theme.assistant_prefix)
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(self.theme.header_fg)
+                    };
+                    let hint_style = Style::default().fg(self.theme.dim);
+                    Line::from(vec![
+                        Span::styled(marker, label_style),
+                        Span::styled(entry.label.clone(), label_style),
+                        Span::raw("  "),
+                        Span::styled(entry.hint.clone(), hint_style),
+                    ])
+                })
+                .collect()
+        };
+        let footer = Line::from(Span::styled(
+            " ↑/↓ navigate · Enter accept · Esc close ",
+            Style::default().fg(self.theme.dim),
+        ));
+        let results = Paragraph::new(Text::from(lines)).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(self.theme.suggestion_border))
+                .title_bottom(footer),
+        );
+        f.render_widget(results, inner[1]);
     }
 }
 
@@ -1267,7 +1597,7 @@ const HELP_LINES: &[&str] = &[
     "inline:",
     "  @path/to/file.rs     load the file into the next turn's context",
     "  !ls / !git status    run a shell command locally and feed output back",
-    "keys: Shift+Enter newline · ↑/↓ history · PgUp/PgDn scroll · Esc quit",
+    "keys: Ctrl+P palette · Shift+Enter newline · ↑/↓ history · PgUp/PgDn scroll · Esc quit",
 ];
 
 /// Parse `@path` tokens out of the user message.
@@ -1445,6 +1775,31 @@ fn fuzzy_top(query: &str, pool: &[String], limit: usize) -> Vec<String> {
     scored.sort_by(|a, b| b.1.cmp(&a.1));
     scored.truncate(limit);
     scored.into_iter().map(|(s, _)| s).collect()
+}
+
+/// Same as [`fuzzy_top`] but returns the indices of matching `pool` entries,
+/// ordered by descending score. Used by the Ctrl+P palette where the entry
+/// list is fixed and we need to map back to the source struct.
+fn fuzzy_top_idx(query: &str, pool: &[String], limit: usize) -> Vec<usize> {
+    use nucleo_matcher::pattern::{CaseMatching, Normalization, Pattern};
+    use nucleo_matcher::{Config, Matcher, Utf32Str};
+
+    let mut matcher = Matcher::new(Config::DEFAULT);
+    let pattern = Pattern::parse(query, CaseMatching::Smart, Normalization::Smart);
+
+    let mut buf = Vec::new();
+    let mut scored: Vec<(usize, u32)> = pool
+        .iter()
+        .enumerate()
+        .filter_map(|(i, s)| {
+            buf.clear();
+            let utf32 = Utf32Str::new(s, &mut buf);
+            pattern.score(utf32, &mut matcher).map(|sc| (i, sc))
+        })
+        .collect();
+    scored.sort_by(|a, b| b.1.cmp(&a.1));
+    scored.truncate(limit);
+    scored.into_iter().map(|(i, _)| i).collect()
 }
 
 /// Walk `base` (depth-limited) and return file paths relative to it, using
@@ -1634,6 +1989,46 @@ mod tests {
         let (cleaned, refs) = extract_refs("send mail @ now");
         assert!(refs.is_empty());
         assert!(cleaned.contains("@ now"));
+    }
+
+    #[test]
+    fn palette_initially_lists_every_entry() {
+        let p = Palette::new();
+        assert!(!p.open);
+        assert_eq!(p.filtered.len(), p.entries.len());
+        assert!(p.entries.len() >= 10);
+    }
+
+    #[test]
+    fn palette_refilter_narrows_by_query() {
+        let mut p = Palette::new();
+        let total = p.entries.len();
+        p.query = "themes".into();
+        p.refilter();
+        assert!(p.filtered.len() < total);
+        assert!(p.filtered.len() >= 1);
+    }
+
+    #[test]
+    fn palette_refilter_no_match_clamps_selected_to_zero() {
+        let mut p = Palette::new();
+        p.selected = 5;
+        p.query = "zzzzz_no_match_xxxx".into();
+        p.refilter();
+        assert_eq!(p.filtered.len(), 0);
+        assert_eq!(p.selected, 0);
+    }
+
+    #[test]
+    fn palette_show_resets_state_to_visible_and_unfiltered() {
+        let mut p = Palette::new();
+        p.query = "stale".into();
+        p.selected = 4;
+        p.show();
+        assert!(p.open);
+        assert!(p.query.is_empty());
+        assert_eq!(p.selected, 0);
+        assert_eq!(p.filtered.len(), p.entries.len());
     }
 
     #[test]
