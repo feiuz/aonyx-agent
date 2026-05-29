@@ -612,6 +612,7 @@ pub async fn run(
     desktop_notifications: bool,
     auto_compact: bool,
     auto_compact_threshold: u64,
+    tool_registry: ToolRegistry,
 ) -> anyhow::Result<()> {
     // Phase P — runner pauses on Destructive tool calls and asks the
     // TUI via a channel. Capacity 4 = at most 4 in-flight approvals
@@ -621,8 +622,8 @@ pub async fn run(
     // Phase Q — share a single ToolRegistry between the TUI and the
     // runner so `/tools` toggles take effect immediately. Clone is
     // shallow: handlers are Arc-shared and the disabled set lives
-    // behind Arc<Mutex<_>>.
-    let tool_registry = ToolRegistry::default_set();
+    // behind Arc<Mutex<_>>. The registry is built by the caller (it
+    // already folds in any MCP-server tools — Phase GG).
     // Phase X — keep a copy of the skill catalogue for the `/skills`
     // panel before the runner takes ownership.
     let skills_catalogue = skills.clone();

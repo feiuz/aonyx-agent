@@ -208,6 +208,27 @@ async fn start_interactive(project_path: Option<PathBuf>, use_tui: bool) -> anyh
         }
     };
 
+    // Build the tool registry and fold in any configured MCP servers
+    // (Phase GG). A server that fails to start just logs and is
+    // skipped — it must never block the session.
+    let mut tool_registry = aonyx_tools::ToolRegistry::default_set();
+    for srv in &config.mcp_servers {
+        match aonyx_mcp::client::connect_and_register(
+            &mut tool_registry,
+            &srv.name,
+            &srv.command,
+            &srv.args,
+        )
+        .await
+        {
+            Ok(n) => eprintln!(
+                "aonyx: MCP '{}' connected — {n} tool(s) registered",
+                srv.name
+            ),
+            Err(e) => eprintln!("aonyx: MCP '{}' failed: {e}", srv.name),
+        }
+    }
+
     if use_tui {
         return tui::run(
             provider,
@@ -227,6 +248,7 @@ async fn start_interactive(project_path: Option<PathBuf>, use_tui: bool) -> anyh
             config.desktop_notifications,
             config.auto_compact,
             config.auto_compact_threshold,
+            tool_registry,
         )
         .await;
     }

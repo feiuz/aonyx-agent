@@ -81,6 +81,29 @@ pub struct Config {
     /// manual-compaction nudge). Defaults to 24000.
     #[serde(default = "default_compact_threshold")]
     pub auto_compact_threshold: u64,
+    /// External MCP servers to connect at startup; their tools join the
+    /// registry (Phase GG).
+    #[serde(default)]
+    pub mcp_servers: Vec<McpServerConfig>,
+}
+
+/// A stdio MCP server declaration (Phase GG). Example `config.toml`:
+///
+/// ```toml
+/// [[mcp_servers]]
+/// name = "brave"
+/// command = "npx"
+/// args = ["-y", "@modelcontextprotocol/server-brave-search"]
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpServerConfig {
+    /// Friendly name — namespaces the server's tools (`<name>__<tool>`).
+    pub name: String,
+    /// Executable to spawn.
+    pub command: String,
+    /// Arguments passed to the executable.
+    #[serde(default)]
+    pub args: Vec<String>,
 }
 
 fn default_compact_threshold() -> u64 {
@@ -113,6 +136,7 @@ impl Default for Config {
             desktop_notifications: false,
             auto_compact: false,
             auto_compact_threshold: default_compact_threshold(),
+            mcp_servers: Vec::new(),
         }
     }
 }
@@ -188,6 +212,11 @@ mod tests {
             desktop_notifications: false,
             auto_compact: true,
             auto_compact_threshold: 12_000,
+            mcp_servers: vec![McpServerConfig {
+                name: "demo".into(),
+                command: "echo".into(),
+                args: vec!["hi".into()],
+            }],
         };
         let s = toml::to_string(&original).unwrap();
         let parsed: Config = toml::from_str(&s).unwrap();
