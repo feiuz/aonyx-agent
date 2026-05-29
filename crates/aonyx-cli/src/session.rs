@@ -67,6 +67,8 @@ pub enum SlashCommand {
     Init,
     /// Switch the TUI theme (`/themes <name>`); without args lists them.
     Themes(Option<String>),
+    /// Toggle vim-style modal editing (F3). TUI-only — no-op in legacy.
+    Vim,
 }
 
 impl SlashCommand {
@@ -89,6 +91,7 @@ impl SlashCommand {
             "/editor" | "/e" => Some(Self::Editor),
             "/init" => Some(Self::Init),
             "/themes" | "/theme" | "/t" => Some(Self::Themes(rest.map(str::to_string))),
+            "/vim" => Some(Self::Vim),
             _ => None,
         }
     }
@@ -324,6 +327,11 @@ impl InteractiveSession {
             }
             SlashCommand::Themes(_) => {
                 out.write_all(b"\x1b[90m/themes runs in TUI mode (aonyx --tui)\x1b[0m\n")
+                    .await?;
+                Ok(true)
+            }
+            SlashCommand::Vim => {
+                out.write_all(b"\x1b[90m/vim runs in TUI mode (aonyx --tui)\x1b[0m\n")
                     .await?;
                 Ok(true)
             }

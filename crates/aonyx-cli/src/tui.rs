@@ -67,6 +67,10 @@ const MAX_COMPOSER_HEIGHT: u16 = 10;
 const SUGGESTION_LIMIT: usize = 8;
 const FILE_CACHE_LIMIT: usize = 5000;
 const FILE_CACHE_MAX_DEPTH: usize = 8;
+/// Per-side line cap for the diff preview rendered under `fs_edit`/
+/// `fs_write` ToolStart events (F2). Anything beyond is folded into a dim
+/// `(…+N more lines)` marker.
+const DIFF_MAX_LINES: usize = 6;
 
 const SLASH_CANDIDATES: &[&str] = &[
     "/quit",
@@ -78,6 +82,8 @@ const SLASH_CANDIDATES: &[&str] = &[
     "/export",
     "/details",
     "/thinking",
+    "/themes",
+    "/vim",
     "/editor",
     "/init",
 ];
@@ -89,6 +95,30 @@ enum Trigger {
     At,
     /// `/cmd` — slash command picker.
     Slash,
+}
+
+/// Vim-style editing mode (F3). Toggle the whole feature on/off with
+/// `/vim`; once on, `Esc` enters Normal mode and `i`/`a` returns to
+/// Insert.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VimMode {
+    /// Vim mode is off (default). `Esc` quits the session.
+    Off,
+    /// Inside vim mode, composer captures keys. `Esc` enters Normal.
+    Insert,
+    /// Inside vim mode, keys drive the viewport. `i`/`a` returns to
+    /// Insert. `j`/`k` scroll, `g`/`G` top/bottom, `q` quits.
+    Normal,
+}
+
+impl VimMode {
+    fn label(self) -> Option<&'static str> {
+        match self {
+            VimMode::Off => None,
+            VimMode::Insert => Some("INS"),
+            VimMode::Normal => Some("NRM"),
+        }
+    }
 }
 
 /// Frames for the running-runner spinner. Braille dots feel lively without
@@ -244,6 +274,11 @@ fn build_palette_entries() -> Vec<PaletteEntry> {
             action: PaletteAction::Slash(SlashCommand::Init),
         },
         PaletteEntry {
+            label: "/vim".into(),
+            hint: "Toggle vim-style modal editing".into(),
+            action: PaletteAction::Slash(SlashCommand::Vim),
+        },
+        PaletteEntry {
             label: "/quit".into(),
             hint: "Exit Aonyx".into(),
             action: PaletteAction::Slash(SlashCommand::Quit),
@@ -341,6 +376,7 @@ pub async fn run(
         file_cache: None,
         turn_started_at: None,
         palette: Palette::new(),
+        vim_mode: VimMode::Off,
         quit: false,
     };
 
@@ -426,6 +462,9 @@ struct TuiApp {
 
     /// Floating Ctrl+P palette (F1).
     palette: Palette,
+
+    /// Vim editing mode toggle (F3). Off by default.
+    vim_mode: VimMode,
 
     quit: bool,
 }
@@ -599,12 +638,26 @@ impl TuiApp {
                     SafetyClass::Caution => Color::Yellow,
                     SafetyClass::Destructive => Color::Red,
                 };
-                let preview = abbreviate_value(&args, 80);
+                // For fs_edit / fs_write the abbreviated-args preview is
+                // useless (huge content blobs). Render a colored diff
+                // preview underneath instead — F2.
+                let is_diff_tool = name == "fs_edit" || name == "fs_write";
+                let preview = if is_diff_tool {
+                    args.get("path")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("?")
+                        .to_string()
+                } else {
+                    abbreviate_value(&args, 80)
+                };
                 self.push_line(Line::from(vec![
                     Span::styled("● ", Style::default().fg(dot_color)),
-                    Span::styled(name, Style::default().fg(Color::Cyan)),
+                    Span::styled(name.clone(), Style::default().fg(Color::Cyan)),
                     Span::styled(format!("({preview})"), Style::default().fg(Color::DarkGray)),
                 ]));
+                if is_diff_tool {
+                    self.push_diff_preview(&name, &args);
+                }
             }
             TurnEvent::ToolEnd { name, ok, summary } => {
                 let arrow_color = if ok { Color::Green } else { Color::Red };
@@ -730,6 +783,12 @@ impl TuiApp {
             return;
         }
 
+        // Vim Normal mode (F3) — composer is parked; keys drive the viewport.
+        if self.vim_mode == VimMode::Normal {
+            self.handle_vim_normal_key(key);
+            return;
+        }
+
         match key.code {
             // Ctrl+P opens the floating command palette (F1).
             Char('p') if ctrl => {
@@ -738,6 +797,10 @@ impl TuiApp {
             // While the suggestions popup is open, Esc just closes it.
             Esc if suggestions_open => {
                 self.dismiss_suggestions();
+            }
+            // In vim Insert mode, Esc enters Normal instead of quitting.
+            Esc if self.vim_mode == VimMode::Insert => {
+                self.vim_mode = VimMode::Normal;
             }
             Esc => {
                 self.quit = true;
@@ -1183,6 +1246,20 @@ impl TuiApp {
             SlashCommand::Editor => {
                 self.push_dim("`/editor` runs in legacy mode (`aonyx` without --tui) for now");
             }
+            SlashCommand::Vim => {
+                self.vim_mode = match self.vim_mode {
+                    VimMode::Off => {
+                        self.push_dim(
+                            "vim mode: on (Esc = Normal · i/a = Insert · j/k scroll · g/G top/bottom · q quit)",
+                        );
+                        VimMode::Insert
+                    }
+                    VimMode::Insert | VimMode::Normal => {
+                        self.push_dim("vim mode: off");
+                        VimMode::Off
+                    }
+                };
+            }
             SlashCommand::Init => {
                 let path = std::path::PathBuf::from("agent.yaml");
                 if path.exists() {
@@ -1241,6 +1318,45 @@ impl TuiApp {
         }
     }
 
+    /// Drive vim Normal mode (F3): viewport navigation while the composer
+    /// is parked. `i`/`a` returns to Insert, `q` quits the session.
+    fn handle_vim_normal_key(&mut self, key: KeyEvent) {
+        use KeyCode::*;
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        match key.code {
+            // Always-respected exits.
+            Char('c') | Char('d') if ctrl => self.quit = true,
+            Char('q') => self.quit = true,
+            // Back to Insert.
+            Char('i') | Char('a') | Char('o') => self.vim_mode = VimMode::Insert,
+            // Scrolling.
+            Char('j') | Down => {
+                self.scroll = self.scroll.saturating_add(1);
+                self.clamp_scroll_and_maybe_resume_auto();
+            }
+            Char('k') | Up => {
+                self.auto_scroll = false;
+                self.scroll = self.scroll.saturating_sub(1);
+            }
+            Char('g') | Home => {
+                self.auto_scroll = false;
+                self.scroll = 0;
+            }
+            Char('G') | End => {
+                self.auto_scroll = true;
+            }
+            PageUp => {
+                self.auto_scroll = false;
+                self.scroll = self.scroll.saturating_sub(8);
+            }
+            PageDown => {
+                self.scroll = self.scroll.saturating_add(8);
+                self.clamp_scroll_and_maybe_resume_auto();
+            }
+            _ => {}
+        }
+    }
+
     /// Execute a `PaletteAction` exactly as if the user had typed the
     /// equivalent slash command.
     async fn dispatch_palette_action(&mut self, action: PaletteAction) {
@@ -1279,6 +1395,71 @@ impl TuiApp {
             text.to_string(),
             Style::default().fg(Color::DarkGray),
         )));
+    }
+
+    /// Render a unified-style diff preview underneath an `fs_edit` /
+    /// `fs_write` ToolStart line. F2.
+    ///
+    /// * `fs_edit` shows the old block in red (`-`) followed by the new
+    ///   block in green (`+`).
+    /// * `fs_write` shows the new content in green (`+`) since there is
+    ///   no in-flight "before" snapshot.
+    ///
+    /// Long blocks are clipped at [`DIFF_MAX_LINES`] with a dim `(…+N
+    /// more)` marker so a 500-line rewrite doesn't flood the viewport.
+    fn push_diff_preview(&mut self, name: &str, args: &serde_json::Value) {
+        let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("?");
+        let header_style = Style::default()
+            .fg(self.theme.assistant_prefix)
+            .add_modifier(Modifier::BOLD);
+        let frame_style = Style::default().fg(self.theme.dim);
+        self.push_line(Line::from(vec![
+            Span::styled("  ┌─ ", frame_style),
+            Span::styled(format!("{name} · {path}"), header_style),
+        ]));
+        match name {
+            "fs_edit" => {
+                let old = args
+                    .get("old_string")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let new = args
+                    .get("new_string")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                self.push_diff_lines("- ", old, Color::Red);
+                self.push_diff_lines("+ ", new, Color::Green);
+            }
+            "fs_write" => {
+                let content = args.get("content").and_then(|v| v.as_str()).unwrap_or("");
+                self.push_diff_lines("+ ", content, Color::Green);
+            }
+            _ => {}
+        }
+        self.push_line(Line::from(Span::styled("  └─", frame_style)));
+    }
+
+    fn push_diff_lines(&mut self, prefix: &'static str, text: &str, color: Color) {
+        let frame_style = Style::default().fg(self.theme.dim);
+        let lines: Vec<&str> = text.lines().collect();
+        let take = lines.len().min(DIFF_MAX_LINES);
+        for line in lines.iter().take(take) {
+            self.push_line(Line::from(vec![
+                Span::styled("  │ ", frame_style),
+                Span::styled(prefix, Style::default().fg(color).add_modifier(Modifier::BOLD)),
+                Span::styled(line.to_string(), Style::default().fg(color)),
+            ]));
+        }
+        if lines.len() > DIFF_MAX_LINES {
+            let omitted = lines.len() - DIFF_MAX_LINES;
+            self.push_line(Line::from(vec![
+                Span::styled("  │ ", frame_style),
+                Span::styled(
+                    format!("… (+{omitted} more line{})", if omitted == 1 { "" } else { "s" }),
+                    Style::default().fg(self.theme.dim).add_modifier(Modifier::ITALIC),
+                ),
+            ]));
+        }
     }
 
     fn composer_height(&self) -> u16 {
@@ -1432,6 +1613,10 @@ impl TuiApp {
         } else {
             " · scroll:manual"
         };
+        let vim_marker = match self.vim_mode.label() {
+            Some(tag) => format!(" · vim:{tag}"),
+            None => String::new(),
+        };
         let status_line = if self.runner_active {
             let spinner_idx = self.tick as usize % SPINNER_FRAMES.len();
             let spinner = SPINNER_FRAMES[spinner_idx];
@@ -1444,8 +1629,13 @@ impl TuiApp {
                 ),
                 Span::styled(
                     format!(
-                        "{} · {} · turn {} · running{}{} ",
-                        self.provider_name, self.model_name, self.turns, details, scroll_marker
+                        "{} · {} · turn {} · running{}{}{} ",
+                        self.provider_name,
+                        self.model_name,
+                        self.turns,
+                        details,
+                        scroll_marker,
+                        vim_marker
                     ),
                     Style::default().fg(self.theme.header_fg),
                 ),
@@ -1455,8 +1645,13 @@ impl TuiApp {
                 Span::styled(" ▸ ", Style::default().fg(self.theme.user_prefix)),
                 Span::styled(
                     format!(
-                        "{} · {} · turn {} · idle{}{} ",
-                        self.provider_name, self.model_name, self.turns, details, scroll_marker
+                        "{} · {} · turn {} · idle{}{}{} ",
+                        self.provider_name,
+                        self.model_name,
+                        self.turns,
+                        details,
+                        scroll_marker,
+                        vim_marker
                     ),
                     Style::default().fg(self.theme.status_fg),
                 ),
@@ -1592,6 +1787,8 @@ const HELP_LINES: &[&str] = &[
     "  /export [path]       dump the conversation to Markdown",
     "  /details             toggle verbose tool output",
     "  /thinking            reasoning visibility (Phase E)",
+    "  /themes /t [name]    switch palette (default, catppuccin, dracula, gruvbox)",
+    "  /vim                 toggle vim modal editing (F3)",
     "  /editor /e           legacy-mode only for now",
     "  /init                drop an agent.yaml in the project root",
     "inline:",
