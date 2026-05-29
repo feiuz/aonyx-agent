@@ -114,7 +114,10 @@ pub struct AgentRunner {
     last_request: Arc<std::sync::Mutex<Option<String>>>,
     project: Option<String>,
     approval: ApprovalPolicy,
-    model: String,
+    /// Active model id — shared behind an `Arc<Mutex<_>>` so the TUI
+    /// `/model` command (Phase EE) can swap it live and the next turn
+    /// (and `summarize`) picks up the change.
+    model: Arc<std::sync::Mutex<String>>,
     max_iterations: usize,
 }
 
@@ -133,9 +136,20 @@ impl AgentRunner {
             last_request: Arc::new(std::sync::Mutex::new(None)),
             project: None,
             approval: ApprovalPolicy::default(),
-            model: model.into(),
+            model: Arc::new(std::sync::Mutex::new(model.into())),
             max_iterations: 10,
         }
+    }
+
+    /// Snapshot the active model id.
+    fn current_model(&self) -> String {
+        self.model.lock().map(|m| m.clone()).unwrap_or_default()
+    }
+
+    /// Share the live model handle so the TUI `/model` command can swap
+    /// the active model mid-session (Phase EE).
+    pub fn model_handle(&self) -> Arc<std::sync::Mutex<String>> {
+        Arc::clone(&self.model)
     }
 
     /// Share a live skill-toggle set with the caller. Skill ids present
@@ -268,7 +282,7 @@ impl AgentRunner {
             let _ = events.send(TurnEvent::IterationStart(iterations)).await;
 
             let req = ChatRequest {
-                model: self.model.clone(),
+                model: self.current_model(),
                 messages: messages.clone(),
                 tools: tools.clone(),
                 temperature: None,
@@ -392,7 +406,7 @@ impl AgentRunner {
             identifiers, and any open questions or TODOs. Omit pleasantries. Output \
             only the summary prose — no preamble.";
         let req = ChatRequest {
-            model: self.model.clone(),
+            model: self.current_model(),
             messages: vec![
                 Message::new(Role::System, prompt),
                 Message::new(Role::User, transcript),

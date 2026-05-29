@@ -128,6 +128,45 @@ fn openai_pricing(model: &str) -> Option<Pricing> {
     None
 }
 
+/// A small curated list of well-known model ids per provider, for
+/// `/model` argument autocomplete (Phase EE). Not exhaustive — the
+/// user can always type any id the provider accepts.
+pub fn known_models(provider: &str) -> &'static [&'static str] {
+    match provider {
+        "anthropic" => &[
+            "claude-opus-4-5-20250929",
+            "claude-sonnet-4-5-20250929",
+            "claude-haiku-4-5-20250929",
+            "claude-3-5-sonnet-20241022",
+            "claude-3-5-haiku-20241022",
+            "claude-3-opus-20240229",
+        ],
+        "openai" => &[
+            "gpt-4o",
+            "gpt-4o-mini",
+            "o1",
+            "o1-mini",
+            "gpt-4-turbo",
+            "gpt-3.5-turbo",
+        ],
+        "openrouter" => &[
+            "anthropic/claude-sonnet-4.5",
+            "openai/gpt-4o",
+            "google/gemini-2.5-pro",
+            "meta-llama/llama-3.3-70b-instruct",
+        ],
+        "ollama" => &[
+            "llama3.2",
+            "llama3.2-vision",
+            "llava",
+            "qwen2.5-coder",
+            "deepseek-r1",
+        ],
+        "lm-studio" | "lm_studio" => &[],
+        _ => &[],
+    }
+}
+
 /// Estimate token count from a UTF-8 string. Uses the standard 4
 /// chars-per-token rule of thumb. Always rounds up — empty input
 /// returns 0.

@@ -125,6 +125,7 @@ const SLASH_CANDIDATES: &[&str] = &[
     "/fork",
     "/compact",
     "/retry",
+    "/model",
     "/mouse",
     "/ingest",
     "/editor",
@@ -554,6 +555,11 @@ fn build_palette_entries() -> Vec<PaletteEntry> {
             action: PaletteAction::Slash(SlashCommand::Retry),
         },
         PaletteEntry {
+            label: "/model".into(),
+            hint: "Switch the active model live (/model <name>)".into(),
+            action: PaletteAction::Slash(SlashCommand::Model(None)),
+        },
+        PaletteEntry {
             label: "/mouse".into(),
             hint: "Toggle mouse capture (off = native drag-to-select)".into(),
             action: PaletteAction::Slash(SlashCommand::Mouse),
@@ -624,6 +630,9 @@ pub async fn run(
     let disabled_skills = runner.skill_toggle_handle();
     // Phase Y — share the runner's last-request snapshot for `/inspect`.
     let last_request = runner.last_request_handle();
+    // Phase EE — share the runner's model handle so `/model` can swap
+    // the active model live.
+    let model_handle = runner.model_handle();
 
     let messages: Vec<Message> = session_messages;
 
@@ -705,6 +714,7 @@ pub async fn run(
         auto_compact,
         compact_threshold: auto_compact_threshold,
         compact_nudged: false,
+        model_handle,
         quit: false,
     };
 
@@ -872,6 +882,10 @@ struct TuiApp {
     /// current oversized state — reset after a compaction so it can
     /// nudge again later.
     compact_nudged: bool,
+
+    /// Shared model handle (Arc clone of the runner's) so `/model` can
+    /// swap the active model mid-session (Phase EE).
+    model_handle: Arc<std::sync::Mutex<String>>,
 
     quit: bool,
 }
@@ -1393,6 +1407,11 @@ impl TuiApp {
                 "5".to_string(),
                 "10".to_string(),
             ],
+            // Phase EE — `/model <name>` known-model hints.
+            "model" => pricing::known_models(&self.provider_name)
+                .iter()
+                .map(|s| (*s).to_string())
+                .collect(),
             _ => Vec::new(),
         }
     }
@@ -1965,6 +1984,9 @@ impl TuiApp {
             SlashCommand::Retry => {
                 self.retry_last_turn();
             }
+            SlashCommand::Model(target) => {
+                self.switch_model(target);
+            }
             SlashCommand::Mouse => {
                 self.toggle_mouse_capture();
             }
@@ -2133,6 +2155,63 @@ impl TuiApp {
             "📥 ingested {path} → {appended}/{chunk_count} chunk(s) · kind={kind} · {} chars",
             total_chars
         ));
+    }
+
+    /// Switch the active model live (Phase EE). With no argument, show
+    /// the current model + the known ids for this provider. With an
+    /// argument, write it through the shared model handle so the next
+    /// turn (and `summarize`) uses it, and refresh the status-bar model
+    /// name + the cost-estimator pricing.
+    fn switch_model(&mut self, target: Option<String>) {
+        let Some(name) = target
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+        else {
+            let known = pricing::known_models(&self.provider_name);
+            self.push_dim(&format!("active model: {}", self.model_name));
+            if known.is_empty() {
+                self.push_dim(&format!(
+                    "(no preset list for provider '{}' — pass any id: /model <name>)",
+                    self.provider_name
+                ));
+            } else {
+                self.push_dim(&format!("known {} models:", self.provider_name));
+                for m in known {
+                    let marker = if *m == self.model_name { "▸" } else { " " };
+                    self.push_dim(&format!("  {marker} {m}"));
+                }
+            }
+            return;
+        };
+        if name == self.model_name {
+            self.push_dim(&format!("already on {name}"));
+            return;
+        }
+        // Write through the shared handle in a tight scope so the guard
+        // drops before we touch `self` again.
+        let wrote = {
+            match self.model_handle.lock() {
+                Ok(mut slot) => {
+                    *slot = name.clone();
+                    true
+                }
+                Err(_) => false,
+            }
+        };
+        if !wrote {
+            self.push_line(error_line("could not acquire model lock".to_string()));
+            return;
+        }
+        self.model_name = name.clone();
+        // Re-look up pricing so the cost estimator stays accurate after
+        // the swap (Phase K + EE).
+        self.pricing = pricing::lookup(&self.provider_name, &name);
+        let cost_note = if self.pricing.is_some() {
+            ""
+        } else {
+            " (no pricing table — cost shown as tokens only)"
+        };
+        self.push_dim(&format!("model → {name}{cost_note}"));
     }
 
     /// Flip terminal mouse capture on/off so the host terminal can do
@@ -3138,6 +3217,7 @@ impl TuiApp {
                     "load" | "switch" => "sessions",
                     "ingest" => "files",
                     "undo" | "u" => "undo",
+                    "model" => "models",
                     _ => "args",
                 },
                 None => "",
@@ -3779,6 +3859,7 @@ const HELP_LINES: &[&str] = &[
     "  /fork                fork the current session into a child branch (Phase Z)",
     "  /compact             summarize old turns, keep the tail (Phase BB)",
     "  /retry /r            re-run the last user message (Phase CC)",
+    "  /model [name]        switch the active model live (Phase EE)",
     "  /mouse /select       toggle mouse capture (off = native text selection, Phase U)",
     "  /ingest <path>       add a local file to the project palace (Phase V)",
     "  /editor /e           legacy-mode only for now",

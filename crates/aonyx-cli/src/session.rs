@@ -99,6 +99,9 @@ pub enum SlashCommand {
     /// Re-run the last user message, dropping the previous response
     /// (Phase CC). TUI-only.
     Retry,
+    /// Switch the active model live (Phase EE). `None` shows the
+    /// current model + known ids. TUI-only.
+    Model(Option<String>),
 }
 
 impl SlashCommand {
@@ -134,6 +137,7 @@ impl SlashCommand {
             "/fork" => Some(Self::Fork),
             "/compact" => Some(Self::Compact),
             "/retry" | "/r" => Some(Self::Retry),
+            "/model" => Some(Self::Model(rest.map(str::to_string))),
             _ => None,
         }
     }
@@ -424,6 +428,11 @@ impl InteractiveSession {
             }
             SlashCommand::Retry => {
                 out.write_all(b"\x1b[90m/retry runs in TUI mode (aonyx --tui)\x1b[0m\n")
+                    .await?;
+                Ok(true)
+            }
+            SlashCommand::Model(_) => {
+                out.write_all(b"\x1b[90m/model runs in TUI mode (aonyx --tui)\x1b[0m\n")
                     .await?;
                 Ok(true)
             }
