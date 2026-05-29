@@ -51,6 +51,11 @@ impl Default for OllamaProvider {
 struct OllamaMessage<'a> {
     role: &'a str,
     content: &'a str,
+    /// Vision images as **raw** base64 strings (no `data:` prefix),
+    /// siblings of `content` — Ollama's `/api/chat` shape (Phase AA).
+    /// Omitted entirely when there are none.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    images: Vec<&'a str>,
 }
 
 fn map_role(role: Role) -> &'static str {
@@ -73,9 +78,21 @@ impl LlmProvider for OllamaProvider {
         let messages: Vec<OllamaMessage<'_>> = req
             .messages
             .iter()
-            .map(|m| OllamaMessage {
-                role: map_role(m.role),
-                content: m.content.as_str(),
+            .map(|m| {
+                // Phase AA — Ollama wants raw base64 (no `data:` prefix)
+                // in a sibling `images` array, not content blocks.
+                let images: Vec<&str> = m
+                    .attachments
+                    .iter()
+                    .map(|att| match att {
+                        aonyx_core::Attachment::Image { data, .. } => data.as_str(),
+                    })
+                    .collect();
+                OllamaMessage {
+                    role: map_role(m.role),
+                    content: m.content.as_str(),
+                    images,
+                }
             })
             .collect();
 
@@ -206,5 +223,32 @@ mod tests {
     fn ignores_empty_content_non_terminal() {
         let line = r#"{"message":{"content":""},"done":false}"#;
         assert!(parse_line(line).is_none());
+    }
+
+    #[test]
+    fn text_only_message_omits_images_field() {
+        let m = OllamaMessage {
+            role: "user",
+            content: "hi",
+            images: vec![],
+        };
+        let v = serde_json::to_value(&m).unwrap();
+        assert_eq!(v["content"], "hi");
+        // Empty images array must be skipped on the wire.
+        assert!(v.get("images").is_none());
+    }
+
+    #[test]
+    fn vision_message_carries_raw_base64_images() {
+        let m = OllamaMessage {
+            role: "user",
+            content: "describe",
+            images: vec!["AAAAbase64"],
+        };
+        let v = serde_json::to_value(&m).unwrap();
+        let imgs = v["images"].as_array().expect("array");
+        assert_eq!(imgs.len(), 1);
+        // Raw base64 — no data: URL prefix (unlike OpenAI).
+        assert_eq!(imgs[0], "AAAAbase64");
     }
 }
