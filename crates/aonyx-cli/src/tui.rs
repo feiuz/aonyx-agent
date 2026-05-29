@@ -124,6 +124,7 @@ const SLASH_CANDIDATES: &[&str] = &[
     "/inspect",
     "/fork",
     "/compact",
+    "/retry",
     "/mouse",
     "/ingest",
     "/editor",
@@ -546,6 +547,11 @@ fn build_palette_entries() -> Vec<PaletteEntry> {
             label: "/compact".into(),
             hint: "Summarize old turns to free up context".into(),
             action: PaletteAction::Slash(SlashCommand::Compact),
+        },
+        PaletteEntry {
+            label: "/retry".into(),
+            hint: "Re-run the last user message".into(),
+            action: PaletteAction::Slash(SlashCommand::Retry),
         },
         PaletteEntry {
             label: "/mouse".into(),
@@ -1956,6 +1962,9 @@ impl TuiApp {
             SlashCommand::Compact => {
                 self.compact_session(false).await;
             }
+            SlashCommand::Retry => {
+                self.retry_last_turn();
+            }
             SlashCommand::Mouse => {
                 self.toggle_mouse_capture();
             }
@@ -2146,6 +2155,37 @@ impl TuiApp {
         } else {
             self.push_line(error_line("could not enable mouse capture".to_string()));
         }
+    }
+
+    /// Re-run the last user message (Phase CC): drop everything the
+    /// model produced after it (assistant text + tool exchanges) and
+    /// fire the runner again. The previous response stays visible in
+    /// the viewport as history; only the message log sent to the model
+    /// is rewound.
+    fn retry_last_turn(&mut self) {
+        if self.runner_active {
+            self.push_dim("retry: a turn is already running");
+            return;
+        }
+        let Some(last_user) = self.messages.iter().rposition(|m| m.role == Role::User) else {
+            self.push_dim("retry: no user message to re-run yet");
+            return;
+        };
+        let keep = last_user + 1;
+        let dropped = self.messages.len() - keep;
+        if dropped == 0 {
+            // The last message is already the user's — nothing was
+            // produced (likely a prior error). Re-run as-is.
+            self.push_dim("↻ retry — re-running last message");
+        } else {
+            self.messages.truncate(keep);
+            self.push_dim(&format!(
+                "↻ retry — dropped {dropped} message(s), re-running last turn"
+            ));
+        }
+        self.push_thinking_line();
+        self.auto_scroll = true;
+        self.start_runner();
     }
 
     /// Estimated token count of the live conversation (Phase BB).
@@ -3738,6 +3778,7 @@ const HELP_LINES: &[&str] = &[
     "  /inspect             show the JSON of the last LLM request (Phase Y)",
     "  /fork                fork the current session into a child branch (Phase Z)",
     "  /compact             summarize old turns, keep the tail (Phase BB)",
+    "  /retry /r            re-run the last user message (Phase CC)",
     "  /mouse /select       toggle mouse capture (off = native text selection, Phase U)",
     "  /ingest <path>       add a local file to the project palace (Phase V)",
     "  /editor /e           legacy-mode only for now",

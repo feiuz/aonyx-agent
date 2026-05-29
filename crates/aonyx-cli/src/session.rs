@@ -96,6 +96,9 @@ pub enum SlashCommand {
     /// Compact the conversation: summarize old turns, keep the tail
     /// (Phase BB). TUI-only.
     Compact,
+    /// Re-run the last user message, dropping the previous response
+    /// (Phase CC). TUI-only.
+    Retry,
 }
 
 impl SlashCommand {
@@ -130,6 +133,7 @@ impl SlashCommand {
             "/inspect" => Some(Self::Inspect),
             "/fork" => Some(Self::Fork),
             "/compact" => Some(Self::Compact),
+            "/retry" | "/r" => Some(Self::Retry),
             _ => None,
         }
     }
@@ -415,6 +419,11 @@ impl InteractiveSession {
             }
             SlashCommand::Compact => {
                 out.write_all(b"\x1b[90m/compact runs in TUI mode (aonyx --tui)\x1b[0m\n")
+                    .await?;
+                Ok(true)
+            }
+            SlashCommand::Retry => {
+                out.write_all(b"\x1b[90m/retry runs in TUI mode (aonyx --tui)\x1b[0m\n")
                     .await?;
                 Ok(true)
             }
