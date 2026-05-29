@@ -115,12 +115,16 @@ const SLASH_CANDIDATES: &[&str] = &[
 ];
 
 /// Which prefix character opened the suggestions popup.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum Trigger {
     /// `@path` — fuzzy file picker over the cwd.
     At,
     /// `/cmd` — slash command picker.
     Slash,
+    /// `/cmd <arg>` — argument completion for a known slash command
+    /// (Phase R). Carries the recognised command name so the
+    /// suggestion source can be picked based on it.
+    SlashArg(String),
 }
 
 /// What the user is currently typing into the composer (Phase I).
@@ -559,6 +563,7 @@ pub async fn run(
         kg_panel: KgPanel::default(),
         tool_registry,
         tools_panel: ToolsPanel::default(),
+        recent_session_ids: Vec::new(),
         approval_rx,
         pending_approval: None,
         vim_mode: VimMode::Off,
@@ -580,6 +585,8 @@ pub async fn run(
     // up the active theme straight away instead of staying on the
     // bootstrap DarkGray.
     app.apply_composer_style();
+    // Phase R — pre-fill the slash-arg completion cache for `/load`.
+    app.refresh_recent_sessions().await;
 
     let res = app.event_loop(&mut terminal).await;
 
@@ -671,6 +678,11 @@ struct TuiApp {
     tool_registry: ToolRegistry,
     /// Floating `/tools` panel state (Phase Q).
     tools_panel: ToolsPanel,
+
+    /// Cache of recent session id-prefixes (`(short_id, title)`) used
+    /// by `/load` argument autocomplete (Phase R). Refreshed at
+    /// startup and after `/new` / `/load`.
+    recent_session_ids: Vec<(String, String)>,
 
     /// Receiver of pending approval requests bubbled up by the
     /// [`TuiApprover`] (Phase P).
@@ -1144,13 +1156,22 @@ impl TuiApp {
         let cursor_byte = cursor_byte_offset(&self.composer);
         match detect_trigger(&text, cursor_byte) {
             Some((trigger, trigger_pos, query)) => {
+                let pool: Vec<String> = match &trigger {
+                    Trigger::At => self.file_candidates(),
+                    Trigger::Slash => {
+                        SLASH_CANDIDATES.iter().map(|s| (*s).to_string()).collect()
+                    }
+                    Trigger::SlashArg(cmd) => self.slash_arg_pool(cmd),
+                };
+                // No source means nothing to autocomplete — dismiss
+                // the popup rather than show an empty one.
+                if pool.is_empty() {
+                    self.dismiss_suggestions();
+                    self.apply_composer_style();
+                    return;
+                }
                 self.suggestion_kind = Some(trigger);
                 self.suggestion_trigger_pos = trigger_pos;
-
-                let pool: Vec<String> = match trigger {
-                    Trigger::At => self.file_candidates(),
-                    Trigger::Slash => SLASH_CANDIDATES.iter().map(|s| (*s).to_string()).collect(),
-                };
 
                 let suggestions = if query.is_empty() {
                     pool.into_iter().take(SUGGESTION_LIMIT).collect()
@@ -1168,6 +1189,24 @@ impl TuiApp {
         // Phase I — refresh the composer's text + border colour now that
         // the input may have shifted between Chat / Slash / Bash modes.
         self.apply_composer_style();
+    }
+
+    /// Return the autocomplete pool for the argument of a known slash
+    /// command (Phase R). Empty vec when the command has no static
+    /// arg domain (`/help`, `/clear`, …).
+    fn slash_arg_pool(&self, cmd: &str) -> Vec<String> {
+        match cmd {
+            "themes" | "theme" | "t" => theme::available_names()
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+            "load" | "switch" => self
+                .recent_session_ids
+                .iter()
+                .map(|(id, _)| id.clone())
+                .collect(),
+            _ => Vec::new(),
+        }
     }
 
     /// Recolour the composer's text + border based on the detected
@@ -1214,16 +1253,14 @@ impl TuiApp {
         let Some(selected) = self.suggestions.get(self.suggestion_idx).cloned() else {
             return;
         };
-        let Some(trigger) = self.suggestion_kind else {
+        let Some(trigger) = self.suggestion_kind.clone() else {
             return;
         };
         let trigger_pos = self.suggestion_trigger_pos;
         let text = self.composer.lines().join("\n");
         let cursor_byte = cursor_byte_offset(&self.composer);
 
-        // Build the replacement: keep everything up to and including the
-        // trigger char (for `@`) or just up to the trigger (for `/`, since
-        // the suggestion already starts with `/`).
+        // Build the replacement based on which trigger fired.
         let mut new_text = String::new();
         match trigger {
             Trigger::At => {
@@ -1231,6 +1268,13 @@ impl TuiApp {
                 new_text.push_str(&selected);
             }
             Trigger::Slash => {
+                new_text.push_str(&text[..trigger_pos]);
+                new_text.push_str(&selected);
+            }
+            Trigger::SlashArg(_) => {
+                // The arg substring starts at `trigger_pos` (computed by
+                // `detect_slash_arg`) — drop everything from there to
+                // the cursor and substitute the selected suggestion.
                 new_text.push_str(&text[..trigger_pos]);
                 new_text.push_str(&selected);
             }
@@ -1488,6 +1532,7 @@ impl TuiApp {
                         self.session_id = created.id;
                         self.push_dim(&format!("(new session #{})", created.id));
                     }
+                    self.refresh_recent_sessions().await;
                 } else {
                     self.push_dim("(history cleared)");
                 }
@@ -1685,6 +1730,7 @@ impl TuiApp {
                         )));
                         self.auto_scroll = true;
                         self.scroll = 0;
+                        self.refresh_recent_sessions().await;
                     }
                     Err(e) => self.push_line(error_line(format!("load failed: {e}"))),
                 }
@@ -1768,6 +1814,25 @@ impl TuiApp {
                 self.palette.refilter();
             }
             _ => {}
+        }
+    }
+
+    /// Re-pull the most recent sessions for this project into the
+    /// slash-arg completion cache (Phase R). Best-effort: any error
+    /// just leaves the cache untouched.
+    async fn refresh_recent_sessions(&mut self) {
+        if let Ok(list) = self
+            .session_store
+            .list_by_project(&self.project_slug, 20)
+            .await
+        {
+            self.recent_session_ids = list
+                .into_iter()
+                .map(|s| {
+                    let short: String = s.id.to_string().chars().take(8).collect();
+                    (short, s.title)
+                })
+                .collect();
         }
     }
 
@@ -2407,9 +2472,14 @@ impl TuiApp {
 
         // Suggestions popup (above the composer) — only rendered when active.
         if suggestions_h > 0 {
-            let kind_label = match self.suggestion_kind {
+            let kind_label = match &self.suggestion_kind {
                 Some(Trigger::At) => "files",
                 Some(Trigger::Slash) => "commands",
+                Some(Trigger::SlashArg(cmd)) => match cmd.as_str() {
+                    "themes" | "theme" | "t" => "themes",
+                    "load" | "switch" => "sessions",
+                    _ => "args",
+                },
                 None => "",
             };
             let lines: Vec<Line> = self
@@ -3038,7 +3108,38 @@ fn cursor_byte_offset(textarea: &TextArea<'_>) -> usize {
 /// Returns the trigger kind, its byte position, and the substring between it
 /// and the cursor (the active query). Bails out when whitespace is reached
 /// before finding a trigger so an `@` mid-sentence does not fire.
+/// Detect `/cmd ` patterns at the start of the current line. Returns
+/// `Some((cmd, arg_pos, query))` when the cursor sits past the command
+/// plus at least one space, where `arg_pos` is the byte offset of the
+/// argument's first character and `query` is the text already typed for
+/// that argument (Phase R).
+fn detect_slash_arg(text: &str, cursor: usize) -> Option<(String, usize, String)> {
+    let line_start = text[..cursor].rfind('\n').map(|i| i + 1).unwrap_or(0);
+    let line = &text[line_start..cursor];
+    let rest = line.strip_prefix('/')?;
+    let cmd_end = rest.find(|c: char| c.is_whitespace())?;
+    let cmd = &rest[..cmd_end];
+    if cmd.is_empty() {
+        return None;
+    }
+    // `arg_start_in_line` skips `/`, the command, and exactly one
+    // whitespace separator. Additional whitespace lives inside the
+    // query and is later trimmed by the fuzzy matcher.
+    let arg_start_in_line = 1 + cmd_end + 1;
+    if arg_start_in_line > line.len() {
+        return None;
+    }
+    let query = line[arg_start_in_line..].to_string();
+    Some((cmd.to_string(), line_start + arg_start_in_line, query))
+}
+
 fn detect_trigger(text: &str, cursor: usize) -> Option<(Trigger, usize, String)> {
+    // Phase R — slash arg first: when the cursor sits after `/cmd ` on
+    // the current line, surface argument completions for `cmd`.
+    if let Some((cmd, pos, query)) = detect_slash_arg(text, cursor) {
+        return Some((Trigger::SlashArg(cmd), pos, query));
+    }
+
     if cursor == 0 {
         return None;
     }
@@ -3333,6 +3434,48 @@ mod tests {
         p.refilter();
         assert_eq!(p.filtered.len(), 0);
         assert_eq!(p.selected, 0);
+    }
+
+    #[test]
+    fn detect_slash_arg_returns_none_when_line_is_not_a_slash_command() {
+        assert!(detect_slash_arg("hello world", 11).is_none());
+        assert!(detect_slash_arg("@README", 7).is_none());
+    }
+
+    #[test]
+    fn detect_slash_arg_returns_none_when_cursor_is_still_on_the_command() {
+        // Cursor right after `/themes` — no space typed yet.
+        assert!(detect_slash_arg("/themes", 7).is_none());
+    }
+
+    #[test]
+    fn detect_slash_arg_recognises_command_plus_arg() {
+        let text = "/themes drac";
+        let cursor = text.len();
+        let (cmd, pos, query) = detect_slash_arg(text, cursor).expect("recognised");
+        assert_eq!(cmd, "themes");
+        assert_eq!(query, "drac");
+        // Arg starts right after the space — index 8.
+        assert_eq!(pos, 8);
+    }
+
+    #[test]
+    fn detect_slash_arg_works_with_empty_query() {
+        let text = "/themes ";
+        let cursor = text.len();
+        let (cmd, _, query) = detect_slash_arg(text, cursor).expect("recognised");
+        assert_eq!(cmd, "themes");
+        assert!(query.is_empty());
+    }
+
+    #[test]
+    fn detect_slash_arg_only_picks_up_command_at_line_start() {
+        // Cursor on the second line — the slash command lives there.
+        let text = "hello\n/load abc";
+        let cursor = text.len();
+        let (cmd, _, query) = detect_slash_arg(text, cursor).expect("recognised");
+        assert_eq!(cmd, "load");
+        assert_eq!(query, "abc");
     }
 
     #[test]
