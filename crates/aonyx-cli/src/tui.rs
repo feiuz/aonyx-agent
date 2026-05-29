@@ -72,6 +72,12 @@ const FILE_CACHE_MAX_DEPTH: usize = 8;
 /// beyond is folded into a dim `(…+N more lines)` marker.
 const DIFF_MAX_LINES: usize = 6;
 
+/// Minimum number of characters the streaming assistant text must have
+/// grown by since the last Markdown re-render before we re-parse it
+/// again (Phase M). Small enough to feel live, large enough that we
+/// don't re-render after every single 1-char token from the model.
+const STREAM_MD_MIN_INCREMENT: usize = 24;
+
 /// Total line cap for the unified `fs_edit` diff (Phase G). Counts every
 /// rendered row regardless of tag; once exceeded, remaining changes
 /// collapse into a `(…+N more)` summary.
@@ -413,6 +419,7 @@ pub async fn run(
         first_delta_received: false,
         current_assistant_text: String::new(),
         assistant_msg_start: None,
+        last_md_render_chars: 0,
         suggestions: Vec::new(),
         suggestion_idx: 0,
         suggestion_kind: None,
@@ -499,6 +506,10 @@ struct TuiApp {
     /// raw streamed lines from that index up to the end are replaced by the
     /// Markdown-rendered lines at `AssistantMessageEnd`.
     assistant_msg_start: Option<usize>,
+    /// Char count of `current_assistant_text` at the last Markdown
+    /// re-render — throttles live re-rendering during streaming
+    /// (Phase M).
+    last_md_render_chars: usize,
 
     /// Currently-displayed suggestions; empty when the popup is closed.
     suggestions: Vec<String>,
@@ -642,7 +653,14 @@ impl TuiApp {
     }
 
     /// Replace the raw streamed assistant lines with Markdown-rendered ones.
-    fn finalize_assistant_message(&mut self) {
+    /// Render whatever's accumulated in `current_assistant_text` as
+    /// Markdown, replacing any previously-rendered lines for the same
+    /// message in place.
+    ///
+    /// Called both during streaming (every delta, Phase M) and at
+    /// `AssistantMessageEnd`. Idempotent — re-running it after the same
+    /// buffer is a no-op visually.
+    fn rerender_assistant_markdown(&mut self) {
         let Some(start) = self.assistant_msg_start else {
             return;
         };
@@ -653,7 +671,7 @@ impl TuiApp {
             return;
         }
 
-        // Drop the raw lines we streamed in between [start, end).
+        // Drop the previously-rendered lines for this message.
         self.viewport.truncate(start);
 
         // Re-emit a coloured "aonyx>" header line so it stands out from the
@@ -670,6 +688,32 @@ impl TuiApp {
         for line in rendered.lines.into_iter() {
             self.viewport.push(line_to_static(line));
         }
+        self.last_md_render_chars = self.current_assistant_text.chars().count();
+    }
+
+    /// Decide whether the just-arrived `delta` warrants a Markdown
+    /// re-render, or whether it's small enough to wait for more text
+    /// before re-parsing (Phase M).
+    fn should_rerender_markdown(&self, delta: &str) -> bool {
+        // First chunk of a fresh message — always render so the user
+        // sees output immediately instead of staring at the thinking
+        // placeholder until 24 chars accumulate.
+        if self.last_md_render_chars == 0 && !self.current_assistant_text.is_empty() {
+            return true;
+        }
+        // Newlines often complete a block (paragraph / heading / list
+        // item / code fence), so always re-render then — that's when
+        // Markdown structure becomes parseable.
+        if delta.contains('\n') {
+            return true;
+        }
+        let new_chars = self.current_assistant_text.chars().count();
+        new_chars.saturating_sub(self.last_md_render_chars) >= STREAM_MD_MIN_INCREMENT
+    }
+
+    /// Backwards-compatible alias kept for the AssistantMessageEnd path.
+    fn finalize_assistant_message(&mut self) {
+        self.rerender_assistant_markdown();
     }
 
     fn apply_event(&mut self, event: TurnEvent) {
@@ -678,9 +722,9 @@ impl TuiApp {
                 if !self.first_delta_received {
                     self.retire_thinking_line();
                     self.first_delta_received = true;
-                    // Remember where this assistant message starts so we can
-                    // replace the raw streamed lines with Markdown-rendered
-                    // ones at AssistantMessageEnd.
+                    // Remember where this assistant message starts so we
+                    // can re-render the Markdown in place as the model
+                    // streams (Phase M).
                     self.assistant_msg_start = Some(self.viewport.len());
                 }
                 // Phase K — accumulate output tokens live as the model
@@ -689,7 +733,14 @@ impl TuiApp {
                     .total_output_tokens
                     .saturating_add(pricing::estimate_tokens(&text));
                 self.current_assistant_text.push_str(&text);
-                self.append_to_assistant_line(&text);
+                // Phase M — re-render Markdown live so headings / bold
+                // / code fences light up while the model is still
+                // typing. Throttled by `should_rerender_markdown` so
+                // single-char tokens don't pin the CPU; the running
+                // text always rests on a fully-rendered snapshot.
+                if self.should_rerender_markdown(&text) {
+                    self.rerender_assistant_markdown();
+                }
             }
             TurnEvent::AssistantMessageEnd => {
                 self.finalize_assistant_message();
@@ -706,6 +757,7 @@ impl TuiApp {
                 self.first_delta_received = false;
                 self.assistant_msg_start = None;
                 self.current_assistant_text.clear();
+                self.last_md_render_chars = 0;
             }
             TurnEvent::ToolStart { name, args, class } => {
                 self.retire_thinking_line();
@@ -779,35 +831,6 @@ impl TuiApp {
         }
     }
 
-    fn append_to_assistant_line(&mut self, text: &str) {
-        let needs_header = match self.viewport.last() {
-            None => true,
-            Some(l) => !l.spans.iter().any(|s| s.content.contains("aonyx>")),
-        };
-        if needs_header {
-            self.viewport.push(Line::from(vec![Span::styled(
-                "aonyx> ",
-                Style::default()
-                    .fg(self.theme.assistant_prefix)
-                    .add_modifier(Modifier::BOLD),
-            )]));
-        }
-
-        for piece in text.split_inclusive('\n') {
-            let (chunk, has_newline) = match piece.strip_suffix('\n') {
-                Some(c) => (c, true),
-                None => (piece, false),
-            };
-            if !chunk.is_empty() {
-                if let Some(last) = self.viewport.last_mut() {
-                    last.spans.push(Span::raw(chunk.to_string()));
-                }
-            }
-            if has_newline {
-                self.viewport.push(Line::default());
-            }
-        }
-    }
 
     fn push_line(&mut self, line: Line<'static>) {
         self.viewport.push(line);
