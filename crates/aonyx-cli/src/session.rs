@@ -77,6 +77,8 @@ pub enum SlashCommand {
     Load(Option<String>),
     /// Open the floating KG visualization panel (Phase O).
     Kg,
+    /// Open the floating tools panel (Phase Q).
+    Tools,
 }
 
 impl SlashCommand {
@@ -104,6 +106,7 @@ impl SlashCommand {
             "/find" | "/f" | "/search" => Some(Self::Find(rest.map(str::to_string))),
             "/load" | "/switch" => Some(Self::Load(rest.map(str::to_string))),
             "/kg" | "/palace" => Some(Self::Kg),
+            "/tools" => Some(Self::Tools),
             _ => None,
         }
     }
@@ -354,6 +357,11 @@ impl InteractiveSession {
             }
             SlashCommand::Kg => {
                 out.write_all(b"\x1b[90m/kg runs in TUI mode (aonyx --tui)\x1b[0m\n")
+                    .await?;
+                Ok(true)
+            }
+            SlashCommand::Tools => {
+                out.write_all(b"\x1b[90m/tools runs in TUI mode (aonyx --tui)\x1b[0m\n")
                     .await?;
                 Ok(true)
             }

@@ -109,6 +109,7 @@ const SLASH_CANDIDATES: &[&str] = &[
     "/find",
     "/load",
     "/kg",
+    "/tools",
     "/editor",
     "/init",
 ];
@@ -223,6 +224,47 @@ impl AsyncApprover for TuiApprover {
             return false;
         }
         rx.await.unwrap_or(false)
+    }
+}
+
+/// One row of the `/tools` panel (Phase Q).
+#[derive(Debug, Clone)]
+struct ToolEntry {
+    /// Tool name as registered.
+    name: String,
+    /// Tool safety class — colours the dot marker.
+    class: SafetyClass,
+    /// Live disabled state — flipped by `space` / `Enter`.
+    disabled: bool,
+}
+
+/// Floating `/tools` panel state (Phase Q).
+#[derive(Debug, Default)]
+struct ToolsPanel {
+    /// `true` while the overlay is visible.
+    open: bool,
+    /// One row per registered tool, sorted alphabetically.
+    entries: Vec<ToolEntry>,
+    /// Currently-highlighted row index.
+    selected: usize,
+}
+
+impl ToolsPanel {
+    fn close(&mut self) {
+        self.open = false;
+        self.selected = 0;
+    }
+
+    fn move_up(&mut self) {
+        if self.selected > 0 {
+            self.selected -= 1;
+        }
+    }
+
+    fn move_down(&mut self) {
+        if self.selected + 1 < self.entries.len() {
+            self.selected += 1;
+        }
     }
 }
 
@@ -399,6 +441,11 @@ fn build_palette_entries() -> Vec<PaletteEntry> {
             action: PaletteAction::Slash(SlashCommand::Kg),
         },
         PaletteEntry {
+            label: "/tools".into(),
+            hint: "Open the tools panel (enable / disable handlers)".into(),
+            action: PaletteAction::Slash(SlashCommand::Tools),
+        },
+        PaletteEntry {
             label: "/quit".into(),
             hint: "Exit Aonyx".into(),
             action: PaletteAction::Slash(SlashCommand::Quit),
@@ -439,7 +486,12 @@ pub async fn run(
     // queued (more than enough since the runner sequences them).
     let (approval_tx, approval_rx) = tokio::sync::mpsc::channel::<PendingApproval>(4);
     let approver: Arc<dyn AsyncApprover> = Arc::new(TuiApprover { tx: approval_tx });
-    let runner = AgentRunner::new(provider, ToolRegistry::default_set(), model.clone())
+    // Phase Q — share a single ToolRegistry between the TUI and the
+    // runner so `/tools` toggles take effect immediately. Clone is
+    // shallow: handlers are Arc-shared and the disabled set lives
+    // behind Arc<Mutex<_>>.
+    let tool_registry = ToolRegistry::default_set();
+    let runner = AgentRunner::new(provider, tool_registry.clone(), model.clone())
         .with_max_iterations(max_iterations)
         .with_approval(ApprovalPolicy::interactive(approver))
         .with_skills(skills)
@@ -505,6 +557,8 @@ pub async fn run(
         turn_started_at: None,
         palette: Palette::new(),
         kg_panel: KgPanel::default(),
+        tool_registry,
+        tools_panel: ToolsPanel::default(),
         approval_rx,
         pending_approval: None,
         vim_mode: VimMode::Off,
@@ -610,6 +664,13 @@ struct TuiApp {
 
     /// Floating `/kg` memory-palace panel (Phase O).
     kg_panel: KgPanel,
+
+    /// Shared tool registry (Arc-clone of the one the runner uses).
+    /// Drives the `/tools` panel (Phase Q) so toggles take effect
+    /// immediately on the next runner iteration.
+    tool_registry: ToolRegistry,
+    /// Floating `/tools` panel state (Phase Q).
+    tools_panel: ToolsPanel,
 
     /// Receiver of pending approval requests bubbled up by the
     /// [`TuiApprover`] (Phase P).
@@ -993,6 +1054,12 @@ impl TuiApp {
         // KG panel (Phase O) swallows every key while open.
         if self.kg_panel.open {
             self.handle_kg_panel_key(key);
+            return;
+        }
+
+        // Tools panel (Phase Q) swallows every key while open.
+        if self.tools_panel.open {
+            self.handle_tools_panel_key(key);
             return;
         }
 
@@ -1625,6 +1692,9 @@ impl TuiApp {
             SlashCommand::Kg => {
                 self.open_kg_panel().await;
             }
+            SlashCommand::Tools => {
+                self.open_tools_panel();
+            }
             SlashCommand::Undo => match aonyx_tools::undo::pop_last_snapshot() {
                 Ok(Some(snap)) => match aonyx_tools::undo::restore(&snap) {
                     Ok(()) => {
@@ -1696,6 +1766,59 @@ impl TuiApp {
             Char(c) if !ctrl => {
                 self.palette.query.push(c);
                 self.palette.refilter();
+            }
+            _ => {}
+        }
+    }
+
+    /// Snapshot every registered tool into a sorted `ToolEntry` list
+    /// and open the panel (Phase Q).
+    fn open_tools_panel(&mut self) {
+        let mut entries: Vec<ToolEntry> = self
+            .tool_registry
+            .names()
+            .map(|n| n.to_string())
+            .filter_map(|name| {
+                let h = self.tool_registry.get_raw(&name)?;
+                Some(ToolEntry {
+                    class: h.classify(),
+                    disabled: self.tool_registry.is_disabled(&name),
+                    name,
+                })
+            })
+            .collect();
+        entries.sort_by(|a, b| a.name.cmp(&b.name));
+        self.tools_panel.entries = entries;
+        self.tools_panel.selected = 0;
+        self.tools_panel.open = true;
+    }
+
+    /// Drive the `/tools` panel: ↑/↓ navigate, space / Enter toggle,
+    /// Esc / q close (Phase Q).
+    fn handle_tools_panel_key(&mut self, key: KeyEvent) {
+        use KeyCode::*;
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        match key.code {
+            Esc | Char('q') => self.tools_panel.close(),
+            Char('c') | Char('d') if ctrl => {
+                self.tools_panel.close();
+                self.quit = true;
+            }
+            Up | Char('k') => self.tools_panel.move_up(),
+            Down | Char('j') => self.tools_panel.move_down(),
+            Char(' ') | Enter => {
+                if let Some(entry) = self.tools_panel.entries.get(self.tools_panel.selected) {
+                    let new_state = self.tool_registry.toggle(&entry.name);
+                    let name = entry.name.clone();
+                    let updated = ToolEntry {
+                        name: entry.name.clone(),
+                        class: entry.class,
+                        disabled: new_state,
+                    };
+                    self.tools_panel.entries[self.tools_panel.selected] = updated;
+                    let state_str = if new_state { "disabled" } else { "enabled" };
+                    self.push_dim(&format!("  · tool {name} {state_str}"));
+                }
             }
             _ => {}
         }
@@ -2424,6 +2547,9 @@ impl TuiApp {
         if self.kg_panel.open {
             self.render_kg_panel(f);
         }
+        if self.tools_panel.open {
+            self.render_tools_panel(f);
+        }
         if self.pending_approval.is_some() {
             self.render_approval_overlay(f);
         }
@@ -2535,6 +2661,100 @@ impl TuiApp {
         // the inner content of the block — strip 1 cell on each side for
         // the border.
         self.palette_results_rect = Some(rect_shrink(inner[1], 1));
+    }
+
+    /// Draw the `/tools` panel (Phase Q) — list of registered tools
+    /// with a `[on]` / `[off]` switch and a coloured SafetyClass tag.
+    fn render_tools_panel(&self, f: &mut Frame<'_>) {
+        let area = f.area();
+        let width = (area.width as u32 * 60 / 100).clamp(40, 80) as u16;
+        let height = (area.height as u32 * 60 / 100).clamp(8, 22) as u16;
+        let x = area.x + (area.width.saturating_sub(width)) / 2;
+        let y = area.y + (area.height.saturating_sub(height)) / 2;
+        let popup = Rect::new(x, y, width, height);
+        f.render_widget(ratatui::widgets::Clear, popup);
+
+        let header_style = Style::default()
+            .fg(self.theme.assistant_prefix)
+            .add_modifier(Modifier::BOLD);
+        let dim_style = Style::default().fg(self.theme.dim);
+        let on_style = Style::default()
+            .fg(self.theme.user_prefix)
+            .add_modifier(Modifier::BOLD);
+        let off_style = Style::default()
+            .fg(Color::Red)
+            .add_modifier(Modifier::BOLD);
+        let name_style = Style::default().fg(self.theme.header_fg);
+
+        let total = self.tools_panel.entries.len();
+        let disabled = self
+            .tools_panel
+            .entries
+            .iter()
+            .filter(|e| e.disabled)
+            .count();
+        let title = format!(
+            " /tools · {total} registered · {} enabled · {} disabled ",
+            total - disabled,
+            disabled
+        );
+        let footer = Line::from(Span::styled(
+            " ↑/↓ navigate · Space/Enter toggle · Esc / q close ",
+            dim_style,
+        ));
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(self.theme.suggestion_border))
+            .title(title)
+            .title_alignment(Alignment::Left)
+            .title_bottom(footer);
+
+        let max_rows = popup.height.saturating_sub(2) as usize;
+        let scroll = self
+            .tools_panel
+            .selected
+            .saturating_sub(max_rows.saturating_sub(1));
+        let visible_end = (scroll + max_rows).min(total);
+        let visible = if total == 0 {
+            &[][..]
+        } else {
+            &self.tools_panel.entries[scroll..visible_end]
+        };
+
+        let lines: Vec<Line> = if visible.is_empty() {
+            vec![Line::from(Span::styled(
+                "  (no tools registered)",
+                dim_style,
+            ))]
+        } else {
+            visible
+                .iter()
+                .enumerate()
+                .map(|(i, entry)| {
+                    let selected = scroll + i == self.tools_panel.selected;
+                    let marker = if selected { "▸ " } else { "  " };
+                    let dot_color = match entry.class {
+                        SafetyClass::Safe => self.theme.user_prefix,
+                        SafetyClass::Caution => Color::Yellow,
+                        SafetyClass::Destructive => Color::Red,
+                    };
+                    let state_span = if entry.disabled {
+                        Span::styled(" [off] ", off_style)
+                    } else {
+                        Span::styled(" [on]  ", on_style)
+                    };
+                    Line::from(vec![
+                        Span::styled(marker, header_style),
+                        Span::styled("● ", Style::default().fg(dot_color)),
+                        Span::styled(format!("{:<12}", entry.name), name_style),
+                        state_span,
+                        Span::styled(format!(" {:?}", entry.class), dim_style),
+                    ])
+                })
+                .collect()
+        };
+        let para = Paragraph::new(Text::from(lines)).block(block);
+        f.render_widget(para, popup);
     }
 
     /// Draw the inline approval overlay (Phase P) — a compact centered
@@ -2687,6 +2907,7 @@ const HELP_LINES: &[&str] = &[
     "  /find /f <query>     search past sessions across every project (Phase L)",
     "  /load /switch <id>   switch to a session by id prefix (Phase L)",
     "  /kg /palace          open the memory-palace visualization (Phase O)",
+    "  /tools               enable / disable registered tools live (Phase Q)",
     "  /editor /e           legacy-mode only for now",
     "  /init                drop an agent.yaml in the project root",
     "inline:",
