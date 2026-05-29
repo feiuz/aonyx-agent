@@ -71,6 +71,10 @@ pub enum SlashCommand {
     Vim,
     /// Revert the last destructive `fs_edit` / `fs_write` (Phase J).
     Undo,
+    /// Search across every session's message bodies (Phase L).
+    Find(Option<String>),
+    /// Switch to a session by id-prefix (Phase L).
+    Load(Option<String>),
 }
 
 impl SlashCommand {
@@ -95,6 +99,8 @@ impl SlashCommand {
             "/themes" | "/theme" | "/t" => Some(Self::Themes(rest.map(str::to_string))),
             "/vim" => Some(Self::Vim),
             "/undo" | "/u" => Some(Self::Undo),
+            "/find" | "/f" | "/search" => Some(Self::Find(rest.map(str::to_string))),
+            "/load" | "/switch" => Some(Self::Load(rest.map(str::to_string))),
             _ => None,
         }
     }
@@ -335,6 +341,11 @@ impl InteractiveSession {
             }
             SlashCommand::Vim => {
                 out.write_all(b"\x1b[90m/vim runs in TUI mode (aonyx --tui)\x1b[0m\n")
+                    .await?;
+                Ok(true)
+            }
+            SlashCommand::Find(_) | SlashCommand::Load(_) => {
+                out.write_all(b"\x1b[90m/find and /load run in TUI mode (aonyx --tui)\x1b[0m\n")
                     .await?;
                 Ok(true)
             }

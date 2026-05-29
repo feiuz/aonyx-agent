@@ -56,6 +56,25 @@ pub struct SessionRecord {
     pub messages: Vec<Message>,
 }
 
+/// Lightweight summary of a search hit — just enough to render a row in
+/// the `/find` results list without paying to JSON-decode every message
+/// body (Phase L).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SearchHit {
+    /// Stable session id.
+    pub id: SessionId,
+    /// Project slug (typically the cwd directory name).
+    pub project: String,
+    /// Session title — derived from the first user message.
+    pub title: String,
+    /// Last update timestamp.
+    pub updated_at: DateTime<Utc>,
+    /// Number of completed turns.
+    pub turns: u32,
+    /// A short excerpt around the matched query.
+    pub snippet: String,
+}
+
 /// Async session store.
 #[async_trait]
 pub trait SessionStore: Send + Sync {
@@ -76,6 +95,17 @@ pub trait SessionStore: Send + Sync {
 
     /// Most recent session for `project`, if any.
     async fn latest(&self, project: &str) -> Result<Option<SessionRecord>>;
+
+    /// Substring search across every session's message bodies and
+    /// titles. Case-insensitive. Most recently updated hits first
+    /// (Phase L).
+    async fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchHit>>;
+
+    /// Resolve a UUID prefix to the matching `SessionRecord`(s). Empty
+    /// vec when no match, multi-element when the prefix is ambiguous.
+    /// Used by `/load` (Phase L).
+    async fn find_by_id_prefix(&self, prefix: &str, limit: usize)
+        -> Result<Vec<SessionRecord>>;
 }
 
 /// SQLite-backed [`SessionStore`].
@@ -318,6 +348,126 @@ impl SessionStore for SqliteSessionStore {
         let list = self.list_by_project(project, 1).await?;
         Ok(list.into_iter().next())
     }
+
+    async fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchHit>> {
+        let conn = self.conn.clone();
+        let needle = query.to_string();
+        let like = format!("%{}%", needle);
+        tokio::task::spawn_blocking(move || -> Result<Vec<SearchHit>> {
+            let lock = conn.lock().expect("sessions mutex poisoned");
+            let mut stmt = lock
+                .prepare(&format!(
+                    "SELECT {COLUMNS} FROM sessions
+                     WHERE messages_json LIKE ?1 COLLATE NOCASE
+                        OR title LIKE ?1 COLLATE NOCASE
+                     ORDER BY updated_at DESC
+                     LIMIT ?2"
+                ))
+                .map_err(|e| AonyxError::Memory(format!("prepare search: {e}")))?;
+            let rows = stmt
+                .query_map(params![like, limit as i64], row_to_record)
+                .map_err(|e| AonyxError::Memory(format!("query search: {e}")))?;
+            let mut out = Vec::new();
+            for r in rows {
+                let rec = r.map_err(|e| AonyxError::Memory(format!("row decode: {e}")))?;
+                let snippet = extract_snippet(&rec.messages, &needle);
+                out.push(SearchHit {
+                    id: rec.id,
+                    project: rec.project,
+                    title: rec.title,
+                    updated_at: rec.updated_at,
+                    turns: rec.turns,
+                    snippet,
+                });
+            }
+            Ok(out)
+        })
+        .await
+        .map_err(|e| AonyxError::Memory(format!("search join: {e}")))?
+    }
+
+    async fn find_by_id_prefix(
+        &self,
+        prefix: &str,
+        limit: usize,
+    ) -> Result<Vec<SessionRecord>> {
+        let conn = self.conn.clone();
+        let like = format!("{}%", prefix.to_lowercase());
+        tokio::task::spawn_blocking(move || -> Result<Vec<SessionRecord>> {
+            let lock = conn.lock().expect("sessions mutex poisoned");
+            let mut stmt = lock
+                .prepare(&format!(
+                    "SELECT {COLUMNS} FROM sessions
+                     WHERE id LIKE ?1 COLLATE NOCASE
+                     ORDER BY updated_at DESC
+                     LIMIT ?2"
+                ))
+                .map_err(|e| AonyxError::Memory(format!("prepare prefix: {e}")))?;
+            let rows = stmt
+                .query_map(params![like, limit as i64], row_to_record)
+                .map_err(|e| AonyxError::Memory(format!("query prefix: {e}")))?;
+            let mut out = Vec::new();
+            for r in rows {
+                out.push(r.map_err(|e| AonyxError::Memory(format!("row decode: {e}")))?);
+            }
+            Ok(out)
+        })
+        .await
+        .map_err(|e| AonyxError::Memory(format!("prefix join: {e}")))?
+    }
+}
+
+/// Return up to ~120 characters surrounding the first case-insensitive
+/// hit of `needle` inside any message's content. Falls back to the first
+/// message's leading characters when no hit is found (e.g. when the
+/// LIKE hit was on `title`).
+fn extract_snippet(messages: &[Message], needle: &str) -> String {
+    const WINDOW: usize = 120;
+    let lower_needle = needle.to_lowercase();
+    for m in messages {
+        let lower = m.content.to_lowercase();
+        if let Some(idx) = lower.find(&lower_needle) {
+            // Translate back to a char-based window so we don't slice a
+            // multibyte UTF-8 sequence.
+            let chars: Vec<char> = m.content.chars().collect();
+            // Approximate idx (byte offset) to char index by counting
+            // chars up to that byte.
+            let mut byte_count = 0usize;
+            let mut char_idx = 0usize;
+            for (i, c) in chars.iter().enumerate() {
+                if byte_count >= idx {
+                    char_idx = i;
+                    break;
+                }
+                byte_count += c.len_utf8();
+            }
+            let start = char_idx.saturating_sub(WINDOW / 4);
+            let end = (start + WINDOW).min(chars.len());
+            let mut snip: String = chars[start..end].iter().collect();
+            snip = snip.replace('\n', " ");
+            if start > 0 {
+                snip.insert(0, '…');
+            }
+            if end < chars.len() {
+                snip.push('…');
+            }
+            return snip;
+        }
+    }
+    // No body hit — fall back to the first user message's lead.
+    let first = messages
+        .iter()
+        .find(|m| m.role == Role::User)
+        .or_else(|| messages.first())
+        .map(|m| m.content.clone())
+        .unwrap_or_default();
+    let single: String = first.replace('\n', " ");
+    if single.chars().count() > 120 {
+        let cut: String = single.chars().take(120).collect();
+        format!("{cut}…")
+    } else {
+        single
+    }
 }
 
 #[cfg(test)]
@@ -423,5 +573,77 @@ mod tests {
         let title = extract_title(&m);
         assert!(!title.contains('\n'));
         assert!(title.contains("line one"));
+    }
+
+    #[tokio::test]
+    async fn search_finds_hits_across_message_bodies() {
+        let store = SqliteSessionStore::open_in_memory().unwrap();
+        let _ = store
+            .create(
+                "demo",
+                vec![msg(Role::User, "implement OAuth flow for the API")],
+            )
+            .await
+            .unwrap();
+        let _ = store
+            .create("demo", vec![msg(Role::User, "unrelated work")])
+            .await
+            .unwrap();
+        let hits = store.search("oauth", 10).await.unwrap();
+        assert_eq!(hits.len(), 1);
+        assert!(hits[0].snippet.to_lowercase().contains("oauth"));
+    }
+
+    #[tokio::test]
+    async fn search_is_case_insensitive() {
+        let store = SqliteSessionStore::open_in_memory().unwrap();
+        let _ = store
+            .create("demo", vec![msg(Role::User, "FIX THE LOGIN BUG")])
+            .await
+            .unwrap();
+        let hits = store.search("login", 10).await.unwrap();
+        assert_eq!(hits.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn search_matches_title_when_body_does_not() {
+        let store = SqliteSessionStore::open_in_memory().unwrap();
+        let _ = store
+            .create("demo", vec![msg(Role::User, "deploy pipeline rework")])
+            .await
+            .unwrap();
+        let hits = store.search("deploy", 10).await.unwrap();
+        assert_eq!(hits.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn find_by_id_prefix_resolves_short_id() {
+        let store = SqliteSessionStore::open_in_memory().unwrap();
+        let created = store
+            .create("demo", vec![msg(Role::User, "x")])
+            .await
+            .unwrap();
+        let prefix: String = created.id.to_string().chars().take(8).collect();
+        let matches = store.find_by_id_prefix(&prefix, 5).await.unwrap();
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].id, created.id);
+    }
+
+    #[test]
+    fn extract_snippet_returns_window_around_match() {
+        let msgs = vec![msg(
+            Role::User,
+            "this is a long preamble describing the OAuth flow setup and then more text",
+        )];
+        let snip = extract_snippet(&msgs, "oauth");
+        assert!(snip.to_lowercase().contains("oauth"));
+        assert!(snip.starts_with("…") || snip.starts_with("this"));
+    }
+
+    #[test]
+    fn extract_snippet_falls_back_to_first_user_message() {
+        let msgs = vec![msg(Role::User, "no match here")];
+        let snip = extract_snippet(&msgs, "missing");
+        assert!(snip.contains("no match here"));
     }
 }

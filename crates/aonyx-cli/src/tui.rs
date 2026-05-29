@@ -94,6 +94,8 @@ const SLASH_CANDIDATES: &[&str] = &[
     "/themes",
     "/vim",
     "/undo",
+    "/find",
+    "/load",
     "/editor",
     "/init",
 ];
@@ -307,6 +309,16 @@ fn build_palette_entries() -> Vec<PaletteEntry> {
             label: "/undo".into(),
             hint: "Revert the last fs_edit / fs_write".into(),
             action: PaletteAction::Slash(SlashCommand::Undo),
+        },
+        PaletteEntry {
+            label: "/find".into(),
+            hint: "Search past sessions (needs a query: /find oauth)".into(),
+            action: PaletteAction::Slash(SlashCommand::Find(None)),
+        },
+        PaletteEntry {
+            label: "/load".into(),
+            hint: "Switch to a session by id prefix".into(),
+            action: PaletteAction::Slash(SlashCommand::Load(None)),
         },
         PaletteEntry {
             label: "/quit".into(),
@@ -1369,6 +1381,97 @@ impl TuiApp {
                     }
                 };
             }
+            SlashCommand::Find(target) => {
+                let Some(query) = target.filter(|q| !q.trim().is_empty()) else {
+                    self.push_dim("usage: /find <query> — searches all sessions");
+                    return;
+                };
+                match self.session_store.search(query.trim(), 10).await {
+                    Ok(hits) if hits.is_empty() => self.push_dim(&format!(
+                        "no hits for '{}' across {} project(s)",
+                        query.trim(),
+                        "all"
+                    )),
+                    Ok(hits) => {
+                        self.push_dim(&format!(
+                            "{} hit(s) for '{}' — `/load <id>` to switch:",
+                            hits.len(),
+                            query.trim()
+                        ));
+                        for h in hits {
+                            let short_id: String =
+                                h.id.to_string().chars().take(8).collect();
+                            let header = format!(
+                                "  [{short_id}] {} · {} · {} turn(s) · \"{}\"",
+                                h.updated_at.format("%Y-%m-%d %H:%M"),
+                                h.project,
+                                h.turns,
+                                h.title
+                            );
+                            self.push_dim(&header);
+                            self.push_dim(&format!("    └ {}", h.snippet));
+                        }
+                    }
+                    Err(e) => self.push_line(error_line(format!("search failed: {e}"))),
+                }
+            }
+            SlashCommand::Load(target) => {
+                let Some(prefix) = target.filter(|q| !q.trim().is_empty()) else {
+                    self.push_dim("usage: /load <id-prefix> — from a /find result");
+                    return;
+                };
+                match self
+                    .session_store
+                    .find_by_id_prefix(prefix.trim(), 5)
+                    .await
+                {
+                    Ok(matches) if matches.is_empty() => self
+                        .push_dim(&format!("no session matches prefix '{}'", prefix.trim())),
+                    Ok(matches) if matches.len() > 1 => {
+                        self.push_dim(&format!(
+                            "ambiguous prefix '{}' — {} matches:",
+                            prefix.trim(),
+                            matches.len()
+                        ));
+                        for r in matches {
+                            let short: String = r.id.to_string().chars().take(8).collect();
+                            self.push_dim(&format!(
+                                "  [{short}] {} · {}",
+                                r.updated_at.format("%Y-%m-%d %H:%M"),
+                                r.title
+                            ));
+                        }
+                    }
+                    Ok(mut matches) => {
+                        let target_record = matches.remove(0);
+                        // Persist current session before swapping so we
+                        // don't lose in-flight turns.
+                        let _ = self
+                            .session_store
+                            .update(self.session_id, self.messages.clone(), self.turns)
+                            .await;
+                        // Swap in the loaded session's state.
+                        let loaded_id = target_record.id;
+                        let short: String =
+                            loaded_id.to_string().chars().take(8).collect();
+                        self.session_id = loaded_id;
+                        self.messages = target_record.messages;
+                        self.turns = target_record.turns;
+                        self.project_slug = target_record.project.clone();
+                        self.viewport.clear();
+                        self.viewport.push(Line::from(Span::styled(
+                            format!(
+                                "🦦 loaded session [{short}] · {} · \"{}\"",
+                                target_record.project, target_record.title
+                            ),
+                            Style::default().fg(self.theme.dim),
+                        )));
+                        self.auto_scroll = true;
+                        self.scroll = 0;
+                    }
+                    Err(e) => self.push_line(error_line(format!("load failed: {e}"))),
+                }
+            }
             SlashCommand::Undo => match aonyx_tools::undo::pop_last_snapshot() {
                 Ok(Some(snap)) => match aonyx_tools::undo::restore(&snap) {
                     Ok(()) => {
@@ -2121,6 +2224,8 @@ const HELP_LINES: &[&str] = &[
     "  /themes /t [name]    switch palette (default, catppuccin, dracula, gruvbox)",
     "  /vim                 toggle vim modal editing (F3)",
     "  /undo /u             revert last fs_edit / fs_write (Phase J)",
+    "  /find /f <query>     search past sessions across every project (Phase L)",
+    "  /load /switch <id>   switch to a session by id prefix (Phase L)",
     "  /editor /e           legacy-mode only for now",
     "  /init                drop an agent.yaml in the project root",
     "inline:",
