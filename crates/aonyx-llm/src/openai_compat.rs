@@ -63,7 +63,39 @@ impl OpenAiCompatProvider {
 #[derive(Serialize)]
 struct OpenAiMessage<'a> {
     role: &'a str,
-    content: &'a str,
+    content: OpenAiContent<'a>,
+}
+
+/// Either a plain text body (the legacy + cheap path) or an array of
+/// content blocks — the latter is needed for vision (Phase T).
+#[derive(Serialize)]
+#[serde(untagged)]
+enum OpenAiContent<'a> {
+    Text(&'a str),
+    Blocks(Vec<OpenAiBlock<'a>>),
+}
+
+/// One element of a multimodal content array. OpenAI uses
+/// `image_url` (with a nested `{url: "data:..."}` object) for vision,
+/// distinct from Anthropic's `image` / `source` shape.
+#[derive(Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum OpenAiBlock<'a> {
+    Text {
+        text: &'a str,
+    },
+    #[serde(rename = "image_url")]
+    ImageUrl {
+        image_url: OpenAiImageUrl,
+    },
+}
+
+/// `image_url` carrier — OpenAI expects either a remote https:// URL or
+/// a `data:image/...;base64,XXX` blob. We always emit the latter so the
+/// adapter doesn't have to host the bytes anywhere.
+#[derive(Serialize)]
+struct OpenAiImageUrl {
+    url: String,
 }
 
 fn map_role(role: Role) -> &'static str {
@@ -86,9 +118,38 @@ impl LlmProvider for OpenAiCompatProvider {
         let messages: Vec<OpenAiMessage<'_>> = req
             .messages
             .iter()
-            .map(|m| OpenAiMessage {
-                role: map_role(m.role),
-                content: m.content.as_str(),
+            .map(|m| {
+                // Phase T — vision-capable models accept an array of
+                // content blocks. Text-only messages keep the cheap
+                // single-string path; whenever the message has
+                // attachments we emit `[image_url..., text]`.
+                let content = if m.attachments.is_empty() {
+                    OpenAiContent::Text(m.content.as_str())
+                } else {
+                    let mut blocks: Vec<OpenAiBlock<'_>> =
+                        Vec::with_capacity(m.attachments.len() + 1);
+                    for att in &m.attachments {
+                        match att {
+                            aonyx_core::Attachment::Image { media_type, data } => {
+                                blocks.push(OpenAiBlock::ImageUrl {
+                                    image_url: OpenAiImageUrl {
+                                        url: format!("data:{media_type};base64,{data}"),
+                                    },
+                                });
+                            }
+                        }
+                    }
+                    if !m.content.is_empty() {
+                        blocks.push(OpenAiBlock::Text {
+                            text: m.content.as_str(),
+                        });
+                    }
+                    OpenAiContent::Blocks(blocks)
+                };
+                OpenAiMessage {
+                    role: map_role(m.role),
+                    content,
+                }
             })
             .collect();
 
@@ -255,5 +316,42 @@ mod tests {
     fn ignores_malformed_json() {
         let block = "data: { this is not json";
         assert!(parse_sse_block(block).is_none());
+    }
+
+    #[test]
+    fn text_only_message_serialises_as_plain_string_content() {
+        let m = OpenAiMessage {
+            role: "user",
+            content: OpenAiContent::Text("hello"),
+        };
+        let v = serde_json::to_value(&m).unwrap();
+        assert_eq!(v["role"], "user");
+        assert_eq!(v["content"], "hello");
+    }
+
+    #[test]
+    fn vision_message_serialises_as_image_url_blocks() {
+        let m = OpenAiMessage {
+            role: "user",
+            content: OpenAiContent::Blocks(vec![
+                OpenAiBlock::ImageUrl {
+                    image_url: OpenAiImageUrl {
+                        url: "data:image/png;base64,AAAA".into(),
+                    },
+                },
+                OpenAiBlock::Text { text: "describe" },
+            ]),
+        };
+        let v = serde_json::to_value(&m).unwrap();
+        assert_eq!(v["role"], "user");
+        let blocks = v["content"].as_array().expect("array");
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(blocks[0]["type"], "image_url");
+        assert_eq!(
+            blocks[0]["image_url"]["url"],
+            "data:image/png;base64,AAAA"
+        );
+        assert_eq!(blocks[1]["type"], "text");
+        assert_eq!(blocks[1]["text"], "describe");
     }
 }
