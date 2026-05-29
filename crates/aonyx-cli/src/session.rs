@@ -75,6 +75,8 @@ pub enum SlashCommand {
     Find(Option<String>),
     /// Switch to a session by id-prefix (Phase L).
     Load(Option<String>),
+    /// Open the floating KG visualization panel (Phase O).
+    Kg,
 }
 
 impl SlashCommand {
@@ -101,6 +103,7 @@ impl SlashCommand {
             "/undo" | "/u" => Some(Self::Undo),
             "/find" | "/f" | "/search" => Some(Self::Find(rest.map(str::to_string))),
             "/load" | "/switch" => Some(Self::Load(rest.map(str::to_string))),
+            "/kg" | "/palace" => Some(Self::Kg),
             _ => None,
         }
     }
@@ -346,6 +349,11 @@ impl InteractiveSession {
             }
             SlashCommand::Find(_) | SlashCommand::Load(_) => {
                 out.write_all(b"\x1b[90m/find and /load run in TUI mode (aonyx --tui)\x1b[0m\n")
+                    .await?;
+                Ok(true)
+            }
+            SlashCommand::Kg => {
+                out.write_all(b"\x1b[90m/kg runs in TUI mode (aonyx --tui)\x1b[0m\n")
                     .await?;
                 Ok(true)
             }

@@ -36,7 +36,10 @@ use std::time::{Duration, Instant};
 
 use aonyx_agent::{AgentRunner, ApprovalPolicy, TurnEvent};
 use aonyx_core::{LlmProvider, MemoryStore, Message, Role, SafetyClass};
-use aonyx_memory::{Palace, SessionId, SessionStore, SqliteSessionStore};
+use aonyx_memory::{
+    kg::{Entity, EntityId, KgStore, Relation},
+    Palace, SessionId, SessionStore, SqliteSessionStore,
+};
 use aonyx_skills::Skill;
 use aonyx_tools::ToolRegistry;
 use crossterm::event::{
@@ -103,6 +106,7 @@ const SLASH_CANDIDATES: &[&str] = &[
     "/undo",
     "/find",
     "/load",
+    "/kg",
     "/editor",
     "/init",
 ];
@@ -181,6 +185,29 @@ struct PaletteEntry {
     hint: String,
     /// What to dispatch when accepted.
     action: PaletteAction,
+}
+
+/// Floating `/kg` memory-palace visualization (Phase O).
+#[derive(Debug, Default)]
+struct KgPanel {
+    /// `true` while the panel is rendered on top of the main UI.
+    open: bool,
+    /// Most-recently-loaded entities (newest first, capped).
+    entities: Vec<Entity>,
+    /// Most-recently-loaded relations (newest first, capped).
+    relations: Vec<Relation>,
+    /// Cached display lines produced by `KgPanel::rebuild_lines`. Kept
+    /// so scrolling doesn't re-grouping on every redraw.
+    lines: Vec<Line<'static>>,
+    /// Vertical scroll offset (in display rows).
+    scroll: u16,
+}
+
+impl KgPanel {
+    fn close(&mut self) {
+        self.open = false;
+        self.scroll = 0;
+    }
 }
 
 /// Floating Ctrl+P command palette state.
@@ -328,6 +355,11 @@ fn build_palette_entries() -> Vec<PaletteEntry> {
             action: PaletteAction::Slash(SlashCommand::Load(None)),
         },
         PaletteEntry {
+            label: "/kg".into(),
+            hint: "Open the memory-palace visualization panel".into(),
+            action: PaletteAction::Slash(SlashCommand::Kg),
+        },
+        PaletteEntry {
             label: "/quit".into(),
             hint: "Exit Aonyx".into(),
             action: PaletteAction::Slash(SlashCommand::Quit),
@@ -428,6 +460,7 @@ pub async fn run(
         file_cache: None,
         turn_started_at: None,
         palette: Palette::new(),
+        kg_panel: KgPanel::default(),
         vim_mode: VimMode::Off,
         viewport_rect: None,
         palette_results_rect: None,
@@ -528,6 +561,9 @@ struct TuiApp {
 
     /// Floating Ctrl+P palette (F1).
     palette: Palette,
+
+    /// Floating `/kg` memory-palace panel (Phase O).
+    kg_panel: KgPanel,
 
     /// Vim editing mode toggle (F3). Off by default.
     vim_mode: VimMode,
@@ -881,6 +917,12 @@ impl TuiApp {
         // don't quit the session by accident when the palette is showing.
         if self.palette.open {
             self.handle_palette_key(key).await;
+            return;
+        }
+
+        // KG panel (Phase O) swallows every key while open.
+        if self.kg_panel.open {
+            self.handle_kg_panel_key(key);
             return;
         }
 
@@ -1510,6 +1552,9 @@ impl TuiApp {
                     Err(e) => self.push_line(error_line(format!("load failed: {e}"))),
                 }
             }
+            SlashCommand::Kg => {
+                self.open_kg_panel().await;
+            }
             SlashCommand::Undo => match aonyx_tools::undo::pop_last_snapshot() {
                 Ok(Some(snap)) => match aonyx_tools::undo::restore(&snap) {
                     Ok(()) => {
@@ -1581,6 +1626,153 @@ impl TuiApp {
             Char(c) if !ctrl => {
                 self.palette.query.push(c);
                 self.palette.refilter();
+            }
+            _ => {}
+        }
+    }
+
+    /// Query the memory palace and open the floating `/kg` panel
+    /// (Phase O). Lists most recently created entities + relations,
+    /// capped at 200 of each to keep the panel snappy on huge graphs.
+    async fn open_kg_panel(&mut self) {
+        let entities = match self.palace.kg.list_entities(200).await {
+            Ok(v) => v,
+            Err(e) => {
+                self.push_line(error_line(format!("kg list_entities: {e}")));
+                return;
+            }
+        };
+        let relations = match self.palace.kg.list_relations(200).await {
+            Ok(v) => v,
+            Err(e) => {
+                self.push_line(error_line(format!("kg list_relations: {e}")));
+                return;
+            }
+        };
+        self.kg_panel.lines = self.build_kg_lines(&entities, &relations);
+        self.kg_panel.entities = entities;
+        self.kg_panel.relations = relations;
+        self.kg_panel.scroll = 0;
+        self.kg_panel.open = true;
+    }
+
+    /// Build the text layout for the KG panel: entities grouped by
+    /// `entity_type`, followed by a relations block rendered as
+    /// `name --predicate--> name` triples (Phase O).
+    fn build_kg_lines(
+        &self,
+        entities: &[Entity],
+        relations: &[Relation],
+    ) -> Vec<Line<'static>> {
+        use std::collections::BTreeMap;
+        let mut lines: Vec<Line<'static>> = Vec::new();
+        let header_style = Style::default()
+            .fg(self.theme.assistant_prefix)
+            .add_modifier(Modifier::BOLD);
+        let dim_style = Style::default().fg(self.theme.dim);
+        let name_style = Style::default().fg(self.theme.header_fg);
+        let type_style = Style::default().fg(self.theme.user_prefix);
+        let arrow_style = Style::default()
+            .fg(self.theme.suggestion_border)
+            .add_modifier(Modifier::BOLD);
+
+        if entities.is_empty() && relations.is_empty() {
+            lines.push(Line::from(Span::styled(
+                "  (the memory palace is empty — ask the agent to ingest some facts)",
+                dim_style,
+            )));
+            return lines;
+        }
+
+        // Group entities by type for compact display.
+        let mut by_type: BTreeMap<String, Vec<&Entity>> = BTreeMap::new();
+        for e in entities {
+            by_type.entry(e.entity_type.clone()).or_default().push(e);
+        }
+
+        lines.push(Line::from(Span::styled("Entities", header_style)));
+        lines.push(Line::default());
+        for (ty, list) in &by_type {
+            lines.push(Line::from(vec![
+                Span::styled(format!("  [{ty}] "), type_style),
+                Span::styled(format!("({} entities)", list.len()), dim_style),
+            ]));
+            for e in list {
+                lines.push(Line::from(vec![
+                    Span::styled("    • ", dim_style),
+                    Span::styled(e.name.clone(), name_style),
+                ]));
+            }
+            lines.push(Line::default());
+        }
+
+        // Build a name lookup so the relation block can render
+        // src/dst as their human names instead of UUIDs.
+        let mut name_of: std::collections::HashMap<EntityId, &str> =
+            std::collections::HashMap::with_capacity(entities.len());
+        for e in entities {
+            name_of.insert(e.id, e.name.as_str());
+        }
+
+        lines.push(Line::from(Span::styled("Relations", header_style)));
+        lines.push(Line::default());
+        if relations.is_empty() {
+            lines.push(Line::from(Span::styled(
+                "  (no edges yet)",
+                dim_style,
+            )));
+        } else {
+            for r in relations {
+                let src = name_of
+                    .get(&r.src_id)
+                    .map(|s| (*s).to_string())
+                    .unwrap_or_else(|| format!("{:?}", r.src_id));
+                let dst = name_of
+                    .get(&r.dst_id)
+                    .map(|s| (*s).to_string())
+                    .unwrap_or_else(|| format!("{:?}", r.dst_id));
+                lines.push(Line::from(vec![
+                    Span::styled("  • ", dim_style),
+                    Span::styled(src, name_style),
+                    Span::styled(" ──", arrow_style),
+                    Span::styled(r.predicate.clone(), arrow_style),
+                    Span::styled("──▶ ", arrow_style),
+                    Span::styled(dst, name_style),
+                ]));
+            }
+        }
+
+        lines
+    }
+
+    /// Drive the floating KG panel: ↑/↓ scroll, PgUp/PgDn faster,
+    /// Home/End jump, Esc / q closes.
+    fn handle_kg_panel_key(&mut self, key: KeyEvent) {
+        use KeyCode::*;
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        match key.code {
+            Esc | Char('q') => self.kg_panel.close(),
+            Char('c') | Char('d') if ctrl => {
+                self.kg_panel.close();
+                self.quit = true;
+            }
+            Up | Char('k') => {
+                self.kg_panel.scroll = self.kg_panel.scroll.saturating_sub(1);
+            }
+            Down | Char('j') => {
+                self.kg_panel.scroll = self.kg_panel.scroll.saturating_add(1);
+            }
+            PageUp => {
+                self.kg_panel.scroll = self.kg_panel.scroll.saturating_sub(8);
+            }
+            PageDown => {
+                self.kg_panel.scroll = self.kg_panel.scroll.saturating_add(8);
+            }
+            Home | Char('g') => {
+                self.kg_panel.scroll = 0;
+            }
+            End | Char('G') => {
+                self.kg_panel.scroll = u16::MAX;
             }
             _ => {}
         }
@@ -2128,9 +2320,12 @@ impl TuiApp {
         f.render_widget(status, chunks[4]);
 
         // Palette floats on top of everything else — rendered last so it
-        // wins the z-order.
+        // wins the z-order. Same z-rule for the KG panel.
         if self.palette.open {
             self.render_palette(f);
+        }
+        if self.kg_panel.open {
+            self.render_kg_panel(f);
         }
     }
 
@@ -2241,6 +2436,49 @@ impl TuiApp {
         // the border.
         self.palette_results_rect = Some(rect_shrink(inner[1], 1));
     }
+
+    /// Draw the floating KG visualization panel centered on screen
+    /// (Phase O). Reuses the palette's geometry math but skips the
+    /// search bar — the whole area is a scrollable content pane.
+    fn render_kg_panel(&mut self, f: &mut Frame<'_>) {
+        let area = f.area();
+        let width = (area.width as u32 * 75 / 100).clamp(40, 110) as u16;
+        let height = (area.height as u32 * 70 / 100).clamp(10, 30) as u16;
+        let x = area.x + (area.width.saturating_sub(width)) / 2;
+        let y = area.y + (area.height.saturating_sub(height)) / 2;
+        let popup = Rect::new(x, y, width, height);
+
+        f.render_widget(ratatui::widgets::Clear, popup);
+
+        // Clamp scroll so it can't run past the last line.
+        let total = self.kg_panel.lines.len() as u16;
+        let visible = popup.height.saturating_sub(2); // borders
+        let max_scroll = total.saturating_sub(visible);
+        if self.kg_panel.scroll > max_scroll {
+            self.kg_panel.scroll = max_scroll;
+        }
+
+        let title = format!(
+            " /kg · Memory palace · {} entit(y/ies) · {} relation(s) ",
+            self.kg_panel.entities.len(),
+            self.kg_panel.relations.len()
+        );
+        let footer = Line::from(Span::styled(
+            " ↑/↓ scroll · g/G top/bottom · Esc / q close ",
+            Style::default().fg(self.theme.dim),
+        ));
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(self.theme.suggestion_border))
+            .title(title)
+            .title_alignment(Alignment::Left)
+            .title_bottom(footer);
+        let para = Paragraph::new(Text::from(self.kg_panel.lines.clone()))
+            .wrap(Wrap { trim: false })
+            .scroll((self.kg_panel.scroll, 0))
+            .block(block);
+        f.render_widget(para, popup);
+    }
 }
 
 /// Shrink `r` by `n` cells on every side, clamped to zero. Used to map a
@@ -2296,6 +2534,7 @@ const HELP_LINES: &[&str] = &[
     "  /undo /u             revert last fs_edit / fs_write (Phase J)",
     "  /find /f <query>     search past sessions across every project (Phase L)",
     "  /load /switch <id>   switch to a session by id prefix (Phase L)",
+    "  /kg /palace          open the memory-palace visualization (Phase O)",
     "  /editor /e           legacy-mode only for now",
     "  /init                drop an agent.yaml in the project root",
     "inline:",

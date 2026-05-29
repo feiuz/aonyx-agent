@@ -163,6 +163,14 @@ pub trait KgStore: Send + Sync {
 
     /// Total entity count — cheap sanity check.
     async fn count_entities(&self) -> Result<usize>;
+
+    /// Snapshot every entity (most recently created first), capped at
+    /// `limit`. Used by the `/kg` visualization panel (Phase O).
+    async fn list_entities(&self, limit: usize) -> Result<Vec<Entity>>;
+
+    /// Snapshot every relation (most recently created first), capped at
+    /// `limit`. Used by the `/kg` visualization panel (Phase O).
+    async fn list_relations(&self, limit: usize) -> Result<Vec<Relation>>;
 }
 
 /// SQLite-backed [`KgStore`].
@@ -474,6 +482,52 @@ impl KgStore for SqliteKgStore {
         .await
         .map_err(|e| AonyxError::Memory(format!("kg count_entities join: {e}")))?
     }
+
+    async fn list_entities(&self, limit: usize) -> Result<Vec<Entity>> {
+        let conn = self.conn.clone();
+        tokio::task::spawn_blocking(move || -> Result<Vec<Entity>> {
+            let lock = conn.lock().expect("kg mutex poisoned");
+            let sql = format!(
+                "SELECT {ENTITY_COLUMNS} FROM entities ORDER BY created_at DESC LIMIT ?1"
+            );
+            let mut stmt = lock
+                .prepare(&sql)
+                .map_err(|e| AonyxError::Memory(format!("prepare list_entities: {e}")))?;
+            let rows = stmt
+                .query_map(params![limit as i64], entity_from_row)
+                .map_err(|e| AonyxError::Memory(format!("query list_entities: {e}")))?;
+            let mut out = Vec::new();
+            for r in rows {
+                out.push(r.map_err(|e| AonyxError::Memory(format!("row decode: {e}")))?);
+            }
+            Ok(out)
+        })
+        .await
+        .map_err(|e| AonyxError::Memory(format!("kg list_entities join: {e}")))?
+    }
+
+    async fn list_relations(&self, limit: usize) -> Result<Vec<Relation>> {
+        let conn = self.conn.clone();
+        tokio::task::spawn_blocking(move || -> Result<Vec<Relation>> {
+            let lock = conn.lock().expect("kg mutex poisoned");
+            let sql = format!(
+                "SELECT {RELATION_COLUMNS} FROM relations ORDER BY created_at DESC LIMIT ?1"
+            );
+            let mut stmt = lock
+                .prepare(&sql)
+                .map_err(|e| AonyxError::Memory(format!("prepare list_relations: {e}")))?;
+            let rows = stmt
+                .query_map(params![limit as i64], relation_from_row)
+                .map_err(|e| AonyxError::Memory(format!("query list_relations: {e}")))?;
+            let mut out = Vec::new();
+            for r in rows {
+                out.push(r.map_err(|e| AonyxError::Memory(format!("row decode: {e}")))?);
+            }
+            Ok(out)
+        })
+        .await
+        .map_err(|e| AonyxError::Memory(format!("kg list_relations join: {e}")))?
+    }
 }
 
 #[cfg(test)]
@@ -552,5 +606,51 @@ mod tests {
         assert_eq!(out[0].predicate, "ports_patterns_from");
         assert_eq!(out[0].src_id, a_id);
         assert_eq!(out[0].dst_id, b_id);
+    }
+
+    #[tokio::test]
+    async fn list_entities_orders_newest_first_and_caps_limit() {
+        let store = SqliteKgStore::open_in_memory().expect("open in-memory");
+        for name in ["A", "B", "C"] {
+            store
+                .upsert_entity(Entity::new(name, "thing"))
+                .await
+                .unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+        }
+        let all = store.list_entities(100).await.unwrap();
+        assert_eq!(all.len(), 3);
+        assert_eq!(all[0].name, "C");
+        let two = store.list_entities(2).await.unwrap();
+        assert_eq!(two.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn list_relations_returns_recent_edges_first() {
+        let store = SqliteKgStore::open_in_memory().expect("open in-memory");
+        let a = store
+            .upsert_entity(Entity::new("a", "x"))
+            .await
+            .unwrap();
+        let b = store
+            .upsert_entity(Entity::new("b", "x"))
+            .await
+            .unwrap();
+        let c = store
+            .upsert_entity(Entity::new("c", "x"))
+            .await
+            .unwrap();
+        store
+            .upsert_relation(Relation::new(a, b, "older"))
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+        store
+            .upsert_relation(Relation::new(b, c, "newer"))
+            .await
+            .unwrap();
+        let rels = store.list_relations(10).await.unwrap();
+        assert_eq!(rels.len(), 2);
+        assert_eq!(rels[0].predicate, "newer");
     }
 }
