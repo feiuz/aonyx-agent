@@ -16,6 +16,4 @@ serde_json = { workspace = true }
 async-trait = { workspace = true }
 tracing = { workspace = true }
 tokio = { workspace = true }
-
-# The official `rmcp` crate will be added when we wire the first concrete
-# transport (stdio / HTTP / SSE).
+reqwest = { workspace = true }

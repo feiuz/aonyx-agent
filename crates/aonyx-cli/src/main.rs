@@ -223,14 +223,31 @@ async fn start_interactive(project_path: Option<PathBuf>, use_tui: bool) -> anyh
     // skipped — it must never block the session.
     let mut tool_registry = aonyx_tools::ToolRegistry::default_set();
     for srv in &config.mcp_servers {
-        match aonyx_mcp::client::connect_and_register(
-            &mut tool_registry,
-            &srv.name,
-            &srv.command,
-            &srv.args,
-        )
-        .await
-        {
+        // `url` selects the HTTP transport (Phase II); otherwise fall
+        // back to stdio via `command` (Phase GG).
+        let outcome = if let Some(url) = &srv.url {
+            aonyx_mcp::client::connect_http_and_register(
+                &mut tool_registry,
+                &srv.name,
+                url,
+                srv.bearer_token.clone(),
+            )
+            .await
+        } else if let Some(command) = &srv.command {
+            aonyx_mcp::client::connect_and_register(
+                &mut tool_registry,
+                &srv.name,
+                command,
+                &srv.args,
+            )
+            .await
+        } else {
+            Err(aonyx_core::AonyxError::Mcp(format!(
+                "server '{}' has neither `command` nor `url`",
+                srv.name
+            )))
+        };
+        match outcome {
             Ok(n) => eprintln!(
                 "aonyx: MCP '{}' connected — {n} tool(s) registered",
                 srv.name

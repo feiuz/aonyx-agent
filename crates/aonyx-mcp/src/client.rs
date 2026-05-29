@@ -42,6 +42,19 @@ pub struct McpToolDef {
     pub input_schema: Value,
 }
 
+/// A connected MCP server, abstracted over its transport (stdio in
+/// Phase GG, Streamable HTTP in Phase II). [`McpToolHandler`] is
+/// generic over this so the same adapter wraps either.
+#[async_trait]
+pub trait McpTransport: Send + Sync {
+    /// Friendly name used to namespace the server's tool ids.
+    fn server_name(&self) -> &str;
+    /// Discover the server's tools.
+    async fn list_tools(&self) -> Result<Vec<McpToolDef>>;
+    /// Invoke a remote tool, returning the textual result content.
+    async fn call_tool(&self, name: &str, args: Value) -> Result<Value>;
+}
+
 /// A connected stdio MCP server: the child process plus framed I/O.
 pub struct StdioMcpClient {
     /// Friendly name (used to namespace tool ids).
@@ -97,11 +110,6 @@ impl StdioMcpClient {
         Ok(client)
     }
 
-    /// Friendly server name.
-    pub fn server_name(&self) -> &str {
-        &self.server_name
-    }
-
     async fn handshake(&self) -> Result<()> {
         let params = json!({
             "protocolVersion": MCP_PROTOCOL_VERSION,
@@ -112,19 +120,6 @@ impl StdioMcpClient {
         // Fire-and-forget the initialized notification.
         self.notify("notifications/initialized", json!({})).await?;
         Ok(())
-    }
-
-    /// Discover the server's tools.
-    pub async fn list_tools(&self) -> Result<Vec<McpToolDef>> {
-        let resp = self.request("tools/list", json!({})).await?;
-        Ok(parse_tools_list(&resp))
-    }
-
-    /// Invoke a remote tool, returning the textual result content.
-    pub async fn call_tool(&self, name: &str, args: Value) -> Result<Value> {
-        let params = json!({ "name": name, "arguments": args });
-        let resp = self.request("tools/call", params).await?;
-        Ok(extract_call_result(&resp))
     }
 
     /// Send a JSON-RPC request and read replies until the matching id
@@ -186,26 +181,174 @@ impl StdioMcpClient {
     }
 }
 
+#[async_trait]
+impl McpTransport for StdioMcpClient {
+    fn server_name(&self) -> &str {
+        &self.server_name
+    }
+
+    async fn list_tools(&self) -> Result<Vec<McpToolDef>> {
+        let resp = self.request("tools/list", json!({})).await?;
+        Ok(parse_tools_list(&resp))
+    }
+
+    async fn call_tool(&self, name: &str, args: Value) -> Result<Value> {
+        let params = json!({ "name": name, "arguments": args });
+        let resp = self.request("tools/call", params).await?;
+        Ok(extract_call_result(&resp))
+    }
+}
+
+/// A connected Streamable-HTTP MCP server (Phase II).
+///
+/// Each JSON-RPC request is a `POST` to the endpoint. The server may
+/// reply with `application/json` (a single response) or
+/// `text/event-stream` (SSE); both are handled. An `Mcp-Session-Id`
+/// returned by `initialize` is echoed on subsequent requests.
+pub struct HttpMcpClient {
+    server_name: String,
+    url: String,
+    bearer: Option<String>,
+    http: reqwest::Client,
+    next_id: AtomicI64,
+    session_id: Mutex<Option<String>>,
+}
+
+impl HttpMcpClient {
+    /// Connect to an HTTP MCP endpoint and perform the `initialize`
+    /// handshake. `bearer` is sent as `Authorization: Bearer …` when
+    /// present.
+    pub async fn connect(
+        server_name: impl Into<String>,
+        url: impl Into<String>,
+        bearer: Option<String>,
+    ) -> Result<Self> {
+        let client = Self {
+            server_name: server_name.into(),
+            url: url.into(),
+            bearer,
+            http: reqwest::Client::new(),
+            next_id: AtomicI64::new(1),
+            session_id: Mutex::new(None),
+        };
+        let params = json!({
+            "protocolVersion": MCP_PROTOCOL_VERSION,
+            "capabilities": {},
+            "clientInfo": { "name": "aonyx-agent", "version": env!("CARGO_PKG_VERSION") },
+        });
+        let _ = client.request("initialize", params).await?;
+        Ok(client)
+    }
+
+    async fn request(&self, method: &str, params: Value) -> Result<Value> {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let body = json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": method,
+            "params": params,
+        });
+
+        let mut req = self
+            .http
+            .post(&self.url)
+            .header("content-type", "application/json")
+            // Accept both reply shapes per the Streamable HTTP spec.
+            .header("accept", "application/json, text/event-stream")
+            .json(&body);
+        if let Some(token) = &self.bearer {
+            req = req.header("authorization", format!("Bearer {token}"));
+        }
+        if let Some(sid) = self.session_id.lock().await.clone() {
+            req = req.header("mcp-session-id", sid);
+        }
+
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| AonyxError::Mcp(format!("{method} POST: {e}")))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let txt = resp.text().await.unwrap_or_default();
+            return Err(AonyxError::Mcp(format!("{method}: HTTP {status}: {txt}")));
+        }
+
+        // Capture a session id handed out by `initialize`.
+        if let Some(sid) = resp
+            .headers()
+            .get("mcp-session-id")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string())
+        {
+            *self.session_id.lock().await = Some(sid);
+        }
+
+        let content_type = resp
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+        let text = resp
+            .text()
+            .await
+            .map_err(|e| AonyxError::Mcp(format!("{method} body: {e}")))?;
+
+        let payload = if content_type.contains("text/event-stream") {
+            extract_sse_json(&text)
+                .ok_or_else(|| AonyxError::Mcp(format!("{method}: no JSON in SSE stream")))?
+        } else {
+            serde_json::from_str::<Value>(text.trim())
+                .map_err(|e| AonyxError::Mcp(format!("{method}: bad JSON: {e}")))?
+        };
+
+        match match_response_value(&payload, id) {
+            ResponseMatch::Result(v) => Ok(v),
+            ResponseMatch::Error(msg) => Err(AonyxError::Mcp(format!("{method}: {msg}"))),
+            ResponseMatch::Other => Err(AonyxError::Mcp(format!("{method}: unexpected response"))),
+        }
+    }
+}
+
+#[async_trait]
+impl McpTransport for HttpMcpClient {
+    fn server_name(&self) -> &str {
+        &self.server_name
+    }
+
+    async fn list_tools(&self) -> Result<Vec<McpToolDef>> {
+        let resp = self.request("tools/list", json!({})).await?;
+        Ok(parse_tools_list(&resp))
+    }
+
+    async fn call_tool(&self, name: &str, args: Value) -> Result<Value> {
+        let params = json!({ "name": name, "arguments": args });
+        let resp = self.request("tools/call", params).await?;
+        Ok(extract_call_result(&resp))
+    }
+}
+
 /// A remote MCP tool adapted to Aonyx's [`ToolHandler`] so it can be
-/// registered alongside the built-in tools.
+/// registered alongside the built-in tools — transport-agnostic.
 pub struct McpToolHandler {
     /// Fully-qualified, collision-safe name: `<server>__<tool>`.
     qualified_name: String,
     /// Original (unprefixed) name the server expects in `tools/call`.
     remote_name: String,
     schema: Value,
-    client: Arc<StdioMcpClient>,
+    transport: Arc<dyn McpTransport>,
 }
 
 impl McpToolHandler {
-    /// Wrap a discovered tool def against its client.
-    pub fn new(client: Arc<StdioMcpClient>, def: McpToolDef) -> Self {
-        let qualified_name = format!("{}__{}", client.server_name(), def.name);
+    /// Wrap a discovered tool def against its transport.
+    pub fn new(transport: Arc<dyn McpTransport>, def: McpToolDef) -> Self {
+        let qualified_name = format!("{}__{}", transport.server_name(), def.name);
         Self {
             qualified_name,
             remote_name: def.name,
             schema: def.input_schema,
-            client,
+            transport,
         }
     }
 }
@@ -229,7 +372,10 @@ impl ToolHandler for McpToolHandler {
     }
 
     async fn invoke(&self, call: ToolCall) -> Result<ToolResult> {
-        let output = self.client.call_tool(&self.remote_name, call.args).await?;
+        let output = self
+            .transport
+            .call_tool(&self.remote_name, call.args)
+            .await?;
         Ok(ToolResult {
             call_id: call.id,
             output,
@@ -248,11 +394,36 @@ pub async fn connect_and_register(
     command: &str,
     args: &[String],
 ) -> Result<usize> {
-    let client = Arc::new(StdioMcpClient::connect(server_name, command, args).await?);
-    let tools = client.list_tools().await?;
+    let client: Arc<dyn McpTransport> =
+        Arc::new(StdioMcpClient::connect(server_name, command, args).await?);
+    register_transport(registry, client).await
+}
+
+/// Connect to an HTTP MCP server (Streamable HTTP), discover its tools,
+/// and register them. `bearer` is sent as `Authorization: Bearer …`
+/// when present (Phase II).
+pub async fn connect_http_and_register(
+    registry: &mut aonyx_tools::ToolRegistry,
+    server_name: &str,
+    url: &str,
+    bearer: Option<String>,
+) -> Result<usize> {
+    let client: Arc<dyn McpTransport> =
+        Arc::new(HttpMcpClient::connect(server_name, url, bearer).await?);
+    register_transport(registry, client).await
+}
+
+/// Discover + register every tool of a connected transport. Each
+/// handler holds an `Arc` to the transport, so it stays alive without
+/// the caller retaining it.
+async fn register_transport(
+    registry: &mut aonyx_tools::ToolRegistry,
+    transport: Arc<dyn McpTransport>,
+) -> Result<usize> {
+    let tools = transport.list_tools().await?;
     let count = tools.len();
     for def in tools {
-        registry.register(Arc::new(McpToolHandler::new(Arc::clone(&client), def)));
+        registry.register(Arc::new(McpToolHandler::new(Arc::clone(&transport), def)));
     }
     Ok(count)
 }
@@ -293,6 +464,13 @@ fn match_response(line: &str, expected_id: i64) -> ResponseMatch {
     let Ok(v) = serde_json::from_str::<Value>(line) else {
         return ResponseMatch::Other;
     };
+    match_response_value(&v, expected_id)
+}
+
+/// Same as [`match_response`] but on an already-parsed value — used by
+/// the HTTP transport (Phase II), which decodes the body before
+/// matching.
+fn match_response_value(v: &Value, expected_id: i64) -> ResponseMatch {
     let id_matches = v.get("id").and_then(|i| i.as_i64()) == Some(expected_id);
     if !id_matches {
         return ResponseMatch::Other;
@@ -306,6 +484,41 @@ fn match_response(line: &str, expected_id: i64) -> ResponseMatch {
         return ResponseMatch::Error(msg);
     }
     ResponseMatch::Result(v.get("result").cloned().unwrap_or(Value::Null))
+}
+
+/// Pull the first JSON-RPC object out of an SSE stream body (Phase II).
+///
+/// SSE frames are `data: <payload>` lines; a single logical message may
+/// span multiple `data:` lines (joined with `\n`), and frames are
+/// separated by blank lines. We return the first frame whose joined
+/// payload parses as JSON containing an `id` (the response we awaited),
+/// skipping any keep-alive / comment lines.
+fn extract_sse_json(body: &str) -> Option<Value> {
+    let mut data = String::new();
+    let flush = |buf: &mut String| -> Option<Value> {
+        if buf.is_empty() {
+            return None;
+        }
+        let parsed = serde_json::from_str::<Value>(buf.trim()).ok();
+        buf.clear();
+        parsed.filter(|v| v.get("id").is_some())
+    };
+    for line in body.lines() {
+        if let Some(payload) = line.strip_prefix("data:") {
+            if !data.is_empty() {
+                data.push('\n');
+            }
+            data.push_str(payload.trim_start());
+        } else if line.trim().is_empty() {
+            // End of an SSE frame.
+            if let Some(v) = flush(&mut data) {
+                return Some(v);
+            }
+        }
+        // Non-data, non-blank lines (e.g. `event:`, `:` comments) are
+        // ignored.
+    }
+    flush(&mut data)
 }
 
 /// Pull the tool list out of a `tools/list` result.
@@ -451,6 +664,39 @@ mod tests {
     fn extract_call_result_falls_back_to_raw() {
         let result = json!({ "data": 42 });
         assert_eq!(extract_call_result(&result), result);
+    }
+
+    #[test]
+    fn extract_sse_json_pulls_the_response_frame() {
+        let body =
+            "event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"ok\":true}}\n\n";
+        let v = extract_sse_json(body).expect("frame");
+        assert_eq!(v["id"], 1);
+        assert_eq!(v["result"]["ok"], true);
+    }
+
+    #[test]
+    fn extract_sse_json_joins_multiline_data_and_skips_keepalives() {
+        // Keep-alive comment, then JSON split across two `data:` lines.
+        let body = ": keep-alive\ndata: {\"jsonrpc\":\"2.0\",\ndata: \"id\":5,\"result\":{}}\n\n";
+        let v = extract_sse_json(body).expect("frame");
+        assert_eq!(v["id"], 5);
+    }
+
+    #[test]
+    fn extract_sse_json_none_when_no_data() {
+        assert!(extract_sse_json(": only a comment\n\n").is_none());
+        assert!(extract_sse_json("").is_none());
+    }
+
+    #[test]
+    fn match_response_value_matches_parsed_json() {
+        let v = json!({"jsonrpc":"2.0","id":4,"result":{"x":1}});
+        match match_response_value(&v, 4) {
+            ResponseMatch::Result(r) => assert_eq!(r["x"], 1),
+            _ => panic!("expected result"),
+        }
+        assert!(matches!(match_response_value(&v, 99), ResponseMatch::Other));
     }
 
     #[test]

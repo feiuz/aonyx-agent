@@ -87,23 +87,39 @@ pub struct Config {
     pub mcp_servers: Vec<McpServerConfig>,
 }
 
-/// A stdio MCP server declaration (Phase GG). Example `config.toml`:
+/// An MCP server declaration. Either **stdio** (set `command`, Phase GG)
+/// or **HTTP** (set `url`, Phase II) — `url` wins when both are present.
 ///
 /// ```toml
+/// # stdio
 /// [[mcp_servers]]
 /// name = "brave"
 /// command = "npx"
 /// args = ["-y", "@modelcontextprotocol/server-brave-search"]
+///
+/// # HTTP (Streamable HTTP)
+/// [[mcp_servers]]
+/// name = "remote"
+/// url = "https://mcp.example.com/v1"
+/// bearer_token = "sk-…"
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct McpServerConfig {
     /// Friendly name — namespaces the server's tools (`<name>__<tool>`).
     pub name: String,
-    /// Executable to spawn.
-    pub command: String,
-    /// Arguments passed to the executable.
+    /// Executable to spawn for the stdio transport. Ignored when `url`
+    /// is set.
+    #[serde(default)]
+    pub command: Option<String>,
+    /// Arguments passed to the stdio executable.
     #[serde(default)]
     pub args: Vec<String>,
+    /// HTTP endpoint for the Streamable-HTTP transport (Phase II).
+    #[serde(default)]
+    pub url: Option<String>,
+    /// Optional bearer token for the HTTP transport.
+    #[serde(default)]
+    pub bearer_token: Option<String>,
 }
 
 fn default_compact_threshold() -> u64 {
@@ -214,8 +230,10 @@ mod tests {
             auto_compact_threshold: 12_000,
             mcp_servers: vec![McpServerConfig {
                 name: "demo".into(),
-                command: "echo".into(),
+                command: Some("echo".into()),
                 args: vec!["hi".into()],
+                url: None,
+                bearer_token: None,
             }],
         };
         let s = toml::to_string(&original).unwrap();

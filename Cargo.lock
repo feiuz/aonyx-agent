@@ -219,6 +219,7 @@ dependencies = [
  "aonyx-core",
  "aonyx-tools",
  "async-trait",
+ "reqwest",
  "serde",
  "serde_json",
  "tokio",
