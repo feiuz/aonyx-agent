@@ -356,7 +356,7 @@ impl AgentRunner {
             .get(&call.name)
             .ok_or_else(|| AonyxError::Tool(format!("unknown tool: {}", call.name)))?;
         let class = handler.classify();
-        if !self.approval.allow(&call, class) {
+        if !self.approval.allow(&call, class).await {
             return Err(AonyxError::ApprovalRejected(format!(
                 "{} ({:?})",
                 call.name, class

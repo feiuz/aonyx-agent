@@ -34,8 +34,10 @@ use std::io;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use aonyx_agent::approval::AsyncApprover;
 use aonyx_agent::{AgentRunner, ApprovalPolicy, TurnEvent};
-use aonyx_core::{LlmProvider, MemoryStore, Message, Role, SafetyClass};
+use aonyx_core::{LlmProvider, MemoryStore, Message, Role, SafetyClass, ToolCall};
+use async_trait::async_trait;
 use aonyx_memory::{
     kg::{Entity, EntityId, KgStore, Relation},
     Palace, SessionId, SessionStore, SqliteSessionStore,
@@ -185,6 +187,43 @@ struct PaletteEntry {
     hint: String,
     /// What to dispatch when accepted.
     action: PaletteAction,
+}
+
+/// One pending approval request bubbled from the runner to the TUI
+/// (Phase P). The `respond_to` channel resumes the runner with `true`
+/// (allow) or `false` (deny).
+#[derive(Debug)]
+struct PendingApproval {
+    /// The tool call awaiting approval.
+    call: ToolCall,
+    /// Why approval is required (typically `Destructive`).
+    class: SafetyClass,
+    /// One-shot reply channel back to the runner task.
+    respond_to: tokio::sync::oneshot::Sender<bool>,
+}
+
+/// Async approver that bridges the runner to the TUI via a sender
+/// channel + a per-call oneshot reply (Phase P).
+#[derive(Debug)]
+struct TuiApprover {
+    tx: tokio::sync::mpsc::Sender<PendingApproval>,
+}
+
+#[async_trait]
+impl AsyncApprover for TuiApprover {
+    async fn approve(&self, call: &ToolCall, class: SafetyClass) -> bool {
+        let (respond_to, rx) = tokio::sync::oneshot::channel();
+        let req = PendingApproval {
+            call: call.clone(),
+            class,
+            respond_to,
+        };
+        if self.tx.send(req).await.is_err() {
+            // TUI has hung up — fail closed.
+            return false;
+        }
+        rx.await.unwrap_or(false)
+    }
 }
 
 /// Floating `/kg` memory-palace visualization (Phase O).
@@ -395,9 +434,14 @@ pub async fn run(
     show_thinking: bool,
     desktop_notifications: bool,
 ) -> anyhow::Result<()> {
+    // Phase P — runner pauses on Destructive tool calls and asks the
+    // TUI via a channel. Capacity 4 = at most 4 in-flight approvals
+    // queued (more than enough since the runner sequences them).
+    let (approval_tx, approval_rx) = tokio::sync::mpsc::channel::<PendingApproval>(4);
+    let approver: Arc<dyn AsyncApprover> = Arc::new(TuiApprover { tx: approval_tx });
     let runner = AgentRunner::new(provider, ToolRegistry::default_set(), model.clone())
         .with_max_iterations(max_iterations)
-        .with_approval(ApprovalPolicy::DenyDestructive)
+        .with_approval(ApprovalPolicy::interactive(approver))
         .with_skills(skills)
         .with_project(&project_slug);
 
@@ -461,6 +505,8 @@ pub async fn run(
         turn_started_at: None,
         palette: Palette::new(),
         kg_panel: KgPanel::default(),
+        approval_rx,
+        pending_approval: None,
         vim_mode: VimMode::Off,
         viewport_rect: None,
         palette_results_rect: None,
@@ -565,6 +611,13 @@ struct TuiApp {
     /// Floating `/kg` memory-palace panel (Phase O).
     kg_panel: KgPanel,
 
+    /// Receiver of pending approval requests bubbled up by the
+    /// [`TuiApprover`] (Phase P).
+    approval_rx: tokio::sync::mpsc::Receiver<PendingApproval>,
+    /// Approval request currently displayed in the overlay, awaiting
+    /// the user's `Y/n`. `None` when no destructive call is pending.
+    pending_approval: Option<PendingApproval>,
+
     /// Vim editing mode toggle (F3). Off by default.
     vim_mode: VimMode,
 
@@ -622,6 +675,15 @@ impl TuiApp {
     }
 
     async fn poll_runner(&mut self) {
+        // Drain any pending approval request from the runner first so
+        // the overlay shows up the same frame the request was sent
+        // (Phase P).
+        if self.pending_approval.is_none() {
+            if let Ok(req) = self.approval_rx.try_recv() {
+                self.pending_approval = Some(req);
+            }
+        }
+
         if self.runner_event_rx.is_none() {
             return;
         }
@@ -912,6 +974,14 @@ impl TuiApp {
         let shift = key.modifiers.contains(KeyModifiers::SHIFT);
         let alt = key.modifiers.contains(KeyModifiers::ALT);
         let suggestions_open = !self.suggestions.is_empty();
+
+        // Approval overlay (Phase P) is highest-priority — until the
+        // user resolves it, the runner is parked and no other input
+        // should reach the rest of the UI.
+        if self.pending_approval.is_some() {
+            self.handle_approval_key(key);
+            return;
+        }
 
         // Palette swallows every key while open. Handled first so Ctrl+C/Esc
         // don't quit the session by accident when the palette is showing.
@@ -1631,6 +1701,33 @@ impl TuiApp {
         }
     }
 
+    /// Resolve the [`PendingApproval`] overlay: `Y` / Enter approve,
+    /// `n` / Esc deny. Routed via the runner's oneshot reply channel so
+    /// the runner unparks (Phase P).
+    fn handle_approval_key(&mut self, key: KeyEvent) {
+        use KeyCode::*;
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let approve = matches!(key.code, Char('y') | Char('Y') | Enter);
+        let deny = matches!(key.code, Char('n') | Char('N') | Esc);
+        let ctrl_quit = matches!(key.code, Char('c') | Char('d')) && ctrl;
+        if !approve && !deny && !ctrl_quit {
+            return;
+        }
+        if let Some(req) = self.pending_approval.take() {
+            let decision = approve;
+            let name = req.call.name.clone();
+            let _ = req.respond_to.send(decision);
+            if decision {
+                self.push_dim(&format!("  ✓ approved {name}"));
+            } else {
+                self.push_dim(&format!("  ✗ denied {name}"));
+            }
+        }
+        if ctrl_quit {
+            self.quit = true;
+        }
+    }
+
     /// Query the memory palace and open the floating `/kg` panel
     /// (Phase O). Lists most recently created entities + relations,
     /// capped at 200 of each to keep the panel snappy on huge graphs.
@@ -2319,13 +2416,16 @@ impl TuiApp {
         let status = Paragraph::new(status_line).style(Style::default().bg(bg));
         f.render_widget(status, chunks[4]);
 
-        // Palette floats on top of everything else — rendered last so it
-        // wins the z-order. Same z-rule for the KG panel.
+        // Floating overlays — rendered last so they win the z-order.
+        // Approval has the highest priority (the runner is parked).
         if self.palette.open {
             self.render_palette(f);
         }
         if self.kg_panel.open {
             self.render_kg_panel(f);
+        }
+        if self.pending_approval.is_some() {
+            self.render_approval_overlay(f);
         }
     }
 
@@ -2435,6 +2535,58 @@ impl TuiApp {
         // the inner content of the block — strip 1 cell on each side for
         // the border.
         self.palette_results_rect = Some(rect_shrink(inner[1], 1));
+    }
+
+    /// Draw the inline approval overlay (Phase P) — a compact centered
+    /// box showing the tool name, the abbreviated args, the safety
+    /// class, and a `[Y/n]` prompt.
+    fn render_approval_overlay(&self, f: &mut Frame<'_>) {
+        let Some(req) = self.pending_approval.as_ref() else {
+            return;
+        };
+        let area = f.area();
+        let width = (area.width as u32 * 65 / 100).clamp(40, 90) as u16;
+        let height: u16 = 7;
+        let x = area.x + (area.width.saturating_sub(width)) / 2;
+        let y = area.y + (area.height.saturating_sub(height)) / 2;
+        let popup = Rect::new(x, y, width, height);
+        f.render_widget(ratatui::widgets::Clear, popup);
+
+        let border_color = match req.class {
+            SafetyClass::Safe => self.theme.user_prefix,
+            SafetyClass::Caution => Color::Yellow,
+            SafetyClass::Destructive => Color::Red,
+        };
+        let header_style = Style::default().fg(border_color).add_modifier(Modifier::BOLD);
+        let dim_style = Style::default().fg(self.theme.dim);
+        let args_preview = abbreviate_value(&req.call.args, (width.saturating_sub(8)) as usize);
+
+        let lines = vec![
+            Line::from(vec![
+                Span::styled(
+                    "⚠ approve ",
+                    header_style.add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(req.call.name.clone(), header_style),
+                Span::styled(format!(" ({:?})", req.class), dim_style),
+            ]),
+            Line::from(Span::styled(args_preview, dim_style)),
+            Line::default(),
+            Line::from(vec![
+                Span::styled("  [Y] approve   ", header_style),
+                Span::styled("[n] deny   ", dim_style),
+                Span::styled("[Esc] also denies", dim_style),
+            ]),
+        ];
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(border_color))
+            .title(" Approval required ")
+            .title_alignment(Alignment::Left);
+        let para = Paragraph::new(lines)
+            .wrap(Wrap { trim: false })
+            .block(block);
+        f.render_widget(para, popup);
     }
 
     /// Draw the floating KG visualization panel centered on screen

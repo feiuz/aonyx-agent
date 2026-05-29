@@ -9,9 +9,18 @@
 use std::sync::Arc;
 
 use aonyx_core::{SafetyClass, ToolCall};
+use async_trait::async_trait;
 
 /// Predicate signature used by [`ApprovalPolicy::Custom`].
 pub type ApprovalPredicate = Arc<dyn Fn(&ToolCall, SafetyClass) -> bool + Send + Sync>;
+
+/// Async approver — typically a UI bridge that pauses the runner while
+/// it asks the user (Phase P).
+#[async_trait]
+pub trait AsyncApprover: Send + Sync + std::fmt::Debug {
+    /// Return `true` to let `call` proceed, `false` to reject it.
+    async fn approve(&self, call: &ToolCall, class: SafetyClass) -> bool;
+}
 
 /// Approval policy for tool calls.
 #[derive(Clone, Default)]
@@ -25,6 +34,21 @@ pub enum ApprovalPolicy {
     DenyDestructive,
     /// Defer to a custom predicate — used by interactive CLI prompts.
     Custom(ApprovalPredicate),
+    /// Defer to an async approver — used by the full-screen TUI to
+    /// pause the runner while a `[Y/n]` overlay collects the user's
+    /// decision (Phase P).
+    Interactive(Arc<dyn AsyncApprover>),
+}
+
+impl std::fmt::Debug for ApprovalPolicy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::AutoAllow => write!(f, "AutoAllow"),
+            Self::DenyDestructive => write!(f, "DenyDestructive"),
+            Self::Custom(_) => write!(f, "Custom(<fn>)"),
+            Self::Interactive(a) => write!(f, "Interactive({a:?})"),
+        }
+    }
 }
 
 impl ApprovalPolicy {
@@ -36,12 +60,19 @@ impl ApprovalPolicy {
         Self::Custom(Arc::new(f))
     }
 
-    /// Returns `true` when the call may proceed.
-    pub fn allow(&self, call: &ToolCall, class: SafetyClass) -> bool {
+    /// Wrap an [`AsyncApprover`] in an [`ApprovalPolicy::Interactive`].
+    pub fn interactive(a: Arc<dyn AsyncApprover>) -> Self {
+        Self::Interactive(a)
+    }
+
+    /// Returns `true` when the call may proceed. Async because the
+    /// `Interactive` variant may need to await user input.
+    pub async fn allow(&self, call: &ToolCall, class: SafetyClass) -> bool {
         match self {
             Self::AutoAllow => true,
             Self::DenyDestructive => class != SafetyClass::Destructive,
             Self::Custom(f) => f(call, class),
+            Self::Interactive(a) => a.approve(call, class).await,
         }
     }
 }
@@ -60,25 +91,57 @@ mod tests {
         }
     }
 
-    #[test]
-    fn auto_allow_accepts_destructive() {
-        assert!(ApprovalPolicy::AutoAllow.allow(&dummy_call(), SafetyClass::Destructive));
+    #[tokio::test]
+    async fn auto_allow_accepts_destructive() {
+        assert!(
+            ApprovalPolicy::AutoAllow
+                .allow(&dummy_call(), SafetyClass::Destructive)
+                .await
+        );
     }
 
-    #[test]
-    fn deny_destructive_default_rejects_destructive() {
+    #[tokio::test]
+    async fn deny_destructive_default_rejects_destructive() {
         let p = ApprovalPolicy::default();
-        assert!(!p.allow(&dummy_call(), SafetyClass::Destructive));
-        assert!(p.allow(&dummy_call(), SafetyClass::Caution));
-        assert!(p.allow(&dummy_call(), SafetyClass::Safe));
+        assert!(!p.allow(&dummy_call(), SafetyClass::Destructive).await);
+        assert!(p.allow(&dummy_call(), SafetyClass::Caution).await);
+        assert!(p.allow(&dummy_call(), SafetyClass::Safe).await);
     }
 
-    #[test]
-    fn custom_policy_runs_predicate() {
+    #[tokio::test]
+    async fn custom_policy_runs_predicate() {
         let p = ApprovalPolicy::custom(|call, class| {
             class == SafetyClass::Destructive && call.name == "fs_write"
         });
-        assert!(p.allow(&dummy_call(), SafetyClass::Destructive));
-        assert!(!p.allow(&dummy_call(), SafetyClass::Safe));
+        assert!(p.allow(&dummy_call(), SafetyClass::Destructive).await);
+        assert!(!p.allow(&dummy_call(), SafetyClass::Safe).await);
+    }
+
+    #[derive(Debug)]
+    struct AlwaysApprove;
+
+    #[async_trait]
+    impl AsyncApprover for AlwaysApprove {
+        async fn approve(&self, _call: &ToolCall, _class: SafetyClass) -> bool {
+            true
+        }
+    }
+
+    #[derive(Debug)]
+    struct AlwaysDeny;
+
+    #[async_trait]
+    impl AsyncApprover for AlwaysDeny {
+        async fn approve(&self, _call: &ToolCall, _class: SafetyClass) -> bool {
+            false
+        }
+    }
+
+    #[tokio::test]
+    async fn interactive_delegates_to_approver() {
+        let p = ApprovalPolicy::interactive(Arc::new(AlwaysApprove));
+        assert!(p.allow(&dummy_call(), SafetyClass::Destructive).await);
+        let p = ApprovalPolicy::interactive(Arc::new(AlwaysDeny));
+        assert!(!p.allow(&dummy_call(), SafetyClass::Destructive).await);
     }
 }
