@@ -32,5 +32,7 @@ dirs = "5"
 termimad = "0.31"
 chrono = { workspace = true }
 ratatui = { workspace = true }
+ratatui-core = "0.1"
 crossterm = { workspace = true }
 tui-textarea = "0.7"
+tui-markdown = "0.3"

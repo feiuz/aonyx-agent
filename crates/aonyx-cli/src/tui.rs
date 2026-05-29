@@ -134,6 +134,8 @@ pub async fn run(
         tick: 0,
         thinking_line: None,
         first_delta_received: false,
+        current_assistant_text: String::new(),
+        assistant_msg_start: None,
         quit: false,
     };
 
@@ -190,6 +192,13 @@ struct TuiApp {
     /// `true` once the runner has sent its first AssistantDelta — used to
     /// retire the thinking placeholder.
     first_delta_received: bool,
+    /// Raw text streamed for the assistant message currently in flight.
+    /// Rendered as Markdown by `tui-markdown` at `AssistantMessageEnd`.
+    current_assistant_text: String,
+    /// `viewport` index where the current assistant message started. The
+    /// raw streamed lines from that index up to the end are replaced by the
+    /// Markdown-rendered lines at `AssistantMessageEnd`.
+    assistant_msg_start: Option<usize>,
 
     quit: bool,
 }
@@ -277,16 +286,53 @@ impl TuiApp {
         self.first_delta_received = false;
     }
 
+    /// Replace the raw streamed assistant lines with Markdown-rendered ones.
+    fn finalize_assistant_message(&mut self) {
+        let Some(start) = self.assistant_msg_start else {
+            return;
+        };
+        if self.current_assistant_text.trim().is_empty() {
+            return;
+        }
+        if start > self.viewport.len() {
+            return;
+        }
+
+        // Drop the raw lines we streamed in between [start, end).
+        self.viewport.truncate(start);
+
+        // Re-emit a coloured "aonyx>" header line so it stands out from the
+        // surrounding Markdown content.
+        self.viewport.push(Line::from(Span::styled(
+            "aonyx>",
+            Style::default()
+                .fg(Color::Magenta)
+                .add_modifier(Modifier::BOLD),
+        )));
+
+        // Render the buffered text as Markdown and push every produced line.
+        let rendered = tui_markdown::from_str(&self.current_assistant_text);
+        for line in rendered.lines.into_iter() {
+            self.viewport.push(line_to_static(line));
+        }
+    }
+
     fn apply_event(&mut self, event: TurnEvent) {
         match event {
             TurnEvent::AssistantDelta(text) => {
                 if !self.first_delta_received {
                     self.retire_thinking_line();
                     self.first_delta_received = true;
+                    // Remember where this assistant message starts so we can
+                    // replace the raw streamed lines with Markdown-rendered
+                    // ones at AssistantMessageEnd.
+                    self.assistant_msg_start = Some(self.viewport.len());
                 }
+                self.current_assistant_text.push_str(&text);
                 self.append_to_assistant_line(&text);
             }
             TurnEvent::AssistantMessageEnd => {
+                self.finalize_assistant_message();
                 if !self.viewport.is_empty() {
                     let last_empty = self
                         .viewport
@@ -297,6 +343,9 @@ impl TuiApp {
                         self.viewport.push(Line::default());
                     }
                 }
+                self.first_delta_received = false;
+                self.assistant_msg_start = None;
+                self.current_assistant_text.clear();
             }
             TurnEvent::ToolStart { name, args, class } => {
                 self.retire_thinking_line();
@@ -882,6 +931,17 @@ fn error_line(text: String) -> Line<'static> {
         Span::styled("[error] ", Style::default().fg(Color::Red)),
         Span::raw(text),
     ])
+}
+
+/// Flatten a `ratatui_core::Line` (what `tui-markdown` returns) into a plain
+/// `ratatui::Line<'static>`. `Style`, `Color` and `Alignment` are distinct
+/// types between the two crates so field-by-field copy needs an explicit
+/// converter for each — until that lands (next sub-phase) we keep the
+/// Markdown structure (line breaks, list indentation, blank lines around
+/// code blocks) but drop styling colours.
+fn line_to_static(line: ratatui_core::text::Line<'_>) -> Line<'static> {
+    let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+    Line::from(Span::raw(text))
 }
 
 #[cfg(test)]
