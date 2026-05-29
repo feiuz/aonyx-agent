@@ -27,6 +27,7 @@ use aonyx_memory::{Palace, SessionStore, SqliteSessionStore};
 use clap::{Parser, Subcommand};
 
 mod config;
+mod images;
 mod pricing;
 mod session;
 mod theme;

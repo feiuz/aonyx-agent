@@ -57,6 +57,7 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tui_textarea::{CursorMove, TextArea};
 
+use crate::images;
 use crate::pricing::{self, Pricing};
 use crate::session::SlashCommand;
 use crate::theme::{self, Theme};
@@ -1175,19 +1176,33 @@ impl TuiApp {
                 Span::raw(display_text.clone()),
             ]));
             if !refs.is_empty() {
-                let resolved = resolve_refs(&refs).await;
-                for (path, result) in &resolved {
-                    match result {
-                        Ok(text) => {
-                            self.push_dim(&format!("  📎 loaded: {path} ({} bytes)", text.len()));
-                        }
-                        Err(e) => {
-                            self.push_line(error_line(format!("📎 {path}: {e}")));
+                // Phase N — split image refs from text refs so the
+                // viewport can preview the pixels inline while text
+                // refs continue through the existing read-as-string
+                // path that feeds them to the model.
+                let (image_refs, text_refs): (Vec<_>, Vec<_>) =
+                    refs.iter().cloned().partition(|p| images::looks_like_image(p));
+                for path in &image_refs {
+                    self.render_image_ref(path);
+                }
+                if !text_refs.is_empty() {
+                    let resolved = resolve_refs(&text_refs).await;
+                    for (path, result) in &resolved {
+                        match result {
+                            Ok(text) => {
+                                self.push_dim(&format!(
+                                    "  📎 loaded: {path} ({} bytes)",
+                                    text.len()
+                                ));
+                            }
+                            Err(e) => {
+                                self.push_line(error_line(format!("📎 {path}: {e}")));
+                            }
                         }
                     }
-                }
-                if let Some(ctx_msg) = build_refs_message(&resolved) {
-                    self.messages.push(ctx_msg);
+                    if let Some(ctx_msg) = build_refs_message(&resolved) {
+                        self.messages.push(ctx_msg);
+                    }
                 }
             }
             self.messages.push(Message::new(Role::User, display_text));
@@ -1696,6 +1711,38 @@ impl TuiApp {
             text.to_string(),
             Style::default().fg(Color::DarkGray),
         )));
+    }
+
+    /// Decode `@path.png|jpg|…` and push a half-block preview into the
+    /// viewport, framed by a dim header / footer (Phase N).
+    fn render_image_ref(&mut self, path: &str) {
+        let header = Style::default()
+            .fg(self.theme.assistant_prefix)
+            .add_modifier(Modifier::BOLD);
+        let frame_style = Style::default().fg(self.theme.dim);
+        match images::render(std::path::Path::new(path)) {
+            Ok(img) => {
+                self.push_line(Line::from(vec![
+                    Span::styled("  ┌─ ", frame_style),
+                    Span::styled(format!("📷 {path}"), header),
+                    Span::styled(
+                        format!(" · {}×{}", img.width, img.height),
+                        Style::default().fg(self.theme.dim),
+                    ),
+                ]));
+                for line in img.lines {
+                    let mut spans: Vec<Span<'static>> =
+                        Vec::with_capacity(line.spans.len() + 1);
+                    spans.push(Span::styled("  │ ", frame_style));
+                    spans.extend(line.spans);
+                    self.push_line(Line::from(spans));
+                }
+                self.push_line(Line::from(Span::styled("  └─", frame_style)));
+            }
+            Err(e) => {
+                self.push_line(error_line(format!("📷 {path}: {e}")));
+            }
+        }
     }
 
     /// Build the `· ~Xk tok · ~$Y.YY` suffix for the status bar.
