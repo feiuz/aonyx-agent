@@ -5,6 +5,80 @@ All notable changes to **Aonyx Agent** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] — 2026-05-29 — the full-screen TUI
+
+A 25-phase arc (B → Z) turning the line-based REPL into a full-screen
+`ratatui` terminal UI with multimodal input, multi-session branching, a
+memory-palace inspector, and live capability toggles. 185 workspace tests,
+`clippy --workspace -D warnings` clean.
+
+Launch with `aonyx --tui`. The legacy line REPL remains the default.
+
+### Added
+
+#### Terminal UI (ratatui)
+- Full-screen layout: scrollable conversation viewport, multi-line composer,
+  status bar. Auto-scroll, animated braille spinner, `💭 thinking…`
+  placeholder.
+- Markdown rendering in the viewport via `tui-markdown`, with a
+  `ratatui_core → ratatui` colour converter. Rendered **live during
+  streaming** — headings / bold / code light up as the model types.
+- `@path` file references load files into the next turn's context;
+  `!cmd` runs a local shell and feeds the output back.
+- Fuzzy autocomplete popup (`nucleo-matcher`) for `@` files, `/` commands,
+  and `/cmd <arg>` argument completion (`/themes`, `/load`, `/ingest`,
+  `/undo`).
+- Inline composer syntax highlight: `/cmd` magenta, `!bash` yellow, chat
+  default — recoloured on every keystroke.
+- `Ctrl+P` fuzzy command palette over every slash command + theme.
+- Mouse support: scroll wheel, single-click palette accept. `/mouse`
+  toggles capture so the host terminal can do native drag-to-select + copy.
+- Vim modal editing (`/vim`): Insert / Normal, `j/k/g/G` navigation.
+- 4 bundled themes (`/themes`): default, catppuccin, dracula, gruvbox.
+- Desktop notifications (`notify-rust`) on long-turn completion + errors.
+- Token + USD cost estimator in the status bar (per-provider pricing table).
+
+#### Multi-session
+- `SqliteSessionStore` cross-run persistence at `~/.aonyx/sessions.db`,
+  auto-restore on startup.
+- `/sessions` list, `/new` rotate, `/find <query>` full-text search across
+  every session, `/load <id-prefix>` switch, `/fork` branch the current
+  session into a child (parent_id tracked).
+
+#### Floating panels
+- `/kg` — memory-palace visualization: entities grouped by type, relations
+  as `src ──predicate──▶ dst`.
+- `/tools` — enable / disable registered tools live (shared `ToolRegistry`
+  disabled-set).
+- `/skills` — enable / disable loaded skills live (shared runner toggle set).
+- `/inspect` — pretty-printed JSON of the last LLM request (base64 images
+  elided).
+
+#### Safety + memory
+- Inline approval overlay: destructive `fs_edit` / `fs_write` / `bash` calls
+  pause the runner for a `[Y/n]` decision (async `AsyncApprover` bridge).
+- `/undo [N|list]` — revert the last N filesystem changes via a JSONL
+  snapshot journal at `<cwd>/.aonyx/undo.jsonl`.
+- `/ingest <path>` — chunk a local file (paragraph-aligned) into the project
+  palace; searchable by the agent.
+
+#### Multimodal
+- `@image.png` rendered inline as a half-block Unicode thumbnail (works in
+  any truecolor terminal, no Kitty / iTerm / Sixel dependency).
+- Vision passthrough: images forwarded to Anthropic (`image` / `source`
+  blocks) and OpenAI-compatible providers (`image_url` data URLs).
+- `Attachment::Image` on `Message`, `#[serde(default)]` for backwards
+  compatibility with existing persisted rows.
+
+### Changed
+- `ApprovalPolicy::allow` is now `async` to support the interactive TUI
+  approver.
+- `AgentRunner` exposes shared handles: `skill_toggle_handle()`,
+  `last_request_handle()`.
+- `SessionStore` gains `search`, `find_by_id_prefix`, and `fork`.
+- `ToolRegistry` gains a shared disabled-set with `disable` / `enable` /
+  `toggle` / `is_disabled`.
+
 ## [0.1.0] — 2026-05-28 — pre-alpha foundations
 
 This is the first release. Aonyx Agent runs end-to-end against Anthropic / OpenAI /
