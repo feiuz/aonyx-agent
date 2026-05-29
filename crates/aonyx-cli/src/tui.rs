@@ -111,6 +111,7 @@ const SLASH_CANDIDATES: &[&str] = &[
     "/models",
     "/sessions",
     "/export",
+    "/export-html",
     "/details",
     "/thinking",
     "/themes",
@@ -478,6 +479,11 @@ fn build_palette_entries() -> Vec<PaletteEntry> {
             label: "/export".into(),
             hint: "Export conversation to Markdown".into(),
             action: PaletteAction::Slash(SlashCommand::Export(None)),
+        },
+        PaletteEntry {
+            label: "/export-html".into(),
+            hint: "Export conversation to a styled standalone HTML".into(),
+            action: PaletteAction::Slash(SlashCommand::ExportHtml(None)),
         },
         PaletteEntry {
             label: "/details".into(),
@@ -1825,6 +1831,17 @@ impl TuiApp {
                     Err(e) => self.push_line(error_line(format!("export failed: {e}"))),
                 }
             }
+            SlashCommand::ExportHtml(target) => {
+                let path = export_html_path(target);
+                match self.export_html(&path).await {
+                    Ok(()) => self.push_dim(&format!(
+                        "exported HTML: {} ({} messages)",
+                        path.display(),
+                        self.messages.len()
+                    )),
+                    Err(e) => self.push_line(error_line(format!("export-html failed: {e}"))),
+                }
+            }
             SlashCommand::Details => {
                 self.show_tool_details = !self.show_tool_details;
                 let state = if self.show_tool_details { "on" } else { "off" };
@@ -2916,6 +2933,47 @@ impl TuiApp {
         tokio::fs::write(path, out).await
     }
 
+    /// Export the conversation to a standalone, styled HTML file
+    /// (Phase FF). Each message renders its Markdown body to HTML and
+    /// lands in a role-coloured card; the whole document is
+    /// self-contained (inline CSS, no external assets).
+    async fn export_html(&self, path: &std::path::Path) -> std::io::Result<()> {
+        let mut body = String::new();
+        for m in &self.messages {
+            let (role, css) = match m.role {
+                Role::System => ("system", "system"),
+                Role::User => ("you", "user"),
+                Role::Assistant => ("aonyx", "assistant"),
+                Role::Tool => ("tool", "tool"),
+            };
+            let rendered = render_markdown_to_html(&m.content);
+            let attach = if m.attachments.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    "<div class=\"attachments\">📎 {} attachment(s)</div>",
+                    m.attachments.len()
+                )
+            };
+            body.push_str(&format!(
+                "<section class=\"msg {css}\"><div class=\"role\">{role}</div><div class=\"content\">{rendered}{attach}</div></section>\n"
+            ));
+        }
+        let title = html_escape(&format!("Aonyx session — {}", self.project_slug));
+        let meta = html_escape(&format!(
+            "provider: {} · model: {} · turns: {}",
+            self.provider_name, self.model_name, self.turns
+        ));
+        let doc = format!(
+            "<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">\
+<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\
+<title>{title}</title>\n<style>{HTML_EXPORT_CSS}</style></head>\n<body>\
+<header><h1>🦦 {title}</h1><p class=\"meta\">{meta}</p></header>\n<main>\n{body}</main>\
+<footer>Exported by Aonyx Agent</footer></body></html>\n"
+        );
+        tokio::fs::write(path, doc).await
+    }
+
     fn push_dim(&mut self, text: &str) {
         self.push_line(Line::from(Span::styled(
             text.to_string(),
@@ -3845,6 +3903,7 @@ const HELP_LINES: &[&str] = &[
     "  /models /m           active provider + model",
     "  /sessions /s         multi-session UI (Phase D)",
     "  /export [path]       dump the conversation to Markdown",
+    "  /export-html [path]  dump the conversation to standalone HTML (Phase FF)",
     "  /details             toggle verbose tool output",
     "  /thinking            reasoning visibility (Phase E)",
     "  /themes /t [name]    switch palette (default, catppuccin, dracula, gruvbox)",
@@ -4231,6 +4290,71 @@ fn export_path(target: Option<String>) -> std::path::PathBuf {
     std::path::PathBuf::from(format!("aonyx-session-{stamp}.md"))
 }
 
+/// Default path for an HTML export (Phase FF) — timestamped `.html`.
+fn export_html_path(target: Option<String>) -> std::path::PathBuf {
+    if let Some(t) = target.filter(|s| !s.is_empty()) {
+        return std::path::PathBuf::from(t);
+    }
+    let stamp = chrono::Utc::now().format("%Y%m%d-%H%M%S").to_string();
+    std::path::PathBuf::from(format!("aonyx-session-{stamp}.html"))
+}
+
+/// Minimal HTML entity escaping for text injected outside the
+/// Markdown-rendered region (titles, metadata).
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
+/// Render a Markdown string to a safe HTML fragment (Phase FF).
+///
+/// Raw HTML embedded in the Markdown is **escaped, not passed through**,
+/// so an assistant message containing `<script>` can't execute when the
+/// export is opened in a browser.
+fn render_markdown_to_html(md: &str) -> String {
+    use pulldown_cmark::{html, Event, Options, Parser};
+    let parser = Parser::new_ext(md, Options::all()).map(|ev| match ev {
+        Event::Html(raw) => Event::Text(raw),
+        Event::InlineHtml(raw) => Event::Text(raw),
+        other => other,
+    });
+    let mut out = String::new();
+    html::push_html(&mut out, parser);
+    out
+}
+
+/// Inline stylesheet for the HTML export. A dark, readable theme that
+/// stands alone — no external fonts or assets.
+const HTML_EXPORT_CSS: &str = "\
+:root{color-scheme:dark}\
+*{box-sizing:border-box}\
+body{margin:0;background:#14181f;color:#d7dce4;\
+font:16px/1.6 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif}\
+header{padding:24px 20px;border-bottom:1px solid #2a313c;background:#181d26}\
+header h1{margin:0 0 6px;font-size:20px}\
+.meta{margin:0;color:#8a93a3;font-size:13px}\
+main{max-width:860px;margin:0 auto;padding:20px}\
+.msg{margin:0 0 16px;border:1px solid #2a313c;border-radius:8px;overflow:hidden}\
+.msg .role{padding:6px 12px;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.05em}\
+.msg .content{padding:12px 16px}\
+.msg.user .role{background:#1b3a2a;color:#8fe3a8}\
+.msg.assistant .role{background:#2a1f3d;color:#c9a8ff}\
+.msg.system .role{background:#1f2733;color:#8a93a3}\
+.msg.tool .role{background:#33240f;color:#e0b870}\
+.content p{margin:0 0 10px}\
+.content pre{background:#0e1219;border:1px solid #2a313c;border-radius:6px;\
+padding:12px;overflow-x:auto;font:13px/1.5 'SF Mono',Menlo,Consolas,monospace}\
+.content code{background:#0e1219;padding:1px 5px;border-radius:4px;\
+font:13px 'SF Mono',Menlo,Consolas,monospace}\
+.content pre code{background:none;padding:0}\
+.content a{color:#7cc4ff}\
+.content blockquote{margin:0 0 10px;padding:0 12px;border-left:3px solid #3a4452;color:#9aa4b3}\
+.attachments{margin-top:8px;color:#8a93a3;font-size:13px}\
+footer{max-width:860px;margin:0 auto;padding:16px 20px;color:#5a6473;font-size:12px}\
+";
+
 fn abbreviate_value(value: &serde_json::Value, max_chars: usize) -> String {
     let mut s = match value {
         serde_json::Value::String(s) => s.clone(),
@@ -4363,6 +4487,46 @@ mod tests {
     fn export_path_uses_explicit_target_when_provided() {
         let p = export_path(Some("transcript.md".into()));
         assert_eq!(p, std::path::PathBuf::from("transcript.md"));
+    }
+
+    #[test]
+    fn export_html_path_defaults_to_html_extension() {
+        let p = export_html_path(None);
+        assert!(p.to_string_lossy().ends_with(".html"));
+        assert!(p.to_string_lossy().starts_with("aonyx-session-"));
+    }
+
+    #[test]
+    fn export_html_path_uses_explicit_target() {
+        let p = export_html_path(Some("out.html".into()));
+        assert_eq!(p, std::path::PathBuf::from("out.html"));
+    }
+
+    #[test]
+    fn html_escape_neutralises_markup() {
+        assert_eq!(html_escape("a<b>&\"c"), "a&lt;b&gt;&amp;&quot;c");
+    }
+
+    #[test]
+    fn render_markdown_renders_basic_structure() {
+        let html = render_markdown_to_html("# Title\n\nsome **bold** text");
+        assert!(html.contains("<h1>"));
+        assert!(html.contains("<strong>bold</strong>"));
+    }
+
+    #[test]
+    fn render_markdown_escapes_raw_html_to_prevent_xss() {
+        let html = render_markdown_to_html("hello <script>alert(1)</script>");
+        // The raw <script> must be escaped, never passed through live.
+        assert!(!html.contains("<script>"));
+        assert!(html.contains("&lt;script&gt;"));
+    }
+
+    #[test]
+    fn render_markdown_renders_code_blocks() {
+        let html = render_markdown_to_html("```rust\nfn main() {}\n```");
+        assert!(html.contains("<pre>"));
+        assert!(html.contains("<code"));
     }
 
     #[test]

@@ -102,6 +102,9 @@ pub enum SlashCommand {
     /// Switch the active model live (Phase EE). `None` shows the
     /// current model + known ids. TUI-only.
     Model(Option<String>),
+    /// Export the conversation to a standalone styled HTML file
+    /// (Phase FF). TUI-only.
+    ExportHtml(Option<String>),
 }
 
 impl SlashCommand {
@@ -138,6 +141,7 @@ impl SlashCommand {
             "/compact" => Some(Self::Compact),
             "/retry" | "/r" => Some(Self::Retry),
             "/model" => Some(Self::Model(rest.map(str::to_string))),
+            "/export-html" | "/exporthtml" => Some(Self::ExportHtml(rest.map(str::to_string))),
             _ => None,
         }
     }
@@ -433,6 +437,11 @@ impl InteractiveSession {
             }
             SlashCommand::Model(_) => {
                 out.write_all(b"\x1b[90m/model runs in TUI mode (aonyx --tui)\x1b[0m\n")
+                    .await?;
+                Ok(true)
+            }
+            SlashCommand::ExportHtml(_) => {
+                out.write_all(b"\x1b[90m/export-html runs in TUI mode (aonyx --tui)\x1b[0m\n")
                     .await?;
                 Ok(true)
             }
