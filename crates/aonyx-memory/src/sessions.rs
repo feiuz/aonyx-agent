@@ -81,6 +81,17 @@ pub trait SessionStore: Send + Sync {
     /// Create a new session row and return the hydrated record.
     async fn create(&self, project: &str, messages: Vec<Message>) -> Result<SessionRecord>;
 
+    /// Fork an existing session: create a child row carrying a copy of
+    /// `messages` with `parent_id` set to `parent` and a `turns`
+    /// carried over from the parent (Phase Z).
+    async fn fork(
+        &self,
+        project: &str,
+        parent: SessionId,
+        messages: Vec<Message>,
+        turns: u32,
+    ) -> Result<SessionRecord>;
+
     /// Replace the messages of an existing session and bump `turns` + `updated_at`.
     async fn update(&self, id: SessionId, messages: Vec<Message>, turns: u32) -> Result<()>;
 
@@ -139,6 +150,38 @@ impl SqliteSessionStore {
         conn.execute_batch(MIGRATION_V1)
             .map_err(|e| AonyxError::Memory(format!("migrate sessions schema: {e}")))?;
         Ok(())
+    }
+
+    /// Insert a fully-formed [`SessionRecord`] and echo it back. Shared
+    /// by `create` and `fork` (Phase Z).
+    async fn insert_record(&self, record: SessionRecord) -> Result<SessionRecord> {
+        let conn = self.conn.clone();
+        let to_insert = record.clone();
+        tokio::task::spawn_blocking(move || -> Result<()> {
+            let lock = conn.lock().expect("sessions mutex poisoned");
+            let json = serde_json::to_string(&to_insert.messages)
+                .map_err(|e| AonyxError::Memory(format!("encode messages: {e}")))?;
+            lock.execute(
+                &format!(
+                    "INSERT INTO sessions ({COLUMNS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)"
+                ),
+                params![
+                    to_insert.id.to_string(),
+                    to_insert.project,
+                    to_insert.created_at.to_rfc3339(),
+                    to_insert.updated_at.to_rfc3339(),
+                    to_insert.parent_id.map(|u| u.to_string()),
+                    to_insert.title,
+                    to_insert.turns as i64,
+                    json,
+                ],
+            )
+            .map_err(|e| AonyxError::Memory(format!("insert session: {e}")))?;
+            Ok(())
+        })
+        .await
+        .map_err(|e| AonyxError::Memory(format!("insert join: {e}")))??;
+        Ok(record)
     }
 }
 
@@ -221,11 +264,9 @@ fn row_to_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<SessionRecord> {
 #[async_trait]
 impl SessionStore for SqliteSessionStore {
     async fn create(&self, project: &str, messages: Vec<Message>) -> Result<SessionRecord> {
-        let conn = self.conn.clone();
-        let project = project.to_string();
         let record = SessionRecord {
             id: Uuid::new_v4(),
-            project: project.clone(),
+            project: project.to_string(),
             created_at: Utc::now(),
             updated_at: Utc::now(),
             parent_id: None,
@@ -233,32 +274,27 @@ impl SessionStore for SqliteSessionStore {
             turns: 0,
             messages,
         };
-        let to_insert = record.clone();
-        tokio::task::spawn_blocking(move || -> Result<()> {
-            let lock = conn.lock().expect("sessions mutex poisoned");
-            let json = serde_json::to_string(&to_insert.messages)
-                .map_err(|e| AonyxError::Memory(format!("encode messages: {e}")))?;
-            lock.execute(
-                &format!(
-                    "INSERT INTO sessions ({COLUMNS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)"
-                ),
-                params![
-                    to_insert.id.to_string(),
-                    to_insert.project,
-                    to_insert.created_at.to_rfc3339(),
-                    to_insert.updated_at.to_rfc3339(),
-                    to_insert.parent_id.map(|u| u.to_string()),
-                    to_insert.title,
-                    to_insert.turns as i64,
-                    json,
-                ],
-            )
-            .map_err(|e| AonyxError::Memory(format!("insert session: {e}")))?;
-            Ok(())
-        })
-        .await
-        .map_err(|e| AonyxError::Memory(format!("create join: {e}")))??;
-        Ok(record)
+        self.insert_record(record).await
+    }
+
+    async fn fork(
+        &self,
+        project: &str,
+        parent: SessionId,
+        messages: Vec<Message>,
+        turns: u32,
+    ) -> Result<SessionRecord> {
+        let record = SessionRecord {
+            id: Uuid::new_v4(),
+            project: project.to_string(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            parent_id: Some(parent),
+            title: extract_title(&messages),
+            turns,
+            messages,
+        };
+        self.insert_record(record).await
     }
 
     async fn update(&self, id: SessionId, messages: Vec<Message>, turns: u32) -> Result<()> {
@@ -573,6 +609,34 @@ mod tests {
         let title = extract_title(&m);
         assert!(!title.contains('\n'));
         assert!(title.contains("line one"));
+    }
+
+    #[tokio::test]
+    async fn fork_copies_history_and_sets_parent_id() {
+        let store = SqliteSessionStore::open_in_memory().unwrap();
+        let parent = store
+            .create("demo", vec![msg(Role::User, "original line")])
+            .await
+            .unwrap();
+        let forked = store
+            .fork(
+                "demo",
+                parent.id,
+                vec![
+                    msg(Role::User, "original line"),
+                    msg(Role::Assistant, "reply"),
+                ],
+                3,
+            )
+            .await
+            .unwrap();
+        assert_ne!(forked.id, parent.id);
+        assert_eq!(forked.parent_id, Some(parent.id));
+        assert_eq!(forked.turns, 3);
+        assert_eq!(forked.messages.len(), 2);
+        // Round-trips through the DB with the parent link intact.
+        let reloaded = store.get(forked.id).await.unwrap().unwrap();
+        assert_eq!(reloaded.parent_id, Some(parent.id));
     }
 
     #[tokio::test]

@@ -118,6 +118,7 @@ const SLASH_CANDIDATES: &[&str] = &[
     "/tools",
     "/skills",
     "/inspect",
+    "/fork",
     "/mouse",
     "/ingest",
     "/editor",
@@ -530,6 +531,11 @@ fn build_palette_entries() -> Vec<PaletteEntry> {
             label: "/inspect".into(),
             hint: "Show the JSON of the last LLM request".into(),
             action: PaletteAction::Slash(SlashCommand::Inspect),
+        },
+        PaletteEntry {
+            label: "/fork".into(),
+            hint: "Fork this session into a child branch".into(),
+            action: PaletteAction::Slash(SlashCommand::Fork),
         },
         PaletteEntry {
             label: "/mouse".into(),
@@ -1924,6 +1930,9 @@ impl TuiApp {
             SlashCommand::Inspect => {
                 self.open_inspect_panel();
             }
+            SlashCommand::Fork => {
+                self.fork_session().await;
+            }
             SlashCommand::Mouse => {
                 self.toggle_mouse_capture();
             }
@@ -2113,6 +2122,44 @@ impl TuiApp {
             self.push_dim("mouse: on — scroll wheel + palette click restored.");
         } else {
             self.push_line(error_line("could not enable mouse capture".to_string()));
+        }
+    }
+
+    /// Fork the current session into a child branch (Phase Z). The
+    /// child copies the full message history with `parent_id` set, then
+    /// becomes the active session — the parent row is left untouched so
+    /// the original branch can be resumed via `/load`.
+    async fn fork_session(&mut self) {
+        // Persist the parent first so its latest turns aren't lost.
+        let _ = self
+            .session_store
+            .update(self.session_id, self.messages.clone(), self.turns)
+            .await;
+        let parent_id = self.session_id;
+        match self
+            .session_store
+            .fork(
+                &self.project_slug,
+                parent_id,
+                self.messages.clone(),
+                self.turns,
+            )
+            .await
+        {
+            Ok(child) => {
+                let parent_short: String =
+                    parent_id.to_string().chars().take(8).collect();
+                let child_short: String = child.id.to_string().chars().take(8).collect();
+                self.session_id = child.id;
+                // Messages + turns carry over unchanged; the child is a
+                // true branch point.
+                self.push_dim(&format!(
+                    "🔱 forked [{parent_short}] → [{child_short}] · {} turn(s) carried over · `/load {parent_short}` to return",
+                    self.turns
+                ));
+                self.refresh_recent_sessions().await;
+            }
+            Err(e) => self.push_line(error_line(format!("fork failed: {e}"))),
         }
     }
 
@@ -3556,6 +3603,7 @@ const HELP_LINES: &[&str] = &[
     "  /tools               enable / disable registered tools live (Phase Q)",
     "  /skills              enable / disable loaded skills live (Phase X)",
     "  /inspect             show the JSON of the last LLM request (Phase Y)",
+    "  /fork                fork the current session into a child branch (Phase Z)",
     "  /mouse /select       toggle mouse capture (off = native text selection, Phase U)",
     "  /ingest <path>       add a local file to the project palace (Phase V)",
     "  /editor /e           legacy-mode only for now",

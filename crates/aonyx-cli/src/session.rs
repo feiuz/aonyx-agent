@@ -91,6 +91,8 @@ pub enum SlashCommand {
     Skills,
     /// Show the JSON of the last LLM request (Phase Y). TUI-only.
     Inspect,
+    /// Fork the current session into a child branch (Phase Z). TUI-only.
+    Fork,
 }
 
 impl SlashCommand {
@@ -123,6 +125,7 @@ impl SlashCommand {
             "/ingest" => Some(Self::Ingest(rest.map(str::to_string))),
             "/skills" => Some(Self::Skills),
             "/inspect" => Some(Self::Inspect),
+            "/fork" => Some(Self::Fork),
             _ => None,
         }
     }
@@ -398,6 +401,11 @@ impl InteractiveSession {
             }
             SlashCommand::Inspect => {
                 out.write_all(b"\x1b[90m/inspect runs in TUI mode (aonyx --tui)\x1b[0m\n")
+                    .await?;
+                Ok(true)
+            }
+            SlashCommand::Fork => {
+                out.write_all(b"\x1b[90m/fork runs in TUI mode (aonyx --tui)\x1b[0m\n")
                     .await?;
                 Ok(true)
             }
