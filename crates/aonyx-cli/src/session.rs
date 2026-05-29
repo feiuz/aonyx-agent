@@ -69,8 +69,10 @@ pub enum SlashCommand {
     Themes(Option<String>),
     /// Toggle vim-style modal editing (F3). TUI-only — no-op in legacy.
     Vim,
-    /// Revert the last destructive `fs_edit` / `fs_write` (Phase J).
-    Undo,
+    /// Revert one or more destructive `fs_edit` / `fs_write` calls.
+    /// `Some("N")` reverts N snapshots; `Some("list")` shows the
+    /// journal; `None` reverts just the most recent (Phase J + W).
+    Undo(Option<String>),
     /// Search across every session's message bodies (Phase L).
     Find(Option<String>),
     /// Switch to a session by id-prefix (Phase L).
@@ -108,7 +110,7 @@ impl SlashCommand {
             "/init" => Some(Self::Init),
             "/themes" | "/theme" | "/t" => Some(Self::Themes(rest.map(str::to_string))),
             "/vim" => Some(Self::Vim),
-            "/undo" | "/u" => Some(Self::Undo),
+            "/undo" | "/u" => Some(Self::Undo(rest.map(str::to_string))),
             "/find" | "/f" | "/search" => Some(Self::Find(rest.map(str::to_string))),
             "/load" | "/switch" => Some(Self::Load(rest.map(str::to_string))),
             "/kg" | "/palace" => Some(Self::Kg),
@@ -383,30 +385,79 @@ impl InteractiveSession {
                     .await?;
                 Ok(true)
             }
-            SlashCommand::Undo => {
-                match aonyx_tools::undo::pop_last_snapshot() {
-                    Ok(Some(snap)) => match aonyx_tools::undo::restore(&snap) {
-                        Ok(()) => {
-                            let line = format!(
-                                "\x1b[32mundo:\x1b[0m restored {} ({})\n",
-                                snap.path, snap.tool
-                            );
-                            out.write_all(line.as_bytes()).await?;
+            SlashCommand::Undo(target) => {
+                let arg = target.as_deref().map(str::trim);
+                match arg {
+                    Some("list") | Some("l") => {
+                        match aonyx_tools::undo::list_snapshots(20) {
+                            Ok(snaps) if snaps.is_empty() => {
+                                out.write_all(b"\x1b[90mundo journal: empty\x1b[0m\n")
+                                    .await?;
+                            }
+                            Ok(snaps) => {
+                                let header = format!(
+                                    "\x1b[90mundo journal ({} entries, newest first):\x1b[0m\n",
+                                    snaps.len()
+                                );
+                                out.write_all(header.as_bytes()).await?;
+                                for (i, s) in snaps.iter().enumerate() {
+                                    let line = format!(
+                                        "  [{i:>2}] {} \u{2192} {} ({})\n",
+                                        s.ts, s.path, s.tool
+                                    );
+                                    out.write_all(line.as_bytes()).await?;
+                                }
+                            }
+                            Err(e) => {
+                                let line = format!("\x1b[31mundo failed:\x1b[0m {e}\n");
+                                out.write_all(line.as_bytes()).await?;
+                            }
                         }
+                        return Ok(true);
+                    }
+                    _ => {}
+                }
+                let n: usize = arg
+                    .and_then(|s| s.parse::<usize>().ok())
+                    .map(|n| n.max(1))
+                    .unwrap_or(1);
+                let mut reverted = 0usize;
+                let mut last_path: Option<String> = None;
+                for _ in 0..n {
+                    match aonyx_tools::undo::pop_last_snapshot() {
+                        Ok(Some(snap)) => match aonyx_tools::undo::restore(&snap) {
+                            Ok(()) => {
+                                reverted += 1;
+                                last_path = Some(snap.path.clone());
+                            }
+                            Err(e) => {
+                                let line = format!("\x1b[31mundo failed:\x1b[0m {e}\n");
+                                out.write_all(line.as_bytes()).await?;
+                                break;
+                            }
+                        },
+                        Ok(None) => break,
                         Err(e) => {
                             let line = format!("\x1b[31mundo failed:\x1b[0m {e}\n");
                             out.write_all(line.as_bytes()).await?;
+                            break;
                         }
-                    },
-                    Ok(None) => {
-                        out.write_all(b"\x1b[90mundo: nothing to revert\x1b[0m\n")
-                            .await?;
-                    }
-                    Err(e) => {
-                        let line = format!("\x1b[31mundo failed:\x1b[0m {e}\n");
-                        out.write_all(line.as_bytes()).await?;
                     }
                 }
+                let line = if reverted == 0 {
+                    "\x1b[90mundo: nothing to revert\x1b[0m\n".to_string()
+                } else if reverted == 1 {
+                    format!(
+                        "\x1b[32mundo:\x1b[0m restored {}\n",
+                        last_path.unwrap_or_else(|| "<unknown>".into())
+                    )
+                } else {
+                    format!(
+                        "\x1b[32mundo:\x1b[0m restored {reverted} snapshot(s) (last: {})\n",
+                        last_path.unwrap_or_else(|| "<unknown>".into())
+                    )
+                };
+                out.write_all(line.as_bytes()).await?;
                 Ok(true)
             }
             SlashCommand::Init => {

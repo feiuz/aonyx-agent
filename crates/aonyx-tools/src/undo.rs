@@ -87,6 +87,33 @@ pub fn pop_last_snapshot_from(journal: &Path) -> std::io::Result<Option<UndoSnap
     Ok(Some(snap))
 }
 
+/// Read every snapshot off the default journal, newest first, capped
+/// at `limit` (Phase W).
+pub fn list_snapshots(limit: usize) -> std::io::Result<Vec<UndoSnapshot>> {
+    list_snapshots_from(&journal_path(), limit)
+}
+
+/// Read every snapshot off a specific journal file, newest first.
+pub fn list_snapshots_from(journal: &Path, limit: usize) -> std::io::Result<Vec<UndoSnapshot>> {
+    if !journal.exists() {
+        return Ok(Vec::new());
+    }
+    let content = std::fs::read_to_string(journal)?;
+    let mut out = Vec::new();
+    for line in content.lines().rev() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        if out.len() >= limit {
+            break;
+        }
+        if let Ok(snap) = serde_json::from_str::<UndoSnapshot>(line) {
+            out.push(snap);
+        }
+    }
+    Ok(out)
+}
+
 /// Apply an [`UndoSnapshot`]: write `prior` back to `path`, or delete the
 /// file when there was no prior state.
 pub fn restore(snap: &UndoSnapshot) -> std::io::Result<()> {
@@ -169,6 +196,46 @@ mod tests {
         let snap = snapshot(target.to_string_lossy(), Some("before".into()), "fs_edit");
         restore(&snap).unwrap();
         assert_eq!(std::fs::read_to_string(&target).unwrap(), "before");
+    }
+
+    #[test]
+    fn list_snapshots_returns_empty_when_no_journal() {
+        let dir = TempDir::new().unwrap();
+        let j = dir.path().join("undo.jsonl");
+        assert!(list_snapshots_from(&j, 10).unwrap().is_empty());
+    }
+
+    #[test]
+    fn list_snapshots_returns_newest_first_capped_to_limit() {
+        let dir = TempDir::new().unwrap();
+        let j = dir.path().join("undo.jsonl");
+        append_snapshot_to(&j, snapshot("a", Some("a0".into()), "fs_edit")).unwrap();
+        append_snapshot_to(&j, snapshot("b", Some("b0".into()), "fs_edit")).unwrap();
+        append_snapshot_to(&j, snapshot("c", Some("c0".into()), "fs_edit")).unwrap();
+        let all = list_snapshots_from(&j, 10).unwrap();
+        assert_eq!(all.len(), 3);
+        assert_eq!(all[0].path, "c");
+        assert_eq!(all[1].path, "b");
+        assert_eq!(all[2].path, "a");
+        let capped = list_snapshots_from(&j, 2).unwrap();
+        assert_eq!(capped.len(), 2);
+        assert_eq!(capped[0].path, "c");
+        assert_eq!(capped[1].path, "b");
+    }
+
+    #[test]
+    fn list_snapshots_skips_malformed_lines() {
+        let dir = TempDir::new().unwrap();
+        let j = dir.path().join("undo.jsonl");
+        // Hand-write a journal with one bad line + one good.
+        std::fs::write(
+            &j,
+            "{ not valid json }\n{\"path\":\"good\",\"prior\":null,\"tool\":\"fs_write\",\"ts\":1}\n",
+        )
+        .unwrap();
+        let snaps = list_snapshots_from(&j, 10).unwrap();
+        assert_eq!(snaps.len(), 1);
+        assert_eq!(snaps[0].path, "good");
     }
 
     #[test]

@@ -434,8 +434,8 @@ fn build_palette_entries() -> Vec<PaletteEntry> {
         },
         PaletteEntry {
             label: "/undo".into(),
-            hint: "Revert the last fs_edit / fs_write".into(),
-            action: PaletteAction::Slash(SlashCommand::Undo),
+            hint: "Revert the last fs change · `/undo N` · `/undo list`".into(),
+            action: PaletteAction::Slash(SlashCommand::Undo(None)),
         },
         PaletteEntry {
             label: "/find".into(),
@@ -1233,6 +1233,14 @@ impl TuiApp {
             // so the user can fuzzy-pick the target without typing the
             // path by hand.
             "ingest" => self.file_candidates(),
+            // Phase W — `/undo <N>` / `/undo list` argument hints.
+            "undo" | "u" => vec![
+                "list".to_string(),
+                "1".to_string(),
+                "3".to_string(),
+                "5".to_string(),
+                "10".to_string(),
+            ],
             _ => Vec::new(),
         }
     }
@@ -1806,24 +1814,9 @@ impl TuiApp {
                 };
                 self.ingest_file(path.trim()).await;
             }
-            SlashCommand::Undo => match aonyx_tools::undo::pop_last_snapshot() {
-                Ok(Some(snap)) => match aonyx_tools::undo::restore(&snap) {
-                    Ok(()) => {
-                        let detail = if snap.prior.is_none() {
-                            "deleted file"
-                        } else {
-                            "restored prior content"
-                        };
-                        self.push_dim(&format!(
-                            "undo: {} ({}) — {detail}",
-                            snap.path, snap.tool
-                        ));
-                    }
-                    Err(e) => self.push_line(error_line(format!("undo failed: {e}"))),
-                },
-                Ok(None) => self.push_dim("undo: nothing to revert"),
-                Err(e) => self.push_line(error_line(format!("undo failed: {e}"))),
-            },
+            SlashCommand::Undo(target) => {
+                self.handle_undo_command(target);
+            }
             SlashCommand::Init => {
                 let path = std::path::PathBuf::from("agent.yaml");
                 if path.exists() {
@@ -1879,6 +1872,70 @@ impl TuiApp {
                 self.palette.refilter();
             }
             _ => {}
+        }
+    }
+
+    /// Dispatch `/undo`, `/undo N`, and `/undo list` (Phase W). Reuses
+    /// the journal helpers from `aonyx_tools::undo`.
+    fn handle_undo_command(&mut self, target: Option<String>) {
+        let arg = target.as_deref().map(str::trim);
+        if matches!(arg, Some("list") | Some("l")) {
+            match aonyx_tools::undo::list_snapshots(20) {
+                Ok(snaps) if snaps.is_empty() => self.push_dim("undo journal: empty"),
+                Ok(snaps) => {
+                    self.push_dim(&format!(
+                        "undo journal ({} entr{}, newest first):",
+                        snaps.len(),
+                        if snaps.len() == 1 { "y" } else { "ies" }
+                    ));
+                    for (i, s) in snaps.iter().enumerate() {
+                        let detail = if s.prior.is_none() {
+                            "(new file)"
+                        } else {
+                            "(in-place edit)"
+                        };
+                        self.push_dim(&format!(
+                            "  [{i:>2}] ts={} · {} ({}) {}",
+                            s.ts, s.path, s.tool, detail
+                        ));
+                    }
+                }
+                Err(e) => self.push_line(error_line(format!("undo failed: {e}"))),
+            }
+            return;
+        }
+        let n = arg
+            .and_then(|s| s.parse::<usize>().ok())
+            .map(|n| n.max(1))
+            .unwrap_or(1);
+        let mut reverted = 0usize;
+        let mut last_path: Option<String> = None;
+        for _ in 0..n {
+            match aonyx_tools::undo::pop_last_snapshot() {
+                Ok(Some(snap)) => match aonyx_tools::undo::restore(&snap) {
+                    Ok(()) => {
+                        reverted += 1;
+                        last_path = Some(snap.path.clone());
+                    }
+                    Err(e) => {
+                        self.push_line(error_line(format!("undo failed: {e}")));
+                        break;
+                    }
+                },
+                Ok(None) => break,
+                Err(e) => {
+                    self.push_line(error_line(format!("undo failed: {e}")));
+                    break;
+                }
+            }
+        }
+        match (reverted, last_path) {
+            (0, _) => self.push_dim("undo: nothing to revert"),
+            (1, Some(p)) => self.push_dim(&format!("undo: restored {p}")),
+            (n, Some(p)) => self.push_dim(&format!(
+                "undo: restored {n} snapshot(s) — last touched {p}"
+            )),
+            _ => self.push_dim("undo: done"),
         }
     }
 
@@ -2601,6 +2658,7 @@ impl TuiApp {
                     "themes" | "theme" | "t" => "themes",
                     "load" | "switch" => "sessions",
                     "ingest" => "files",
+                    "undo" | "u" => "undo",
                     _ => "args",
                 },
                 None => "",
@@ -3105,7 +3163,7 @@ const HELP_LINES: &[&str] = &[
     "  /thinking            reasoning visibility (Phase E)",
     "  /themes /t [name]    switch palette (default, catppuccin, dracula, gruvbox)",
     "  /vim                 toggle vim modal editing (F3)",
-    "  /undo /u             revert last fs_edit / fs_write (Phase J)",
+    "  /undo /u [N|list]    revert last N fs changes or list the journal (Phase J + W)",
     "  /find /f <query>     search past sessions across every project (Phase L)",
     "  /load /switch <id>   switch to a session by id prefix (Phase L)",
     "  /kg /palace          open the memory-palace visualization (Phase O)",
