@@ -79,6 +79,9 @@ pub enum SlashCommand {
     Kg,
     /// Open the floating tools panel (Phase Q).
     Tools,
+    /// Toggle terminal mouse capture so native drag-select / copy works
+    /// (Phase U). TUI-only.
+    Mouse,
 }
 
 impl SlashCommand {
@@ -107,6 +110,7 @@ impl SlashCommand {
             "/load" | "/switch" => Some(Self::Load(rest.map(str::to_string))),
             "/kg" | "/palace" => Some(Self::Kg),
             "/tools" => Some(Self::Tools),
+            "/mouse" | "/select" => Some(Self::Mouse),
             _ => None,
         }
     }
@@ -362,6 +366,11 @@ impl InteractiveSession {
             }
             SlashCommand::Tools => {
                 out.write_all(b"\x1b[90m/tools runs in TUI mode (aonyx --tui)\x1b[0m\n")
+                    .await?;
+                Ok(true)
+            }
+            SlashCommand::Mouse => {
+                out.write_all(b"\x1b[90m/mouse runs in TUI mode (aonyx --tui)\x1b[0m\n")
                     .await?;
                 Ok(true)
             }

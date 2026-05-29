@@ -110,6 +110,7 @@ const SLASH_CANDIDATES: &[&str] = &[
     "/load",
     "/kg",
     "/tools",
+    "/mouse",
     "/editor",
     "/init",
 ];
@@ -450,6 +451,11 @@ fn build_palette_entries() -> Vec<PaletteEntry> {
             action: PaletteAction::Slash(SlashCommand::Tools),
         },
         PaletteEntry {
+            label: "/mouse".into(),
+            hint: "Toggle mouse capture (off = native drag-to-select)".into(),
+            action: PaletteAction::Slash(SlashCommand::Mouse),
+        },
+        PaletteEntry {
             label: "/quit".into(),
             hint: "Exit Aonyx".into(),
             action: PaletteAction::Slash(SlashCommand::Quit),
@@ -567,6 +573,7 @@ pub async fn run(
         approval_rx,
         pending_approval: None,
         vim_mode: VimMode::Off,
+        mouse_captured: true,
         viewport_rect: None,
         palette_results_rect: None,
         total_input_tokens: 0,
@@ -693,6 +700,11 @@ struct TuiApp {
 
     /// Vim editing mode toggle (F3). Off by default.
     vim_mode: VimMode,
+
+    /// Whether terminal mouse capture is currently enabled (Phase U).
+    /// Defaults to `true` — flipping it off lets the host terminal
+    /// handle native drag-to-select and copy.
+    mouse_captured: bool,
 
     /// Last drawn rectangle of the conversation viewport — used by
     /// mouse-wheel routing (Phase H).
@@ -1768,6 +1780,9 @@ impl TuiApp {
             SlashCommand::Tools => {
                 self.open_tools_panel();
             }
+            SlashCommand::Mouse => {
+                self.toggle_mouse_capture();
+            }
             SlashCommand::Undo => match aonyx_tools::undo::pop_last_snapshot() {
                 Ok(Some(snap)) => match aonyx_tools::undo::restore(&snap) {
                     Ok(()) => {
@@ -1841,6 +1856,28 @@ impl TuiApp {
                 self.palette.refilter();
             }
             _ => {}
+        }
+    }
+
+    /// Flip terminal mouse capture on/off so the host terminal can do
+    /// native drag-to-select + copy (Phase U). Defaults to on for the
+    /// scroll wheel + palette click handlers; turning it off briefly
+    /// is the supported way to grab text from the viewport.
+    fn toggle_mouse_capture(&mut self) {
+        if self.mouse_captured {
+            if execute!(io::stdout(), DisableMouseCapture).is_ok() {
+                self.mouse_captured = false;
+                self.push_dim(
+                    "mouse: off — drag to select, Ctrl+C / right-click to copy. `/mouse` to re-enable.",
+                );
+            } else {
+                self.push_line(error_line("could not disable mouse capture".to_string()));
+            }
+        } else if execute!(io::stdout(), EnableMouseCapture).is_ok() {
+            self.mouse_captured = true;
+            self.push_dim("mouse: on — scroll wheel + palette click restored.");
+        } else {
+            self.push_line(error_line("could not enable mouse capture".to_string()));
         }
     }
 
@@ -2583,6 +2620,13 @@ impl TuiApp {
             Some(tag) => format!(" · vim:{tag}"),
             None => String::new(),
         };
+        // Phase U — surface that mouse capture is currently off so the
+        // user remembers why the scroll wheel doesn't react.
+        let mouse_marker = if self.mouse_captured {
+            ""
+        } else {
+            " · mouse:off"
+        };
         // Phase K — token + cost indicator. Cost only shown when we
         // have a price for this provider/model.
         let cost_marker = self.cost_marker_string();
@@ -2598,13 +2642,14 @@ impl TuiApp {
                 ),
                 Span::styled(
                     format!(
-                        "{} · {} · turn {} · running{}{}{}{} ",
+                        "{} · {} · turn {} · running{}{}{}{}{} ",
                         self.provider_name,
                         self.model_name,
                         self.turns,
                         details,
                         scroll_marker,
                         vim_marker,
+                        mouse_marker,
                         cost_marker
                     ),
                     Style::default().fg(self.theme.header_fg),
@@ -2615,13 +2660,14 @@ impl TuiApp {
                 Span::styled(" ▸ ", Style::default().fg(self.theme.user_prefix)),
                 Span::styled(
                     format!(
-                        "{} · {} · turn {} · idle{}{}{}{} ",
+                        "{} · {} · turn {} · idle{}{}{}{}{} ",
                         self.provider_name,
                         self.model_name,
                         self.turns,
                         details,
                         scroll_marker,
                         vim_marker,
+                        mouse_marker,
                         cost_marker
                     ),
                     Style::default().fg(self.theme.status_fg),
@@ -3005,6 +3051,7 @@ const HELP_LINES: &[&str] = &[
     "  /load /switch <id>   switch to a session by id prefix (Phase L)",
     "  /kg /palace          open the memory-palace visualization (Phase O)",
     "  /tools               enable / disable registered tools live (Phase Q)",
+    "  /mouse /select       toggle mouse capture (off = native text selection, Phase U)",
     "  /editor /e           legacy-mode only for now",
     "  /init                drop an agent.yaml in the project root",
     "inline:",
