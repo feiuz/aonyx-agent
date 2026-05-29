@@ -23,7 +23,7 @@ use aonyx_llm::{
     ClaudeCodeProvider, OllamaProvider, OpenAiCompatProvider, CLAUDE_DEFAULT_BIN,
     OLLAMA_DEFAULT_BASE_URL,
 };
-use aonyx_memory::Palace;
+use aonyx_memory::{Palace, SessionStore, SqliteSessionStore};
 use clap::{Parser, Subcommand};
 
 mod config;
@@ -177,6 +177,34 @@ async fn start_interactive(project_path: Option<PathBuf>, use_tui: bool) -> anyh
 
     let skills = aonyx_skills::builtin_skills();
 
+    // Cross-run session storage at ~/.aonyx/sessions.db.
+    let sessions_db_path = Config::config_dir()?.join("sessions.db");
+    let session_store = SqliteSessionStore::open(&sessions_db_path)?;
+
+    // Build the initial transcript (system prompt only) — the session
+    // restore logic will replace it with persisted messages when available.
+    let initial_messages: Vec<aonyx_core::Message> = config
+        .system_prompt
+        .as_ref()
+        .map(|p| {
+            vec![aonyx_core::Message::new(
+                aonyx_core::Role::System,
+                p.clone(),
+            )]
+        })
+        .unwrap_or_default();
+
+    let restored = session_store.latest(&project_slug).await?;
+    let (session_id, session_messages, session_turns) = match restored {
+        Some(s) => (s.id, s.messages, s.turns),
+        None => {
+            let created = session_store
+                .create(&project_slug, initial_messages.clone())
+                .await?;
+            (created.id, created.messages, 0)
+        }
+    };
+
     if use_tui {
         return tui::run(
             provider,
@@ -187,6 +215,10 @@ async fn start_interactive(project_path: Option<PathBuf>, use_tui: bool) -> anyh
             project_slug,
             skills,
             config.provider.clone(),
+            session_store,
+            session_id,
+            session_messages,
+            session_turns,
         )
         .await;
     }

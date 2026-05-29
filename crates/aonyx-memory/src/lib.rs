@@ -26,6 +26,7 @@ pub mod diary;
 pub mod hybrid;
 pub mod kg;
 pub mod palace;
+pub mod sessions;
 pub mod splitter;
 pub mod time_machine;
 
@@ -36,3 +37,4 @@ pub use diary::{DiaryEntry, DiaryEntryId, DiaryStore, SqliteDiaryStore};
 pub use inmem::InMemoryStore;
 pub use kg::{Direction, Entity, EntityId, KgStore, Relation, RelationId, SqliteKgStore};
 pub use palace::Palace;
+pub use sessions::{SessionId, SessionRecord, SessionStore, SqliteSessionStore};

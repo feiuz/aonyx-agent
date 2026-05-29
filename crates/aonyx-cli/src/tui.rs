@@ -36,7 +36,7 @@ use std::time::Duration;
 
 use aonyx_agent::{AgentRunner, ApprovalPolicy, TurnEvent};
 use aonyx_core::{LlmProvider, MemoryStore, Message, Role, SafetyClass};
-use aonyx_memory::Palace;
+use aonyx_memory::{Palace, SessionId, SessionStore, SqliteSessionStore};
 use aonyx_skills::Skill;
 use aonyx_tools::ToolRegistry;
 use crossterm::event::{
@@ -109,10 +109,14 @@ pub async fn run(
     palace: Palace,
     model: String,
     max_iterations: usize,
-    system_prompt: Option<String>,
+    _system_prompt: Option<String>,
     project_slug: String,
     skills: Vec<Skill>,
     provider_name: String,
+    session_store: SqliteSessionStore,
+    session_id: SessionId,
+    session_messages: Vec<Message>,
+    session_turns: u32,
 ) -> anyhow::Result<()> {
     let runner = AgentRunner::new(provider, ToolRegistry::default_set(), model.clone())
         .with_max_iterations(max_iterations)
@@ -120,10 +124,7 @@ pub async fn run(
         .with_skills(skills)
         .with_project(&project_slug);
 
-    let mut messages: Vec<Message> = Vec::new();
-    if let Some(p) = system_prompt {
-        messages.push(Message::new(Role::System, p));
-    }
+    let messages: Vec<Message> = session_messages;
 
     let mut composer = TextArea::default();
     composer.set_block(
@@ -141,7 +142,9 @@ pub async fn run(
         project_slug,
         provider_name,
         model_name: model,
-        turns: 0,
+        turns: session_turns,
+        session_store,
+        session_id,
         composer,
         viewport: vec![Line::from(Span::styled(
             "🦦 Aonyx Agent — Shift+Enter = newline · ↑/↓ history · Esc to quit · /help for commands",
@@ -197,6 +200,8 @@ struct TuiApp {
     provider_name: String,
     model_name: String,
     turns: u32,
+    session_store: SqliteSessionStore,
+    session_id: SessionId,
 
     composer: TextArea<'static>,
     viewport: Vec<Line<'static>>,
@@ -308,6 +313,11 @@ impl TuiApp {
                             .map(|m| m.content.clone())
                             .unwrap_or_default();
                         let _ = self.palace.diary_append(&self.project_slug, &summary).await;
+                        // Persist the session so we can resume after crashes / restart.
+                        let _ = self
+                            .session_store
+                            .update(self.session_id, self.messages.clone(), self.turns)
+                            .await;
                     }
                     Ok(Err(e)) => self.push_line(error_line(format!("{e}"))),
                     Err(e) => self.push_line(error_line(format!("join: {e}"))),
@@ -843,7 +853,21 @@ impl TuiApp {
                 }
                 self.turns = 0;
                 self.viewport.clear();
-                self.push_dim("(history cleared)");
+                // /new starts a brand-new persisted session; /clear is a soft
+                // reset of the same row. They both clear the viewport but only
+                // /new rotates the session id.
+                if matches!(cmd, SlashCommand::New) {
+                    if let Ok(created) = self
+                        .session_store
+                        .create(&self.project_slug, self.messages.clone())
+                        .await
+                    {
+                        self.session_id = created.id;
+                        self.push_dim(&format!("(new session #{})", created.id));
+                    }
+                } else {
+                    self.push_dim("(history cleared)");
+                }
             }
             SlashCommand::Help => {
                 for line in HELP_LINES {
@@ -861,7 +885,33 @@ impl TuiApp {
                 self.push_dim("switch with: edit ~/.aonyx/config.toml (live switch in V0.3)");
             }
             SlashCommand::Sessions => {
-                self.push_dim("single-session mode (multi-session lands in Phase D)");
+                match self
+                    .session_store
+                    .list_by_project(&self.project_slug, 20)
+                    .await
+                {
+                    Ok(list) if list.is_empty() => self.push_dim("(no other sessions yet)"),
+                    Ok(list) => {
+                        self.push_dim(&format!(
+                            "{} session(s) for project '{}':",
+                            list.len(),
+                            self.project_slug
+                        ));
+                        for (i, s) in list.iter().enumerate() {
+                            let marker = if s.id == self.session_id { "▸" } else { " " };
+                            let line = format!(
+                                "{marker} [{:>2}] {} · {} turn(s) · {}",
+                                i + 1,
+                                s.updated_at.format("%Y-%m-%d %H:%M"),
+                                s.turns,
+                                s.title
+                            );
+                            self.push_dim(&line);
+                        }
+                        self.push_dim("(switch UI lands in Phase D.5)");
+                    }
+                    Err(e) => self.push_line(error_line(format!("list sessions: {e}"))),
+                }
             }
             SlashCommand::Export(target) => {
                 let path = export_path(target);
