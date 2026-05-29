@@ -63,6 +63,32 @@ const HISTORY_MAX: usize = 200;
 const VIEWPORT_MAX_LINES: usize = 2000;
 const MIN_COMPOSER_HEIGHT: u16 = 3;
 const MAX_COMPOSER_HEIGHT: u16 = 10;
+const SUGGESTION_LIMIT: usize = 8;
+const FILE_CACHE_LIMIT: usize = 5000;
+const FILE_CACHE_MAX_DEPTH: usize = 8;
+
+const SLASH_CANDIDATES: &[&str] = &[
+    "/quit",
+    "/clear",
+    "/new",
+    "/help",
+    "/models",
+    "/sessions",
+    "/export",
+    "/details",
+    "/thinking",
+    "/editor",
+    "/init",
+];
+
+/// Which prefix character opened the suggestions popup.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Trigger {
+    /// `@path` — fuzzy file picker over the cwd.
+    At,
+    /// `/cmd` — slash command picker.
+    Slash,
+}
 
 /// Frames for the running-runner spinner. Braille dots feel lively without
 /// burning CPU on the redraw.
@@ -136,6 +162,11 @@ pub async fn run(
         first_delta_received: false,
         current_assistant_text: String::new(),
         assistant_msg_start: None,
+        suggestions: Vec::new(),
+        suggestion_idx: 0,
+        suggestion_kind: None,
+        suggestion_trigger_pos: 0,
+        file_cache: None,
         quit: false,
     };
 
@@ -199,6 +230,17 @@ struct TuiApp {
     /// raw streamed lines from that index up to the end are replaced by the
     /// Markdown-rendered lines at `AssistantMessageEnd`.
     assistant_msg_start: Option<usize>,
+
+    /// Currently-displayed suggestions; empty when the popup is closed.
+    suggestions: Vec<String>,
+    /// Index of the currently highlighted suggestion.
+    suggestion_idx: usize,
+    /// What triggered the popup (`@` or `/`).
+    suggestion_kind: Option<Trigger>,
+    /// Byte position of the trigger character in the composer text.
+    suggestion_trigger_pos: usize,
+    /// Lazily-populated walk of cwd file paths for `@` suggestions.
+    file_cache: Option<Vec<String>>,
 
     quit: bool,
 }
@@ -475,8 +517,13 @@ impl TuiApp {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let shift = key.modifiers.contains(KeyModifiers::SHIFT);
         let alt = key.modifiers.contains(KeyModifiers::ALT);
+        let suggestions_open = !self.suggestions.is_empty();
 
         match key.code {
+            // While the suggestions popup is open, Esc just closes it.
+            Esc if suggestions_open => {
+                self.dismiss_suggestions();
+            }
             Esc => {
                 self.quit = true;
             }
@@ -499,23 +546,114 @@ impl TuiApp {
                 self.scroll = 0;
             }
 
+            // While suggestions are open, ↑/↓ navigate the popup.
+            Up if suggestions_open => {
+                if self.suggestion_idx > 0 {
+                    self.suggestion_idx -= 1;
+                }
+            }
+            Down if suggestions_open => {
+                if self.suggestion_idx + 1 < self.suggestions.len() {
+                    self.suggestion_idx += 1;
+                }
+            }
+            // Tab accepts the highlighted suggestion.
+            Tab if suggestions_open => {
+                self.accept_suggestion();
+            }
+
             Up if self.composer_at_top() && !shift => self.history_prev(),
             Down if self.composer_at_bottom() && !shift => self.history_next(),
 
             Enter if shift || alt => {
                 self.composer.insert_newline();
+                self.update_suggestions();
             }
             Enter => {
                 self.submit_composer().await;
+                self.dismiss_suggestions();
             }
 
             _ => {
-                // Hand the event over to tui-textarea for typing, cursor
-                // motion, backspace, etc. Discard the boolean it returns
-                // ("did this modify the buffer") — we re-render every frame.
                 let _ = self.composer.input(key);
+                self.update_suggestions();
             }
         }
+    }
+
+    fn update_suggestions(&mut self) {
+        let text = self.composer.lines().join("\n");
+        let cursor_byte = cursor_byte_offset(&self.composer);
+        match detect_trigger(&text, cursor_byte) {
+            Some((trigger, trigger_pos, query)) => {
+                self.suggestion_kind = Some(trigger);
+                self.suggestion_trigger_pos = trigger_pos;
+
+                let pool: Vec<String> = match trigger {
+                    Trigger::At => self.file_candidates(),
+                    Trigger::Slash => SLASH_CANDIDATES.iter().map(|s| (*s).to_string()).collect(),
+                };
+
+                let suggestions = if query.is_empty() {
+                    pool.into_iter().take(SUGGESTION_LIMIT).collect()
+                } else {
+                    fuzzy_top(&query, &pool, SUGGESTION_LIMIT)
+                };
+
+                self.suggestions = suggestions;
+                if self.suggestion_idx >= self.suggestions.len() {
+                    self.suggestion_idx = 0;
+                }
+            }
+            None => self.dismiss_suggestions(),
+        }
+    }
+
+    fn dismiss_suggestions(&mut self) {
+        self.suggestions.clear();
+        self.suggestion_idx = 0;
+        self.suggestion_kind = None;
+    }
+
+    fn accept_suggestion(&mut self) {
+        let Some(selected) = self.suggestions.get(self.suggestion_idx).cloned() else {
+            return;
+        };
+        let Some(trigger) = self.suggestion_kind else {
+            return;
+        };
+        let trigger_pos = self.suggestion_trigger_pos;
+        let text = self.composer.lines().join("\n");
+        let cursor_byte = cursor_byte_offset(&self.composer);
+
+        // Build the replacement: keep everything up to and including the
+        // trigger char (for `@`) or just up to the trigger (for `/`, since
+        // the suggestion already starts with `/`).
+        let mut new_text = String::new();
+        match trigger {
+            Trigger::At => {
+                new_text.push_str(&text[..=trigger_pos.min(text.len() - 1)]);
+                new_text.push_str(&selected);
+            }
+            Trigger::Slash => {
+                new_text.push_str(&text[..trigger_pos]);
+                new_text.push_str(&selected);
+            }
+        }
+        new_text.push(' ');
+        if cursor_byte <= text.len() {
+            new_text.push_str(&text[cursor_byte..]);
+        }
+        self.set_composer_content(&new_text);
+        self.dismiss_suggestions();
+    }
+
+    fn file_candidates(&mut self) -> Vec<String> {
+        if self.file_cache.is_none() {
+            let base = std::env::current_dir().unwrap_or_else(|_| ".".into());
+            self.file_cache = Some(collect_files(&base, FILE_CACHE_MAX_DEPTH, FILE_CACHE_LIMIT));
+        }
+        self.file_cache.clone().unwrap_or_default()
     }
 
     fn composer_at_top(&self) -> bool {
@@ -811,11 +949,17 @@ impl TuiApp {
 
     fn render(&mut self, f: &mut Frame<'_>) {
         let composer_h = self.composer_height();
+        let suggestions_h = if self.suggestions.is_empty() {
+            0
+        } else {
+            (self.suggestions.len() as u16 + 2).clamp(3, 10)
+        };
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Length(1),
                 Constraint::Min(0),
+                Constraint::Length(suggestions_h),
                 Constraint::Length(composer_h),
                 Constraint::Length(1),
             ])
@@ -863,6 +1007,43 @@ impl TuiApp {
             .scroll((self.scroll, 0));
         f.render_widget(viewport, chunks[1]);
 
+        // Suggestions popup (above the composer) — only rendered when active.
+        if suggestions_h > 0 {
+            let kind_label = match self.suggestion_kind {
+                Some(Trigger::At) => "files",
+                Some(Trigger::Slash) => "commands",
+                None => "",
+            };
+            let lines: Vec<Line> = self
+                .suggestions
+                .iter()
+                .enumerate()
+                .map(|(i, s)| {
+                    let selected = i == self.suggestion_idx;
+                    let marker = if selected { "▸ " } else { "  " };
+                    let style = if selected {
+                        Style::default()
+                            .fg(Color::Cyan)
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(Color::Gray)
+                    };
+                    Line::from(vec![
+                        Span::styled(marker, style),
+                        Span::styled(s.clone(), style),
+                    ])
+                })
+                .collect();
+            let title = format!(" {} · Tab accept · ↑/↓ navigate · Esc cancel ", kind_label);
+            let popup = Paragraph::new(Text::from(lines)).block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::Magenta))
+                    .title(title),
+            );
+            f.render_widget(popup, chunks[2]);
+        }
+
         if self.runner_active {
             let spinner_idx = self.tick as usize % SPINNER_FRAMES.len();
             let spinner = SPINNER_FRAMES[spinner_idx];
@@ -884,14 +1065,14 @@ impl TuiApp {
                     .borders(Borders::TOP | Borders::BOTTOM)
                     .border_style(Style::default().fg(pulse_color)),
             );
-            f.render_widget(blocker, chunks[2]);
+            f.render_widget(blocker, chunks[3]);
         } else {
             self.composer.set_block(
                 Block::default()
                     .borders(Borders::TOP | Borders::BOTTOM)
                     .border_style(Style::default().fg(Color::Cyan)),
             );
-            f.render_widget(&self.composer, chunks[2]);
+            f.render_widget(&self.composer, chunks[3]);
         }
 
         let details = if self.show_tool_details {
@@ -939,7 +1120,7 @@ impl TuiApp {
             Color::Rgb(20, 30, 40)
         };
         let status = Paragraph::new(status_line).style(Style::default().bg(bg));
-        f.render_widget(status, chunks[3]);
+        f.render_widget(status, chunks[4]);
     }
 }
 
@@ -1061,6 +1242,113 @@ async fn run_bash(cmd: &str) -> Result<String, String> {
         combined.push_str(&format!("\n[exit {code}]"));
     }
     Ok(combined.trim_end_matches(&['\n', '\r'][..]).to_string())
+}
+
+/// Compute the byte offset of `textarea.cursor()` inside `textarea.lines().join("\n")`.
+fn cursor_byte_offset(textarea: &TextArea<'_>) -> usize {
+    let (row, col) = textarea.cursor();
+    let lines = textarea.lines();
+    let mut offset = 0usize;
+    for (i, line) in lines.iter().enumerate() {
+        if i == row {
+            offset += line.chars().take(col).map(|c| c.len_utf8()).sum::<usize>();
+            return offset;
+        }
+        offset += line.len() + 1; // +1 for the "\n" join separator
+    }
+    offset
+}
+
+/// Look backward from `cursor` to find a `@` or `/` trigger.
+///
+/// Returns the trigger kind, its byte position, and the substring between it
+/// and the cursor (the active query). Bails out when whitespace is reached
+/// before finding a trigger so an `@` mid-sentence does not fire.
+fn detect_trigger(text: &str, cursor: usize) -> Option<(Trigger, usize, String)> {
+    if cursor == 0 {
+        return None;
+    }
+    let bytes = text.as_bytes();
+    let mut i = cursor;
+    while i > 0 {
+        i -= 1;
+        let c = bytes[i] as char;
+        if c == '@' {
+            let preceded_by_ws_or_start = i == 0 || (bytes[i - 1] as char).is_whitespace();
+            if preceded_by_ws_or_start {
+                let query = text[i + 1..cursor].to_string();
+                return Some((Trigger::At, i, query));
+            }
+            return None;
+        }
+        if c == '/' {
+            let at_line_start = i == 0 || bytes[i - 1] == b'\n';
+            if at_line_start {
+                let query = text[i + 1..cursor].to_string();
+                return Some((Trigger::Slash, i, query));
+            }
+            return None;
+        }
+        if c.is_whitespace() {
+            return None;
+        }
+    }
+    None
+}
+
+/// Fuzzy-rank `pool` by `query` using `nucleo-matcher`. Returns up to `limit`
+/// best matches in decreasing score order.
+fn fuzzy_top(query: &str, pool: &[String], limit: usize) -> Vec<String> {
+    use nucleo_matcher::pattern::{CaseMatching, Normalization, Pattern};
+    use nucleo_matcher::{Config, Matcher, Utf32Str};
+
+    let mut matcher = Matcher::new(Config::DEFAULT);
+    let pattern = Pattern::parse(query, CaseMatching::Smart, Normalization::Smart);
+
+    let mut buf = Vec::new();
+    let mut scored: Vec<(String, u32)> = pool
+        .iter()
+        .filter_map(|s| {
+            buf.clear();
+            let utf32 = Utf32Str::new(s, &mut buf);
+            pattern.score(utf32, &mut matcher).map(|s_| (s.clone(), s_))
+        })
+        .collect();
+    scored.sort_by(|a, b| b.1.cmp(&a.1));
+    scored.truncate(limit);
+    scored.into_iter().map(|(s, _)| s).collect()
+}
+
+/// Walk `base` (depth-limited) and return file paths relative to it, using
+/// `/` separators. Skips hidden directories (`.git`, `.aonyx`, `target`, …).
+fn collect_files(base: &std::path::Path, max_depth: usize, limit: usize) -> Vec<String> {
+    use walkdir::WalkDir;
+    let mut out = Vec::new();
+    for entry in WalkDir::new(base)
+        .max_depth(max_depth)
+        .follow_links(false)
+        .into_iter()
+        .filter_entry(|e| {
+            let name = e.file_name().to_string_lossy();
+            !matches!(
+                name.as_ref(),
+                ".git" | ".aonyx" | "target" | "node_modules" | "dist"
+            )
+        })
+        .flatten()
+    {
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        if let Ok(rel) = entry.path().strip_prefix(base) {
+            out.push(rel.to_string_lossy().replace('\\', "/"));
+            if out.len() >= limit {
+                break;
+            }
+        }
+    }
+    out.sort();
+    out
 }
 
 fn export_path(target: Option<String>) -> std::path::PathBuf {

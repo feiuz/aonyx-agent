@@ -36,3 +36,5 @@ ratatui-core = "0.1"
 crossterm = { workspace = true }
 tui-textarea = "0.7"
 tui-markdown = "0.3"
+nucleo-matcher = "0.3"
+walkdir = "2"
