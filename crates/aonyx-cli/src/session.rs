@@ -69,6 +69,8 @@ pub enum SlashCommand {
     Themes(Option<String>),
     /// Toggle vim-style modal editing (F3). TUI-only — no-op in legacy.
     Vim,
+    /// Revert the last destructive `fs_edit` / `fs_write` (Phase J).
+    Undo,
 }
 
 impl SlashCommand {
@@ -92,6 +94,7 @@ impl SlashCommand {
             "/init" => Some(Self::Init),
             "/themes" | "/theme" | "/t" => Some(Self::Themes(rest.map(str::to_string))),
             "/vim" => Some(Self::Vim),
+            "/undo" | "/u" => Some(Self::Undo),
             _ => None,
         }
     }
@@ -333,6 +336,32 @@ impl InteractiveSession {
             SlashCommand::Vim => {
                 out.write_all(b"\x1b[90m/vim runs in TUI mode (aonyx --tui)\x1b[0m\n")
                     .await?;
+                Ok(true)
+            }
+            SlashCommand::Undo => {
+                match aonyx_tools::undo::pop_last_snapshot() {
+                    Ok(Some(snap)) => match aonyx_tools::undo::restore(&snap) {
+                        Ok(()) => {
+                            let line = format!(
+                                "\x1b[32mundo:\x1b[0m restored {} ({})\n",
+                                snap.path, snap.tool
+                            );
+                            out.write_all(line.as_bytes()).await?;
+                        }
+                        Err(e) => {
+                            let line = format!("\x1b[31mundo failed:\x1b[0m {e}\n");
+                            out.write_all(line.as_bytes()).await?;
+                        }
+                    },
+                    Ok(None) => {
+                        out.write_all(b"\x1b[90mundo: nothing to revert\x1b[0m\n")
+                            .await?;
+                    }
+                    Err(e) => {
+                        let line = format!("\x1b[31mundo failed:\x1b[0m {e}\n");
+                        out.write_all(line.as_bytes()).await?;
+                    }
+                }
                 Ok(true)
             }
             SlashCommand::Init => {

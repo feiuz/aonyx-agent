@@ -92,6 +92,7 @@ const SLASH_CANDIDATES: &[&str] = &[
     "/thinking",
     "/themes",
     "/vim",
+    "/undo",
     "/editor",
     "/init",
 ];
@@ -300,6 +301,11 @@ fn build_palette_entries() -> Vec<PaletteEntry> {
             label: "/vim".into(),
             hint: "Toggle vim-style modal editing".into(),
             action: PaletteAction::Slash(SlashCommand::Vim),
+        },
+        PaletteEntry {
+            label: "/undo".into(),
+            hint: "Revert the last fs_edit / fs_write".into(),
+            action: PaletteAction::Slash(SlashCommand::Undo),
         },
         PaletteEntry {
             label: "/quit".into(),
@@ -1335,6 +1341,24 @@ impl TuiApp {
                     }
                 };
             }
+            SlashCommand::Undo => match aonyx_tools::undo::pop_last_snapshot() {
+                Ok(Some(snap)) => match aonyx_tools::undo::restore(&snap) {
+                    Ok(()) => {
+                        let detail = if snap.prior.is_none() {
+                            "deleted file"
+                        } else {
+                            "restored prior content"
+                        };
+                        self.push_dim(&format!(
+                            "undo: {} ({}) — {detail}",
+                            snap.path, snap.tool
+                        ));
+                    }
+                    Err(e) => self.push_line(error_line(format!("undo failed: {e}"))),
+                },
+                Ok(None) => self.push_dim("undo: nothing to revert"),
+                Err(e) => self.push_line(error_line(format!("undo failed: {e}"))),
+            },
             SlashCommand::Init => {
                 let path = std::path::PathBuf::from("agent.yaml");
                 if path.exists() {
@@ -2038,6 +2062,7 @@ const HELP_LINES: &[&str] = &[
     "  /thinking            reasoning visibility (Phase E)",
     "  /themes /t [name]    switch palette (default, catppuccin, dracula, gruvbox)",
     "  /vim                 toggle vim modal editing (F3)",
+    "  /undo /u             revert last fs_edit / fs_write (Phase J)",
     "  /editor /e           legacy-mode only for now",
     "  /init                drop an agent.yaml in the project root",
     "inline:",

@@ -98,6 +98,18 @@ impl ToolHandler for FsWrite {
                     .map_err(|e| AonyxError::Tool(format!("fs_write mkdir {parent:?}: {e}")))?;
             }
         }
+        // Journal the prior state for `/undo` (Phase J) — best-effort, a
+        // failure here never blocks the actual mutation.
+        let prior = if Path::new(&args.path).exists() {
+            tokio::fs::read_to_string(&args.path).await.ok()
+        } else {
+            None
+        };
+        let _ = crate::undo::append_snapshot(crate::undo::snapshot(
+            args.path.clone(),
+            prior,
+            "fs_write",
+        ));
         let bytes = args.content.len();
         tokio::fs::write(&args.path, args.content.as_bytes())
             .await
@@ -174,6 +186,12 @@ impl ToolHandler for FsEdit {
             original.replacen(&args.old_string, &args.new_string, 1)
         };
 
+        // Journal the prior state for `/undo` (Phase J) — best-effort.
+        let _ = crate::undo::append_snapshot(crate::undo::snapshot(
+            args.path.clone(),
+            Some(original.clone()),
+            "fs_edit",
+        ));
         tokio::fs::write(&args.path, new_text.as_bytes())
             .await
             .map_err(|e| AonyxError::Tool(format!("fs_edit write {}: {e}", args.path)))?;

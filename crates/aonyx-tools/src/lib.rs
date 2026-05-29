@@ -23,6 +23,7 @@ pub mod fs;
 pub mod git;
 pub mod memory;
 pub mod registry;
+pub mod undo;
 pub mod web;
 
 pub use registry::ToolRegistry;
