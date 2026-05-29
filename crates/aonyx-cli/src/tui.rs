@@ -117,6 +117,7 @@ const SLASH_CANDIDATES: &[&str] = &[
     "/kg",
     "/tools",
     "/skills",
+    "/inspect",
     "/mouse",
     "/ingest",
     "/editor",
@@ -278,6 +279,25 @@ impl ToolsPanel {
         if self.selected + 1 < self.entries.len() {
             self.selected += 1;
         }
+    }
+}
+
+/// Floating `/inspect` panel showing the last LLM request JSON
+/// (Phase Y).
+#[derive(Debug, Default)]
+struct InspectPanel {
+    /// `true` while the overlay is visible.
+    open: bool,
+    /// Pre-split display lines of the captured JSON.
+    lines: Vec<Line<'static>>,
+    /// Vertical scroll offset.
+    scroll: u16,
+}
+
+impl InspectPanel {
+    fn close(&mut self) {
+        self.open = false;
+        self.scroll = 0;
     }
 }
 
@@ -507,6 +527,11 @@ fn build_palette_entries() -> Vec<PaletteEntry> {
             action: PaletteAction::Slash(SlashCommand::Skills),
         },
         PaletteEntry {
+            label: "/inspect".into(),
+            hint: "Show the JSON of the last LLM request".into(),
+            action: PaletteAction::Slash(SlashCommand::Inspect),
+        },
+        PaletteEntry {
             label: "/mouse".into(),
             hint: "Toggle mouse capture (off = native drag-to-select)".into(),
             action: PaletteAction::Slash(SlashCommand::Mouse),
@@ -573,6 +598,8 @@ pub async fn run(
     // Phase X — share the runner's live skill-toggle set so `/skills`
     // can enable / disable skills mid-session.
     let disabled_skills = runner.skill_toggle_handle();
+    // Phase Y — share the runner's last-request snapshot for `/inspect`.
+    let last_request = runner.last_request_handle();
 
     let messages: Vec<Message> = session_messages;
 
@@ -639,6 +666,8 @@ pub async fn run(
         skills: skills_catalogue,
         disabled_skills,
         skills_panel: SkillsPanel::default(),
+        last_request,
+        inspect_panel: InspectPanel::default(),
         recent_session_ids: Vec::new(),
         approval_rx,
         pending_approval: None,
@@ -764,6 +793,12 @@ struct TuiApp {
     disabled_skills: Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
     /// Floating `/skills` panel state (Phase X).
     skills_panel: SkillsPanel,
+
+    /// Shared snapshot of the last LLM request JSON, written by the
+    /// runner (Phase Y).
+    last_request: Arc<std::sync::Mutex<Option<String>>>,
+    /// Floating `/inspect` panel state (Phase Y).
+    inspect_panel: InspectPanel,
 
     /// Cache of recent session id-prefixes (`(short_id, title)`) used
     /// by `/load` argument autocomplete (Phase R). Refreshed at
@@ -1169,6 +1204,12 @@ impl TuiApp {
         // Skills panel (Phase X) swallows every key while open.
         if self.skills_panel.open {
             self.handle_skills_panel_key(key);
+            return;
+        }
+
+        // Inspect panel (Phase Y) swallows every key while open.
+        if self.inspect_panel.open {
+            self.handle_inspect_panel_key(key);
             return;
         }
 
@@ -1880,6 +1921,9 @@ impl TuiApp {
             SlashCommand::Skills => {
                 self.open_skills_panel();
             }
+            SlashCommand::Inspect => {
+                self.open_inspect_panel();
+            }
             SlashCommand::Mouse => {
                 self.toggle_mouse_capture();
             }
@@ -2111,6 +2155,64 @@ impl TuiApp {
         self.tools_panel.entries = entries;
         self.tools_panel.selected = 0;
         self.tools_panel.open = true;
+    }
+
+    /// Read the captured last-request JSON and open the `/inspect`
+    /// panel (Phase Y). Splits the JSON into themed lines: object keys
+    /// stay dim, everything else uses the default fg.
+    fn open_inspect_panel(&mut self) {
+        let snapshot = self
+            .last_request
+            .lock()
+            .ok()
+            .and_then(|s| s.clone());
+        let lines: Vec<Line<'static>> = match snapshot {
+            Some(json) => json
+                .lines()
+                .map(|l| {
+                    Line::from(Span::styled(
+                        l.to_string(),
+                        Style::default().fg(self.theme.header_fg),
+                    ))
+                })
+                .collect(),
+            None => vec![Line::from(Span::styled(
+                "(no request captured yet — send a message first)",
+                Style::default().fg(self.theme.dim),
+            ))],
+        };
+        self.inspect_panel.lines = lines;
+        self.inspect_panel.scroll = 0;
+        self.inspect_panel.open = true;
+    }
+
+    /// Drive the `/inspect` panel: ↑/↓ scroll, PgUp/PgDn faster,
+    /// g/G top/bottom, Esc / q close (Phase Y).
+    fn handle_inspect_panel_key(&mut self, key: KeyEvent) {
+        use KeyCode::*;
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        match key.code {
+            Esc | Char('q') => self.inspect_panel.close(),
+            Char('c') | Char('d') if ctrl => {
+                self.inspect_panel.close();
+                self.quit = true;
+            }
+            Up | Char('k') => {
+                self.inspect_panel.scroll = self.inspect_panel.scroll.saturating_sub(1);
+            }
+            Down | Char('j') => {
+                self.inspect_panel.scroll = self.inspect_panel.scroll.saturating_add(1);
+            }
+            PageUp => {
+                self.inspect_panel.scroll = self.inspect_panel.scroll.saturating_sub(8);
+            }
+            PageDown => {
+                self.inspect_panel.scroll = self.inspect_panel.scroll.saturating_add(8);
+            }
+            Home | Char('g') => self.inspect_panel.scroll = 0,
+            End | Char('G') => self.inspect_panel.scroll = u16::MAX,
+            _ => {}
+        }
     }
 
     /// Snapshot the skill catalogue into a sorted `SkillEntry` list and
@@ -2968,9 +3070,47 @@ impl TuiApp {
         if self.skills_panel.open {
             self.render_skills_panel(f);
         }
+        if self.inspect_panel.open {
+            self.render_inspect_panel(f);
+        }
         if self.pending_approval.is_some() {
             self.render_approval_overlay(f);
         }
+    }
+
+    /// Draw the `/inspect` panel (Phase Y) — a wide scrollable view of
+    /// the last LLM request JSON.
+    fn render_inspect_panel(&mut self, f: &mut Frame<'_>) {
+        let area = f.area();
+        let width = (area.width as u32 * 80 / 100).clamp(40, 120) as u16;
+        let height = (area.height as u32 * 75 / 100).clamp(10, 36) as u16;
+        let x = area.x + (area.width.saturating_sub(width)) / 2;
+        let y = area.y + (area.height.saturating_sub(height)) / 2;
+        let popup = Rect::new(x, y, width, height);
+        f.render_widget(ratatui::widgets::Clear, popup);
+
+        let total = self.inspect_panel.lines.len() as u16;
+        let visible = popup.height.saturating_sub(2);
+        let max_scroll = total.saturating_sub(visible);
+        if self.inspect_panel.scroll > max_scroll {
+            self.inspect_panel.scroll = max_scroll;
+        }
+
+        let footer = Line::from(Span::styled(
+            " ↑/↓ scroll · g/G top/bottom · Esc / q close ",
+            Style::default().fg(self.theme.dim),
+        ));
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(self.theme.suggestion_border))
+            .title(format!(" /inspect · last LLM request · {total} lines "))
+            .title_alignment(Alignment::Left)
+            .title_bottom(footer);
+        let para = Paragraph::new(Text::from(self.inspect_panel.lines.clone()))
+            .wrap(Wrap { trim: false })
+            .scroll((self.inspect_panel.scroll, 0))
+            .block(block);
+        f.render_widget(para, popup);
     }
 
     /// Draw the floating Ctrl+P command palette centered on screen.
@@ -3415,6 +3555,7 @@ const HELP_LINES: &[&str] = &[
     "  /kg /palace          open the memory-palace visualization (Phase O)",
     "  /tools               enable / disable registered tools live (Phase Q)",
     "  /skills              enable / disable loaded skills live (Phase X)",
+    "  /inspect             show the JSON of the last LLM request (Phase Y)",
     "  /mouse /select       toggle mouse capture (off = native text selection, Phase U)",
     "  /ingest <path>       add a local file to the project palace (Phase V)",
     "  /editor /e           legacy-mode only for now",

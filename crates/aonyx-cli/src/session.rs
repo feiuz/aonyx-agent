@@ -89,6 +89,8 @@ pub enum SlashCommand {
     Ingest(Option<String>),
     /// Open the floating skills panel (Phase X). TUI-only.
     Skills,
+    /// Show the JSON of the last LLM request (Phase Y). TUI-only.
+    Inspect,
 }
 
 impl SlashCommand {
@@ -120,6 +122,7 @@ impl SlashCommand {
             "/mouse" | "/select" => Some(Self::Mouse),
             "/ingest" => Some(Self::Ingest(rest.map(str::to_string))),
             "/skills" => Some(Self::Skills),
+            "/inspect" => Some(Self::Inspect),
             _ => None,
         }
     }
@@ -390,6 +393,11 @@ impl InteractiveSession {
             }
             SlashCommand::Skills => {
                 out.write_all(b"\x1b[90m/skills runs in TUI mode (aonyx --tui)\x1b[0m\n")
+                    .await?;
+                Ok(true)
+            }
+            SlashCommand::Inspect => {
+                out.write_all(b"\x1b[90m/inspect runs in TUI mode (aonyx --tui)\x1b[0m\n")
                     .await?;
                 Ok(true)
             }

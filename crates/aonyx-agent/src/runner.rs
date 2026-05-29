@@ -108,6 +108,10 @@ pub struct AgentRunner {
     /// behind an `Arc<Mutex<_>>` so the TUI `/skills` panel (Phase X)
     /// can flip them live and the next turn picks up the change.
     disabled_skills: Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
+    /// Pretty-printed (redacted) JSON of the most recent request sent
+    /// to the provider — surfaced by the TUI `/inspect` panel
+    /// (Phase Y). `None` until the first turn fires.
+    last_request: Arc<std::sync::Mutex<Option<String>>>,
     project: Option<String>,
     approval: ApprovalPolicy,
     model: String,
@@ -126,6 +130,7 @@ impl AgentRunner {
             tools,
             skills: Vec::new(),
             disabled_skills: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
+            last_request: Arc::new(std::sync::Mutex::new(None)),
             project: None,
             approval: ApprovalPolicy::default(),
             model: model.into(),
@@ -140,6 +145,13 @@ impl AgentRunner {
         &self,
     ) -> Arc<std::sync::Mutex<std::collections::HashSet<String>>> {
         Arc::clone(&self.disabled_skills)
+    }
+
+    /// Share a handle to the most-recent-request snapshot. The TUI
+    /// `/inspect` panel (Phase Y) reads the pretty-printed JSON written
+    /// here on every turn.
+    pub fn last_request_handle(&self) -> Arc<std::sync::Mutex<Option<String>>> {
+        Arc::clone(&self.last_request)
     }
 
     /// Override the approval policy.
@@ -264,6 +276,13 @@ impl AgentRunner {
                 temperature: None,
                 max_tokens: None,
             };
+
+            // Phase Y — capture a redacted snapshot for `/inspect`
+            // before the request leaves. Best-effort: a serialization
+            // hiccup never blocks the turn.
+            if let Ok(mut slot) = self.last_request.lock() {
+                *slot = Some(redact_request_json(&req));
+            }
 
             let (text, tool_calls) = self.consume_stream(req, &events).await?;
 
@@ -406,6 +425,33 @@ fn format_tool_result(tr: &ToolResult) -> String {
     }
 }
 
+/// Serialize a [`ChatRequest`] to pretty JSON for the `/inspect` panel
+/// (Phase Y), eliding base64 image payloads so the snapshot stays
+/// readable (a single PNG can be hundreds of KB of base64).
+fn redact_request_json(req: &ChatRequest) -> String {
+    let mut value = match serde_json::to_value(req) {
+        Ok(v) => v,
+        Err(e) => return format!("(could not serialize request: {e})"),
+    };
+    if let Some(messages) = value.get_mut("messages").and_then(|m| m.as_array_mut()) {
+        for msg in messages.iter_mut() {
+            if let Some(atts) = msg.get_mut("attachments").and_then(|a| a.as_array_mut()) {
+                for att in atts.iter_mut() {
+                    if let Some(data) = att.get_mut("data") {
+                        if let Some(s) = data.as_str() {
+                            *data = Value::String(format!(
+                                "<{} bytes base64 elided>",
+                                s.len()
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    serde_json::to_string_pretty(&value).unwrap_or_else(|e| format!("(pretty-print failed: {e})"))
+}
+
 fn short_summary(value: &Value) -> String {
     let raw = match value {
         Value::String(s) => s.clone(),
@@ -505,6 +551,44 @@ mod tests {
         };
         s.trigger.always_on = true;
         s
+    }
+
+    #[test]
+    fn redact_request_json_elides_image_payloads() {
+        use aonyx_core::Attachment;
+        let req = ChatRequest {
+            model: "claude-x".to_string(),
+            messages: vec![Message::with_attachments(
+                Role::User,
+                "look",
+                vec![Attachment::Image {
+                    media_type: "image/png".into(),
+                    data: "A".repeat(5000),
+                }],
+            )],
+            tools: vec![],
+            temperature: None,
+            max_tokens: None,
+        };
+        let json = redact_request_json(&req);
+        assert!(json.contains("claude-x"));
+        assert!(json.contains("image/png"));
+        // The 5000-char blob must be gone, replaced by the elision tag.
+        assert!(!json.contains(&"A".repeat(5000)));
+        assert!(json.contains("base64 elided"));
+    }
+
+    #[test]
+    fn redact_request_json_passes_text_only_requests_through() {
+        let req = ChatRequest {
+            model: "m".to_string(),
+            messages: vec![Message::new(Role::User, "plain text")],
+            tools: vec![],
+            temperature: None,
+            max_tokens: None,
+        };
+        let json = redact_request_json(&req);
+        assert!(json.contains("plain text"));
     }
 
     #[test]
