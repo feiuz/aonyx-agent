@@ -105,6 +105,21 @@ enum Trigger {
     Slash,
 }
 
+/// What the user is currently typing into the composer (Phase I).
+///
+/// Drives the inline syntax-highlight: the whole composer text + border
+/// adopt a colour appropriate to the mode so the user sees what kind of
+/// action `Enter` will dispatch *before* hitting it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ComposerMode {
+    /// Regular chat message → default theme.
+    Chat,
+    /// First non-empty line starts with `/` → slash command.
+    Slash,
+    /// First non-empty line starts with `!` → inline bash.
+    Bash,
+}
+
 /// Vim-style editing mode (F3). Toggle the whole feature on/off with
 /// `/vim`; once on, `Esc` enters Normal mode and `i`/`a` returns to
 /// Insert.
@@ -344,7 +359,7 @@ pub async fn run(
         .map(theme::by_name)
         .unwrap_or(theme::DEFAULT);
 
-    let app = TuiApp {
+    let mut app = TuiApp {
         runner: Arc::new(runner),
         palace,
         messages,
@@ -395,6 +410,11 @@ pub async fn run(
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
+
+    // Apply the initial composer styling (Phase I) so the border picks
+    // up the active theme straight away instead of staying on the
+    // bootstrap DarkGray.
+    app.apply_composer_style();
 
     let res = app.event_loop(&mut terminal).await;
 
@@ -905,6 +925,43 @@ impl TuiApp {
             }
             None => self.dismiss_suggestions(),
         }
+        // Phase I — refresh the composer's text + border colour now that
+        // the input may have shifted between Chat / Slash / Bash modes.
+        self.apply_composer_style();
+    }
+
+    /// Recolour the composer's text + border based on the detected
+    /// [`ComposerMode`] (Phase I).
+    ///
+    /// * Chat → default theme (no extra bold, theme border).
+    /// * Slash → magenta bold + magenta border.
+    /// * Bash → yellow bold + yellow border.
+    fn apply_composer_style(&mut self) {
+        let mode = detect_composer_mode(&self.composer);
+        let (text_style, border_color) = match mode {
+            ComposerMode::Chat => (
+                Style::default().fg(self.theme.header_fg),
+                self.theme.composer_border,
+            ),
+            ComposerMode::Slash => (
+                Style::default()
+                    .fg(self.theme.suggestion_border)
+                    .add_modifier(Modifier::BOLD),
+                self.theme.suggestion_border,
+            ),
+            ComposerMode::Bash => (
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+                Color::Yellow,
+            ),
+        };
+        self.composer.set_style(text_style);
+        self.composer.set_block(
+            Block::default()
+                .borders(Borders::TOP | Borders::BOTTOM)
+                .border_style(Style::default().fg(border_color)),
+        );
     }
 
     fn dismiss_suggestions(&mut self) {
@@ -970,16 +1027,14 @@ impl TuiApp {
             content.lines().map(String::from).collect()
         };
         let mut next = TextArea::new(lines);
-        next.set_block(
-            Block::default()
-                .borders(Borders::TOP | Borders::BOTTOM)
-                .border_style(Style::default().fg(Color::DarkGray)),
-        );
+        // Block + text style are re-applied by `apply_composer_style` —
+        // bootstrap with a sensible default for the cursor + placeholder.
         next.set_cursor_line_style(Style::default());
         next.set_placeholder_text("type a message — Enter to send, Shift+Enter for newline");
         next.move_cursor(CursorMove::Bottom);
         next.move_cursor(CursorMove::End);
         self.composer = next;
+        self.apply_composer_style();
     }
 
     fn history_prev(&mut self) {
@@ -1749,11 +1804,9 @@ impl TuiApp {
             );
             f.render_widget(blocker, chunks[3]);
         } else {
-            self.composer.set_block(
-                Block::default()
-                    .borders(Borders::TOP | Borders::BOTTOM)
-                    .border_style(Style::default().fg(self.theme.composer_border)),
-            );
+            // Phase I: the composer's border + text style are owned by
+            // `apply_composer_style()` — re-setting the block here would
+            // clobber slash/bash highlighting on every redraw.
             f.render_widget(&self.composer, chunks[3]);
         }
 
@@ -1948,6 +2001,29 @@ fn rect_shrink(r: Rect, n: u16) -> Rect {
 /// Return `true` when `(x, y)` falls inside the rectangle.
 fn rect_contains(r: Rect, x: u16, y: u16) -> bool {
     x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height
+}
+
+/// Classify whatever the user is typing into the composer (Phase I).
+///
+/// Inspects the first non-empty line; if it starts with `/` it's a
+/// slash command, `!` it's inline bash, otherwise a regular chat
+/// message. `@path` references inside a chat message stay `Chat` —
+/// they're recognised separately by the suggestion popup.
+fn detect_composer_mode(textarea: &TextArea<'_>) -> ComposerMode {
+    let first = textarea
+        .lines()
+        .iter()
+        .find(|l| !l.trim().is_empty())
+        .cloned()
+        .unwrap_or_default();
+    let t = first.trim_start();
+    if t.starts_with('/') {
+        ComposerMode::Slash
+    } else if t.starts_with('!') {
+        ComposerMode::Bash
+    } else {
+        ComposerMode::Chat
+    }
 }
 
 const HELP_LINES: &[&str] = &[
@@ -2387,6 +2463,21 @@ mod tests {
         p.refilter();
         assert_eq!(p.filtered.len(), 0);
         assert_eq!(p.selected, 0);
+    }
+
+    #[test]
+    fn detect_composer_mode_classifies_first_non_empty_line() {
+        let chat = TextArea::from(["", "  ", "hello world"]);
+        let slash = TextArea::from(["", "/help"]);
+        let slash_indented = TextArea::from(["", "   /themes dracula"]);
+        let bash = TextArea::from(["!ls -la"]);
+        let bare_at = TextArea::from(["@README.md what is this"]);
+        assert_eq!(detect_composer_mode(&chat), ComposerMode::Chat);
+        assert_eq!(detect_composer_mode(&slash), ComposerMode::Slash);
+        assert_eq!(detect_composer_mode(&slash_indented), ComposerMode::Slash);
+        assert_eq!(detect_composer_mode(&bash), ComposerMode::Bash);
+        // `@` refs live inside Chat — they're surfaced by the suggestion popup.
+        assert_eq!(detect_composer_mode(&bare_at), ComposerMode::Chat);
     }
 
     #[test]
