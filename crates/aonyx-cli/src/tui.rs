@@ -99,6 +99,10 @@ const UNIFIED_DIFF_CONTEXT: usize = 1;
 /// past this limit, then flush.
 const INGEST_CHUNK_MAX_CHARS: usize = 2_000;
 
+/// Number of trailing messages kept verbatim by compaction (Phase BB);
+/// everything older (after the system prompt) is folded into a summary.
+const COMPACT_KEEP_RECENT: usize = 6;
+
 const SLASH_CANDIDATES: &[&str] = &[
     "/quit",
     "/clear",
@@ -119,6 +123,7 @@ const SLASH_CANDIDATES: &[&str] = &[
     "/skills",
     "/inspect",
     "/fork",
+    "/compact",
     "/mouse",
     "/ingest",
     "/editor",
@@ -538,6 +543,11 @@ fn build_palette_entries() -> Vec<PaletteEntry> {
             action: PaletteAction::Slash(SlashCommand::Fork),
         },
         PaletteEntry {
+            label: "/compact".into(),
+            hint: "Summarize old turns to free up context".into(),
+            action: PaletteAction::Slash(SlashCommand::Compact),
+        },
+        PaletteEntry {
             label: "/mouse".into(),
             hint: "Toggle mouse capture (off = native drag-to-select)".into(),
             action: PaletteAction::Slash(SlashCommand::Mouse),
@@ -582,6 +592,8 @@ pub async fn run(
     theme_name: Option<String>,
     show_thinking: bool,
     desktop_notifications: bool,
+    auto_compact: bool,
+    auto_compact_threshold: u64,
 ) -> anyhow::Result<()> {
     // Phase P — runner pauses on Destructive tool calls and asks the
     // TUI via a channel. Capacity 4 = at most 4 in-flight approvals
@@ -684,6 +696,9 @@ pub async fn run(
         total_input_tokens: 0,
         total_output_tokens: 0,
         pricing: cached_pricing,
+        auto_compact,
+        compact_threshold: auto_compact_threshold,
+        compact_nudged: false,
         quit: false,
     };
 
@@ -841,6 +856,17 @@ struct TuiApp {
     /// startup. `None` for local / free providers (Phase K).
     pricing: Option<Pricing>,
 
+    /// Auto-fire compaction when the history crosses
+    /// `compact_threshold` estimated tokens (Phase BB). When false, the
+    /// TUI only nudges.
+    auto_compact: bool,
+    /// Estimated-token threshold arming compaction + the nudge.
+    compact_threshold: u64,
+    /// `true` once the over-threshold nudge has been shown for the
+    /// current oversized state — reset after a compaction so it can
+    /// nudge again later.
+    compact_nudged: bool,
+
     quit: bool,
 }
 
@@ -943,6 +969,9 @@ impl TuiApp {
                 self.runner_active = false;
                 self.turn_started_at = None;
                 self.retire_thinking_line();
+                // Phase BB — after the turn settles, compact or nudge if
+                // the conversation has grown past the threshold.
+                self.maybe_auto_compact().await;
             }
         }
     }
@@ -1924,6 +1953,9 @@ impl TuiApp {
             SlashCommand::Fork => {
                 self.fork_session().await;
             }
+            SlashCommand::Compact => {
+                self.compact_session(false).await;
+            }
             SlashCommand::Mouse => {
                 self.toggle_mouse_capture();
             }
@@ -2113,6 +2145,126 @@ impl TuiApp {
             self.push_dim("mouse: on — scroll wheel + palette click restored.");
         } else {
             self.push_line(error_line("could not enable mouse capture".to_string()));
+        }
+    }
+
+    /// Estimated token count of the live conversation (Phase BB).
+    fn conversation_tokens(&self) -> u64 {
+        self.messages
+            .iter()
+            .map(|m| pricing::estimate_tokens(&m.content))
+            .sum()
+    }
+
+    /// Compact the conversation (Phase BB): summarize everything between
+    /// the system prompt and the last [`COMPACT_KEEP_RECENT`] messages
+    /// into a single system note, archiving the full pre-compact history
+    /// as a forked child first so nothing is lost (`/load` to recover).
+    ///
+    /// `automatic` distinguishes the auto-fire path (over threshold)
+    /// from a manual `/compact` for the status line wording.
+    async fn compact_session(&mut self, automatic: bool) {
+        // Split: optional leading system prompt | middle (to summarize) | tail.
+        let has_system = self
+            .messages
+            .first()
+            .map(|m| m.role == Role::System)
+            .unwrap_or(false);
+        let head = usize::from(has_system);
+        // Need enough middle messages to be worth summarizing.
+        if self.messages.len() <= head + COMPACT_KEEP_RECENT + 1 {
+            if !automatic {
+                self.push_dim("compact: not enough history to compact yet");
+            }
+            return;
+        }
+        let tail_start = self.messages.len() - COMPACT_KEEP_RECENT;
+        let middle: Vec<Message> = self.messages[head..tail_start].to_vec();
+
+        let label = if automatic { "auto-compact" } else { "compact" };
+        self.push_dim(&format!(
+            "⟳ {label}: summarizing {} message(s)…",
+            middle.len()
+        ));
+
+        let summary = match self.runner.summarize(&middle).await {
+            Ok(s) if !s.trim().is_empty() => s,
+            Ok(_) => {
+                self.push_line(error_line(format!(
+                    "{label}: model returned an empty summary"
+                )));
+                return;
+            }
+            Err(e) => {
+                self.push_line(error_line(format!("{label} failed: {e}")));
+                return;
+            }
+        };
+
+        // Archive the full pre-compact history as a forked child so the
+        // original transcript stays recoverable.
+        let archive_id = self
+            .session_store
+            .fork(
+                &self.project_slug,
+                self.session_id,
+                self.messages.clone(),
+                self.turns,
+            )
+            .await
+            .ok()
+            .map(|r| r.id);
+
+        // Rebuild: [system?, summary-as-system, ...tail].
+        let mut rebuilt: Vec<Message> = Vec::with_capacity(2 + COMPACT_KEEP_RECENT);
+        if has_system {
+            rebuilt.push(self.messages[0].clone());
+        }
+        rebuilt.push(Message::new(
+            Role::System,
+            format!("[Earlier conversation, compacted]\n\n{summary}"),
+        ));
+        rebuilt.extend_from_slice(&self.messages[tail_start..]);
+        self.messages = rebuilt;
+        self.compact_nudged = false;
+
+        // Persist the compacted current session.
+        let _ = self
+            .session_store
+            .update(self.session_id, self.messages.clone(), self.turns)
+            .await;
+        self.refresh_recent_sessions().await;
+
+        match archive_id {
+            Some(id) => {
+                let short: String = id.to_string().chars().take(8).collect();
+                self.push_dim(&format!(
+                    "✓ {label} done — kept last {COMPACT_KEEP_RECENT} message(s) + summary · full history archived as [{short}] (`/load {short}`)"
+                ));
+            }
+            None => self.push_dim(&format!(
+                "✓ {label} done — kept last {COMPACT_KEEP_RECENT} message(s) + summary (archive failed)"
+            )),
+        }
+    }
+
+    /// After a turn completes, check whether the conversation has grown
+    /// past the compaction threshold and either auto-fire or nudge
+    /// (Phase BB).
+    async fn maybe_auto_compact(&mut self) {
+        if self.conversation_tokens() < self.compact_threshold {
+            self.compact_nudged = false;
+            return;
+        }
+        if self.auto_compact {
+            self.compact_session(true).await;
+        } else if !self.compact_nudged {
+            self.compact_nudged = true;
+            self.push_dim(&format!(
+                "⚠ conversation ≈ {} tokens (over {}). Run /compact to summarize old turns.",
+                pricing::format_tokens(self.conversation_tokens()),
+                pricing::format_tokens(self.compact_threshold)
+            ));
         }
     }
 
@@ -3585,6 +3737,7 @@ const HELP_LINES: &[&str] = &[
     "  /skills              enable / disable loaded skills live (Phase X)",
     "  /inspect             show the JSON of the last LLM request (Phase Y)",
     "  /fork                fork the current session into a child branch (Phase Z)",
+    "  /compact             summarize old turns, keep the tail (Phase BB)",
     "  /mouse /select       toggle mouse capture (off = native text selection, Phase U)",
     "  /ingest <path>       add a local file to the project palace (Phase V)",
     "  /editor /e           legacy-mode only for now",

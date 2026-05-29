@@ -225,6 +225,8 @@ async fn start_interactive(project_path: Option<PathBuf>, use_tui: bool) -> anyh
             config.theme.clone(),
             config.show_thinking,
             config.desktop_notifications,
+            config.auto_compact,
+            config.auto_compact_threshold,
         )
         .await;
     }

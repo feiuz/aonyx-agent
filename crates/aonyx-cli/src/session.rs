@@ -93,6 +93,9 @@ pub enum SlashCommand {
     Inspect,
     /// Fork the current session into a child branch (Phase Z). TUI-only.
     Fork,
+    /// Compact the conversation: summarize old turns, keep the tail
+    /// (Phase BB). TUI-only.
+    Compact,
 }
 
 impl SlashCommand {
@@ -126,6 +129,7 @@ impl SlashCommand {
             "/skills" => Some(Self::Skills),
             "/inspect" => Some(Self::Inspect),
             "/fork" => Some(Self::Fork),
+            "/compact" => Some(Self::Compact),
             _ => None,
         }
     }
@@ -406,6 +410,11 @@ impl InteractiveSession {
             }
             SlashCommand::Fork => {
                 out.write_all(b"\x1b[90m/fork runs in TUI mode (aonyx --tui)\x1b[0m\n")
+                    .await?;
+                Ok(true)
+            }
+            SlashCommand::Compact => {
+                out.write_all(b"\x1b[90m/compact runs in TUI mode (aonyx --tui)\x1b[0m\n")
                     .await?;
                 Ok(true)
             }

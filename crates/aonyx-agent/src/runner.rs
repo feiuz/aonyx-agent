@@ -369,6 +369,51 @@ impl AgentRunner {
         })
     }
 
+    /// Summarize a slice of conversation into a single compact paragraph
+    /// (Phase BB). One-shot, tool-free, non-streaming — used by the TUI
+    /// auto-compaction to fold old turns into a system note.
+    pub async fn summarize(&self, history: &[Message]) -> Result<String> {
+        let transcript = history
+            .iter()
+            .map(|m| {
+                let who = match m.role {
+                    Role::System => "system",
+                    Role::User => "user",
+                    Role::Assistant => "assistant",
+                    Role::Tool => "tool",
+                };
+                format!("{who}: {}", m.content)
+            })
+            .collect::<Vec<_>>()
+            .join("\n\n");
+
+        let prompt = "You are compacting a conversation to save context. Summarize the \
+            exchange below concisely, preserving key facts, decisions, file paths, \
+            identifiers, and any open questions or TODOs. Omit pleasantries. Output \
+            only the summary prose — no preamble.";
+        let req = ChatRequest {
+            model: self.model.clone(),
+            messages: vec![
+                Message::new(Role::System, prompt),
+                Message::new(Role::User, transcript),
+            ],
+            tools: Vec::new(),
+            temperature: Some(0.0),
+            max_tokens: Some(1024),
+        };
+
+        let mut stream = self.provider.chat_stream(req).await?;
+        let mut text = String::new();
+        while let Some(item) = stream.next().await {
+            let chunk = item?;
+            text.push_str(&chunk.delta_text);
+            if chunk.finished {
+                break;
+            }
+        }
+        Ok(text.trim().to_string())
+    }
+
     async fn consume_stream(
         &self,
         req: ChatRequest,
@@ -546,6 +591,22 @@ mod tests {
         };
         s.trigger.always_on = true;
         s
+    }
+
+    #[tokio::test]
+    async fn summarize_collects_streamed_text() {
+        let provider = Arc::new(FakeProvider::new(vec![vec![
+            text_chunk("Summary: "),
+            text_chunk("user asked about X."),
+            stop_chunk(),
+        ]]));
+        let runner = AgentRunner::new(provider, ToolRegistry::default_set(), "any-model");
+        let history = vec![
+            Message::new(Role::User, "tell me about X"),
+            Message::new(Role::Assistant, "X is a thing"),
+        ];
+        let summary = runner.summarize(&history).await.unwrap();
+        assert_eq!(summary, "Summary: user asked about X.");
     }
 
     #[test]

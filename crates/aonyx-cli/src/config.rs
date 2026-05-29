@@ -72,6 +72,19 @@ pub struct Config {
     /// Emit a desktop notification when a turn finishes or errors out.
     #[serde(default)]
     pub desktop_notifications: bool,
+    /// Auto-compact the conversation once its estimated token count
+    /// crosses [`Self::auto_compact_threshold`]. Off by default — when
+    /// off, the TUI only nudges you to run `/compact` (Phase BB).
+    #[serde(default)]
+    pub auto_compact: bool,
+    /// Estimated-token threshold that arms auto-compaction (and the
+    /// manual-compaction nudge). Defaults to 24000.
+    #[serde(default = "default_compact_threshold")]
+    pub auto_compact_threshold: u64,
+}
+
+fn default_compact_threshold() -> u64 {
+    24_000
 }
 
 fn default_max_iterations() -> usize {
@@ -98,6 +111,8 @@ impl Default for Config {
             theme: None,
             show_thinking: false,
             desktop_notifications: false,
+            auto_compact: false,
+            auto_compact_threshold: default_compact_threshold(),
         }
     }
 }
@@ -171,6 +186,8 @@ mod tests {
             theme: Some("dracula".into()),
             show_thinking: true,
             desktop_notifications: false,
+            auto_compact: true,
+            auto_compact_threshold: 12_000,
         };
         let s = toml::to_string(&original).unwrap();
         let parsed: Config = toml::from_str(&s).unwrap();
@@ -182,6 +199,19 @@ mod tests {
             parsed.ollama_base_url.as_deref(),
             Some("http://localhost:9999")
         );
+        assert!(parsed.auto_compact);
+        assert_eq!(parsed.auto_compact_threshold, 12_000);
+    }
+
+    #[test]
+    fn missing_compact_fields_use_defaults() {
+        let raw = r#"
+            provider = "anthropic"
+            model = "claude-sonnet"
+        "#;
+        let parsed: Config = toml::from_str(raw).unwrap();
+        assert!(!parsed.auto_compact);
+        assert_eq!(parsed.auto_compact_threshold, 24_000);
     }
 
     #[test]
