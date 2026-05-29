@@ -600,9 +600,20 @@ impl TuiApp {
         self.history_cursor = None;
         self.scratch.clear();
 
+        // Inline bash: `!cmd` runs locally and prints the output back into the
+        // viewport + injects it as a system message so the next turn can use it.
+        if let Some(cmd) = trimmed.strip_prefix('!') {
+            self.handle_bash_inline(cmd.trim()).await;
+            self.set_composer_content("");
+            return;
+        }
+
         if let Some(cmd) = SlashCommand::parse(trimmed) {
             self.handle_slash(cmd).await;
         } else {
+            // `@filename` references: pull file content into the conversation as
+            // a system message + show a `📎 loaded:` line in the viewport.
+            let (display_text, refs) = extract_refs(trimmed);
             self.push_line(Line::from(vec![
                 Span::styled(
                     "you> ",
@@ -610,16 +621,63 @@ impl TuiApp {
                         .add_modifier(Modifier::BOLD)
                         .fg(Color::Green),
                 ),
-                Span::raw(trimmed.to_string()),
+                Span::raw(display_text.clone()),
             ]));
-            self.messages
-                .push(Message::new(Role::User, trimmed.to_string()));
+            if !refs.is_empty() {
+                let resolved = resolve_refs(&refs).await;
+                for (path, result) in &resolved {
+                    match result {
+                        Ok(text) => {
+                            self.push_dim(&format!("  📎 loaded: {path} ({} bytes)", text.len()));
+                        }
+                        Err(e) => {
+                            self.push_line(error_line(format!("📎 {path}: {e}")));
+                        }
+                    }
+                }
+                if let Some(ctx_msg) = build_refs_message(&resolved) {
+                    self.messages.push(ctx_msg);
+                }
+            }
+            self.messages.push(Message::new(Role::User, display_text));
             self.push_thinking_line();
             self.auto_scroll = true;
             self.start_runner();
         }
 
         self.set_composer_content("");
+    }
+
+    async fn handle_bash_inline(&mut self, cmd: &str) {
+        if cmd.is_empty() {
+            self.push_dim("(empty bash command — try `!ls` or `!git status`)");
+            return;
+        }
+        self.push_line(Line::from(vec![
+            Span::styled(
+                "you> ",
+                Style::default()
+                    .add_modifier(Modifier::BOLD)
+                    .fg(Color::Green),
+            ),
+            Span::styled(format!("!{cmd}"), Style::default().fg(Color::Yellow)),
+        ]));
+        match run_bash(cmd).await {
+            Ok(out) => {
+                self.push_dim(&format!("  $ {cmd}"));
+                for line in out.lines() {
+                    self.push_line(Line::from(Span::raw(line.to_string())));
+                }
+                self.messages.push(Message::new(
+                    Role::System,
+                    format!("User ran `!{cmd}` in the shell. Output:\n```\n{out}\n```"),
+                ));
+            }
+            Err(e) => {
+                self.push_line(error_line(format!("bash: {e}")));
+            }
+        }
+        self.auto_scroll = true;
     }
 
     fn start_runner(&mut self) {
@@ -897,8 +955,113 @@ const HELP_LINES: &[&str] = &[
     "  /thinking            reasoning visibility (Phase E)",
     "  /editor /e           legacy-mode only for now",
     "  /init                drop an agent.yaml in the project root",
+    "inline:",
+    "  @path/to/file.rs     load the file into the next turn's context",
+    "  !ls / !git status    run a shell command locally and feed output back",
     "keys: Shift+Enter newline · ↑/↓ history · PgUp/PgDn scroll · Esc quit",
 ];
+
+/// Parse `@path` tokens out of the user message.
+///
+/// Returns the cleaned-up text (with each `@path` re-quoted as ``@path``
+/// so the model knows it referenced something) and the list of paths found.
+/// A bare `@` with no following non-whitespace is left as-is.
+fn extract_refs(input: &str) -> (String, Vec<String>) {
+    let mut refs = Vec::new();
+    let mut out = String::new();
+    let mut chars = input.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '@' {
+            // Read the path: any non-whitespace following the `@`.
+            let mut path = String::new();
+            while let Some(&next) = chars.peek() {
+                if next.is_whitespace() {
+                    break;
+                }
+                path.push(next);
+                chars.next();
+            }
+            if path.is_empty() {
+                out.push('@');
+            } else {
+                refs.push(path.clone());
+                out.push('`');
+                out.push('@');
+                out.push_str(&path);
+                out.push('`');
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    (out, refs)
+}
+
+/// Read every `@path` from disk in parallel.
+async fn resolve_refs(paths: &[String]) -> Vec<(String, Result<String, String>)> {
+    let mut out = Vec::with_capacity(paths.len());
+    for path in paths {
+        let result = tokio::fs::read_to_string(path)
+            .await
+            .map_err(|e| e.to_string());
+        out.push((path.clone(), result));
+    }
+    out
+}
+
+/// Build a single system message that lists the resolved files. Returns
+/// `None` if every ref failed to read (no point cluttering the transcript).
+fn build_refs_message(refs: &[(String, Result<String, String>)]) -> Option<Message> {
+    let any_ok = refs.iter().any(|(_, r)| r.is_ok());
+    if !any_ok {
+        return None;
+    }
+    let mut content = String::new();
+    content.push_str(
+        "The user attached the following files (full text follows). Treat them as authoritative context.\n\n",
+    );
+    for (path, result) in refs {
+        match result {
+            Ok(text) => {
+                content.push_str(&format!("--- {path} ---\n{text}\n\n"));
+            }
+            Err(e) => {
+                content.push_str(&format!("--- {path} ---\n(could not read: {e})\n\n"));
+            }
+        }
+    }
+    Some(Message::new(Role::System, content))
+}
+
+/// Run a shell command locally and capture combined stdout + stderr.
+async fn run_bash(cmd: &str) -> Result<String, String> {
+    use tokio::process::Command;
+    let mut command = if cfg!(windows) {
+        let mut c = Command::new("cmd");
+        c.args(["/C", cmd]);
+        c
+    } else {
+        let mut c = Command::new("sh");
+        c.args(["-c", cmd]);
+        c
+    };
+    let output = command.output().await.map_err(|e| format!("spawn: {e}"))?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let mut combined = String::new();
+    combined.push_str(&stdout);
+    if !stderr.is_empty() {
+        if !combined.is_empty() && !combined.ends_with('\n') {
+            combined.push('\n');
+        }
+        combined.push_str(&stderr);
+    }
+    if !output.status.success() {
+        let code = output.status.code().unwrap_or(-1);
+        combined.push_str(&format!("\n[exit {code}]"));
+    }
+    Ok(combined.trim_end_matches(&['\n', '\r'][..]).to_string())
+}
 
 fn export_path(target: Option<String>) -> std::path::PathBuf {
     if let Some(t) = target.filter(|s| !s.is_empty()) {
@@ -1040,5 +1203,44 @@ mod tests {
     fn export_path_uses_explicit_target_when_provided() {
         let p = export_path(Some("transcript.md".into()));
         assert_eq!(p, std::path::PathBuf::from("transcript.md"));
+    }
+
+    #[test]
+    fn extract_refs_pulls_paths_and_quotes_them_back() {
+        let (cleaned, refs) = extract_refs("look at @src/main.rs and @Cargo.toml together");
+        assert_eq!(refs, vec!["src/main.rs", "Cargo.toml"]);
+        assert!(cleaned.contains("`@src/main.rs`"));
+        assert!(cleaned.contains("`@Cargo.toml`"));
+    }
+
+    #[test]
+    fn extract_refs_leaves_bare_at_alone() {
+        let (cleaned, refs) = extract_refs("send mail @ now");
+        assert!(refs.is_empty());
+        assert!(cleaned.contains("@ now"));
+    }
+
+    #[test]
+    fn extract_refs_handles_path_with_dots_and_dashes() {
+        let (_, refs) = extract_refs("compare @./crates/aonyx-cli/Cargo.toml please");
+        assert_eq!(refs, vec!["./crates/aonyx-cli/Cargo.toml"]);
+    }
+
+    #[test]
+    fn build_refs_message_skips_when_all_fail() {
+        let refs = vec![("missing.rs".to_string(), Err("not found".to_string()))];
+        assert!(build_refs_message(&refs).is_none());
+    }
+
+    #[test]
+    fn build_refs_message_keeps_failures_alongside_successes() {
+        let refs = vec![
+            ("a.rs".to_string(), Ok("contents".to_string())),
+            ("b.rs".to_string(), Err("nope".to_string())),
+        ];
+        let msg = build_refs_message(&refs).expect("non-empty");
+        assert!(msg.content.contains("contents"));
+        assert!(msg.content.contains("could not read: nope"));
+        assert_eq!(msg.role, Role::System);
     }
 }
