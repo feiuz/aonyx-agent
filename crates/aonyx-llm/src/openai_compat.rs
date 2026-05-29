@@ -347,10 +347,7 @@ mod tests {
         let blocks = v["content"].as_array().expect("array");
         assert_eq!(blocks.len(), 2);
         assert_eq!(blocks[0]["type"], "image_url");
-        assert_eq!(
-            blocks[0]["image_url"]["url"],
-            "data:image/png;base64,AAAA"
-        );
+        assert_eq!(blocks[0]["image_url"]["url"], "data:image/png;base64,AAAA");
         assert_eq!(blocks[1]["type"], "text");
         assert_eq!(blocks[1]["text"], "describe");
     }

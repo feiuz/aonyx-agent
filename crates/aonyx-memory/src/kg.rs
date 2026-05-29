@@ -487,9 +487,8 @@ impl KgStore for SqliteKgStore {
         let conn = self.conn.clone();
         tokio::task::spawn_blocking(move || -> Result<Vec<Entity>> {
             let lock = conn.lock().expect("kg mutex poisoned");
-            let sql = format!(
-                "SELECT {ENTITY_COLUMNS} FROM entities ORDER BY created_at DESC LIMIT ?1"
-            );
+            let sql =
+                format!("SELECT {ENTITY_COLUMNS} FROM entities ORDER BY created_at DESC LIMIT ?1");
             let mut stmt = lock
                 .prepare(&sql)
                 .map_err(|e| AonyxError::Memory(format!("prepare list_entities: {e}")))?;
@@ -628,18 +627,9 @@ mod tests {
     #[tokio::test]
     async fn list_relations_returns_recent_edges_first() {
         let store = SqliteKgStore::open_in_memory().expect("open in-memory");
-        let a = store
-            .upsert_entity(Entity::new("a", "x"))
-            .await
-            .unwrap();
-        let b = store
-            .upsert_entity(Entity::new("b", "x"))
-            .await
-            .unwrap();
-        let c = store
-            .upsert_entity(Entity::new("c", "x"))
-            .await
-            .unwrap();
+        let a = store.upsert_entity(Entity::new("a", "x")).await.unwrap();
+        let b = store.upsert_entity(Entity::new("b", "x")).await.unwrap();
+        let c = store.upsert_entity(Entity::new("c", "x")).await.unwrap();
         store
             .upsert_relation(Relation::new(a, b, "older"))
             .await

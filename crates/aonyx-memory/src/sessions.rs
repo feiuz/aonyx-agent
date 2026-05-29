@@ -115,8 +115,7 @@ pub trait SessionStore: Send + Sync {
     /// Resolve a UUID prefix to the matching `SessionRecord`(s). Empty
     /// vec when no match, multi-element when the prefix is ambiguous.
     /// Used by `/load` (Phase L).
-    async fn find_by_id_prefix(&self, prefix: &str, limit: usize)
-        -> Result<Vec<SessionRecord>>;
+    async fn find_by_id_prefix(&self, prefix: &str, limit: usize) -> Result<Vec<SessionRecord>>;
 }
 
 /// SQLite-backed [`SessionStore`].
@@ -422,11 +421,7 @@ impl SessionStore for SqliteSessionStore {
         .map_err(|e| AonyxError::Memory(format!("search join: {e}")))?
     }
 
-    async fn find_by_id_prefix(
-        &self,
-        prefix: &str,
-        limit: usize,
-    ) -> Result<Vec<SessionRecord>> {
+    async fn find_by_id_prefix(&self, prefix: &str, limit: usize) -> Result<Vec<SessionRecord>> {
         let conn = self.conn.clone();
         let like = format!("{}%", prefix.to_lowercase());
         tokio::task::spawn_blocking(move || -> Result<Vec<SessionRecord>> {

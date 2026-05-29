@@ -37,7 +37,6 @@ use std::time::{Duration, Instant};
 use aonyx_agent::approval::AsyncApprover;
 use aonyx_agent::{AgentRunner, ApprovalPolicy, TurnEvent};
 use aonyx_core::{LlmProvider, MemoryStore, Message, Role, SafetyClass, ToolCall};
-use async_trait::async_trait;
 use aonyx_memory::{
     chunks::{Chunk, ChunksStore},
     kg::{Entity, EntityId, KgStore, Relation},
@@ -45,6 +44,7 @@ use aonyx_memory::{
 };
 use aonyx_skills::Skill;
 use aonyx_tools::ToolRegistry;
+use async_trait::async_trait;
 use crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
     KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
@@ -1135,7 +1135,6 @@ impl TuiApp {
         }
     }
 
-
     fn push_line(&mut self, line: Line<'static>) {
         self.viewport.push(line);
         if self.viewport.len() > VIEWPORT_MAX_LINES {
@@ -1302,9 +1301,7 @@ impl TuiApp {
             Some((trigger, trigger_pos, query)) => {
                 let pool: Vec<String> = match &trigger {
                     Trigger::At => self.file_candidates(),
-                    Trigger::Slash => {
-                        SLASH_CANDIDATES.iter().map(|s| (*s).to_string()).collect()
-                    }
+                    Trigger::Slash => SLASH_CANDIDATES.iter().map(|s| (*s).to_string()).collect(),
                     Trigger::SlashArg(cmd) => self.slash_arg_pool(cmd),
                 };
                 // No source means nothing to autocomplete — dismiss
@@ -1563,8 +1560,10 @@ impl TuiApp {
                 // viewport can preview the pixels inline while text
                 // refs continue through the existing read-as-string
                 // path that feeds them to the model.
-                let (image_refs, text_refs): (Vec<_>, Vec<_>) =
-                    refs.iter().cloned().partition(|p| images::looks_like_image(p));
+                let (image_refs, text_refs): (Vec<_>, Vec<_>) = refs
+                    .iter()
+                    .cloned()
+                    .partition(|p| images::looks_like_image(p));
                 for path in &image_refs {
                     self.render_image_ref(path);
                     // Best-effort base64 encode for vision-capable
@@ -1573,10 +1572,7 @@ impl TuiApp {
                     // can't see the pixels.
                     match base64_image(path) {
                         Ok((media_type, data)) => {
-                            attachments.push(aonyx_core::Attachment::Image {
-                                media_type,
-                                data,
-                            });
+                            attachments.push(aonyx_core::Attachment::Image { media_type, data });
                         }
                         Err(e) => {
                             self.push_line(error_line(format!("📷 attach {path}: {e}")));
@@ -1844,8 +1840,7 @@ impl TuiApp {
                             query.trim()
                         ));
                         for h in hits {
-                            let short_id: String =
-                                h.id.to_string().chars().take(8).collect();
+                            let short_id: String = h.id.to_string().chars().take(8).collect();
                             let header = format!(
                                 "  [{short_id}] {} · {} · {} turn(s) · \"{}\"",
                                 h.updated_at.format("%Y-%m-%d %H:%M"),
@@ -1865,13 +1860,10 @@ impl TuiApp {
                     self.push_dim("usage: /load <id-prefix> — from a /find result");
                     return;
                 };
-                match self
-                    .session_store
-                    .find_by_id_prefix(prefix.trim(), 5)
-                    .await
-                {
-                    Ok(matches) if matches.is_empty() => self
-                        .push_dim(&format!("no session matches prefix '{}'", prefix.trim())),
+                match self.session_store.find_by_id_prefix(prefix.trim(), 5).await {
+                    Ok(matches) if matches.is_empty() => {
+                        self.push_dim(&format!("no session matches prefix '{}'", prefix.trim()))
+                    }
                     Ok(matches) if matches.len() > 1 => {
                         self.push_dim(&format!(
                             "ambiguous prefix '{}' — {} matches:",
@@ -1897,8 +1889,7 @@ impl TuiApp {
                             .await;
                         // Swap in the loaded session's state.
                         let loaded_id = target_record.id;
-                        let short: String =
-                            loaded_id.to_string().chars().take(8).collect();
+                        let short: String = loaded_id.to_string().chars().take(8).collect();
                         self.session_id = loaded_id;
                         self.messages = target_record.messages;
                         self.turns = target_record.turns;
@@ -2147,8 +2138,7 @@ impl TuiApp {
             .await
         {
             Ok(child) => {
-                let parent_short: String =
-                    parent_id.to_string().chars().take(8).collect();
+                let parent_short: String = parent_id.to_string().chars().take(8).collect();
                 let child_short: String = child.id.to_string().chars().take(8).collect();
                 self.session_id = child.id;
                 // Messages + turns carry over unchanged; the child is a
@@ -2208,11 +2198,7 @@ impl TuiApp {
     /// panel (Phase Y). Splits the JSON into themed lines: object keys
     /// stay dim, everything else uses the default fg.
     fn open_inspect_panel(&mut self) {
-        let snapshot = self
-            .last_request
-            .lock()
-            .ok()
-            .and_then(|s| s.clone());
+        let snapshot = self.last_request.lock().ok().and_then(|s| s.clone());
         let lines: Vec<Line<'static>> = match snapshot {
             Some(json) => json
                 .lines()
@@ -2427,11 +2413,7 @@ impl TuiApp {
     /// Build the text layout for the KG panel: entities grouped by
     /// `entity_type`, followed by a relations block rendered as
     /// `name --predicate--> name` triples (Phase O).
-    fn build_kg_lines(
-        &self,
-        entities: &[Entity],
-        relations: &[Relation],
-    ) -> Vec<Line<'static>> {
+    fn build_kg_lines(&self, entities: &[Entity], relations: &[Relation]) -> Vec<Line<'static>> {
         use std::collections::BTreeMap;
         let mut lines: Vec<Line<'static>> = Vec::new();
         let header_style = Style::default()
@@ -2485,10 +2467,7 @@ impl TuiApp {
         lines.push(Line::from(Span::styled("Relations", header_style)));
         lines.push(Line::default());
         if relations.is_empty() {
-            lines.push(Line::from(Span::styled(
-                "  (no edges yet)",
-                dim_style,
-            )));
+            lines.push(Line::from(Span::styled("  (no edges yet)", dim_style)));
         } else {
             for r in relations {
                 let src = name_of
@@ -2691,8 +2670,7 @@ impl TuiApp {
                     ),
                 ]));
                 for line in img.lines {
-                    let mut spans: Vec<Span<'static>> =
-                        Vec::with_capacity(line.spans.len() + 1);
+                    let mut spans: Vec<Span<'static>> = Vec::with_capacity(line.spans.len() + 1);
                     spans.push(Span::styled("  │ ", frame_style));
                     spans.extend(line.spans);
                     self.push_line(Line::from(spans));
@@ -2719,11 +2697,8 @@ impl TuiApp {
         let tokens = pricing::format_tokens(total);
         match self.pricing {
             Some(p) => {
-                let cost = pricing::estimate_cost(
-                    p,
-                    self.total_input_tokens,
-                    self.total_output_tokens,
-                );
+                let cost =
+                    pricing::estimate_cost(p, self.total_input_tokens, self.total_output_tokens);
                 format!(" · ~{tokens} tok · ~{}", pricing::format_cost(cost))
             }
             None => format!(" · ~{tokens} tok"),
@@ -2778,7 +2753,10 @@ impl TuiApp {
         for line in lines.iter().take(take) {
             self.push_line(Line::from(vec![
                 Span::styled("  │ ", frame_style),
-                Span::styled(prefix, Style::default().fg(color).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    prefix,
+                    Style::default().fg(color).add_modifier(Modifier::BOLD),
+                ),
                 Span::styled(line.to_string(), Style::default().fg(color)),
             ]));
         }
@@ -2787,8 +2765,13 @@ impl TuiApp {
             self.push_line(Line::from(vec![
                 Span::styled("  │ ", frame_style),
                 Span::styled(
-                    format!("… (+{omitted} more line{})", if omitted == 1 { "" } else { "s" }),
-                    Style::default().fg(self.theme.dim).add_modifier(Modifier::ITALIC),
+                    format!(
+                        "… (+{omitted} more line{})",
+                        if omitted == 1 { "" } else { "s" }
+                    ),
+                    Style::default()
+                        .fg(self.theme.dim)
+                        .add_modifier(Modifier::ITALIC),
                 ),
             ]));
         }
@@ -3217,7 +3200,10 @@ impl TuiApp {
         // Results.
         let max_rows = inner[1].height.saturating_sub(2) as usize;
         let total = self.palette.filtered.len();
-        let scroll = self.palette.selected.saturating_sub(max_rows.saturating_sub(1));
+        let scroll = self
+            .palette
+            .selected
+            .saturating_sub(max_rows.saturating_sub(1));
         let visible_end = (scroll + max_rows).min(total);
         let visible = &self.palette.filtered[scroll..visible_end];
 
@@ -3286,9 +3272,7 @@ impl TuiApp {
         let on_style = Style::default()
             .fg(self.theme.user_prefix)
             .add_modifier(Modifier::BOLD);
-        let off_style = Style::default()
-            .fg(Color::Red)
-            .add_modifier(Modifier::BOLD);
+        let off_style = Style::default().fg(Color::Red).add_modifier(Modifier::BOLD);
         let name_style = Style::default().fg(self.theme.header_fg);
 
         let total = self.tools_panel.entries.len();
@@ -3380,9 +3364,7 @@ impl TuiApp {
         let on_style = Style::default()
             .fg(self.theme.user_prefix)
             .add_modifier(Modifier::BOLD);
-        let off_style = Style::default()
-            .fg(Color::Red)
-            .add_modifier(Modifier::BOLD);
+        let off_style = Style::default().fg(Color::Red).add_modifier(Modifier::BOLD);
         let name_style = Style::default().fg(self.theme.header_fg);
 
         let total = self.skills_panel.entries.len();
@@ -3470,16 +3452,15 @@ impl TuiApp {
             SafetyClass::Caution => Color::Yellow,
             SafetyClass::Destructive => Color::Red,
         };
-        let header_style = Style::default().fg(border_color).add_modifier(Modifier::BOLD);
+        let header_style = Style::default()
+            .fg(border_color)
+            .add_modifier(Modifier::BOLD);
         let dim_style = Style::default().fg(self.theme.dim);
         let args_preview = abbreviate_value(&req.call.args, (width.saturating_sub(8)) as usize);
 
         let lines = vec![
             Line::from(vec![
-                Span::styled(
-                    "⚠ approve ",
-                    header_style.add_modifier(Modifier::BOLD),
-                ),
+                Span::styled("⚠ approve ", header_style.add_modifier(Modifier::BOLD)),
                 Span::styled(req.call.name.clone(), header_style),
                 Span::styled(format!(" ({:?})", req.class), dim_style),
             ]),
@@ -4139,7 +4120,7 @@ mod tests {
         p.query = "themes".into();
         p.refilter();
         assert!(p.filtered.len() < total);
-        assert!(p.filtered.len() >= 1);
+        assert!(!p.filtered.is_empty());
     }
 
     #[test]

@@ -141,9 +141,7 @@ impl AgentRunner {
     /// Share a live skill-toggle set with the caller. Skill ids present
     /// in the set are skipped during per-turn matching, letting the TUI
     /// enable / disable skills mid-session (Phase X).
-    pub fn skill_toggle_handle(
-        &self,
-    ) -> Arc<std::sync::Mutex<std::collections::HashSet<String>>> {
+    pub fn skill_toggle_handle(&self) -> Arc<std::sync::Mutex<std::collections::HashSet<String>>> {
         Arc::clone(&self.disabled_skills)
     }
 
@@ -439,10 +437,7 @@ fn redact_request_json(req: &ChatRequest) -> String {
                 for att in atts.iter_mut() {
                     if let Some(data) = att.get_mut("data") {
                         if let Some(s) = data.as_str() {
-                            *data = Value::String(format!(
-                                "<{} bytes base64 elided>",
-                                s.len()
-                            ));
+                            *data = Value::String(format!("<{} bytes base64 elided>", s.len()));
                         }
                     }
                 }
