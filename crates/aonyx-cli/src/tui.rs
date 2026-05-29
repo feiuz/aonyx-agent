@@ -48,7 +48,7 @@ use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use ratatui::backend::CrosstermBackend;
-use ratatui::layout::{Constraint, Direction, Layout};
+use ratatui::layout::{Alignment, Constraint, Direction, Layout};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
@@ -933,15 +933,74 @@ fn error_line(text: String) -> Line<'static> {
     ])
 }
 
-/// Flatten a `ratatui_core::Line` (what `tui-markdown` returns) into a plain
-/// `ratatui::Line<'static>`. `Style`, `Color` and `Alignment` are distinct
-/// types between the two crates so field-by-field copy needs an explicit
-/// converter for each — until that lands (next sub-phase) we keep the
-/// Markdown structure (line breaks, list indentation, blank lines around
-/// code blocks) but drop styling colours.
+/// Convert a `ratatui_core::Line` (what `tui-markdown` returns) into a
+/// `ratatui::Line<'static>`. `Style`, `Color`, `Modifier` and
+/// `HorizontalAlignment` are distinct types between the two crate paths so
+/// the conversion goes field-by-field — Markdown colours (headings, code
+/// blocks, inline code, bold/italic modifiers) now survive the round-trip.
 fn line_to_static(line: ratatui_core::text::Line<'_>) -> Line<'static> {
-    let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
-    Line::from(Span::raw(text))
+    let spans: Vec<Span<'static>> = line
+        .spans
+        .into_iter()
+        .map(|span| Span::styled(span.content.into_owned(), convert_style(span.style)))
+        .collect();
+    let mut new_line = Line::from(spans);
+    new_line.style = convert_style(line.style);
+    if let Some(alignment) = line.alignment {
+        new_line = new_line.alignment(convert_alignment(alignment));
+    }
+    new_line
+}
+
+fn convert_style(s: ratatui_core::style::Style) -> Style {
+    // ratatui_core 0.1 has no `underline_color`; leave it `None`.
+    Style {
+        fg: s.fg.map(convert_color),
+        bg: s.bg.map(convert_color),
+        underline_color: None,
+        add_modifier: convert_modifier(s.add_modifier),
+        sub_modifier: convert_modifier(s.sub_modifier),
+    }
+}
+
+fn convert_color(c: ratatui_core::style::Color) -> Color {
+    use ratatui_core::style::Color as Cc;
+    match c {
+        Cc::Reset => Color::Reset,
+        Cc::Black => Color::Black,
+        Cc::Red => Color::Red,
+        Cc::Green => Color::Green,
+        Cc::Yellow => Color::Yellow,
+        Cc::Blue => Color::Blue,
+        Cc::Magenta => Color::Magenta,
+        Cc::Cyan => Color::Cyan,
+        Cc::Gray => Color::Gray,
+        Cc::DarkGray => Color::DarkGray,
+        Cc::LightRed => Color::LightRed,
+        Cc::LightGreen => Color::LightGreen,
+        Cc::LightYellow => Color::LightYellow,
+        Cc::LightBlue => Color::LightBlue,
+        Cc::LightMagenta => Color::LightMagenta,
+        Cc::LightCyan => Color::LightCyan,
+        Cc::White => Color::White,
+        Cc::Rgb(r, g, b) => Color::Rgb(r, g, b),
+        Cc::Indexed(i) => Color::Indexed(i),
+    }
+}
+
+fn convert_modifier(m: ratatui_core::style::Modifier) -> Modifier {
+    // Both crates back `Modifier` with the same `bitflags!` bit layout, so
+    // the raw bits round-trip safely.
+    Modifier::from_bits_truncate(m.bits())
+}
+
+fn convert_alignment(a: ratatui_core::layout::HorizontalAlignment) -> Alignment {
+    use ratatui_core::layout::HorizontalAlignment as H;
+    match a {
+        H::Left => Alignment::Left,
+        H::Center => Alignment::Center,
+        H::Right => Alignment::Right,
+    }
 }
 
 #[cfg(test)]
