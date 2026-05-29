@@ -16,4 +16,4 @@ pub use error::{AonyxError, Result};
 pub use traits::{
     ChatChunk, ChatRequest, ChatStream, LlmProvider, MemoryStore, SkillSource, ToolHandler,
 };
-pub use types::{Message, Role, SafetyClass, Session, ToolCall, ToolResult};
+pub use types::{Attachment, Message, Role, SafetyClass, Session, ToolCall, ToolResult};

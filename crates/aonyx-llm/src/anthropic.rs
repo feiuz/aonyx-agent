@@ -50,7 +50,33 @@ impl AnthropicProvider {
 #[derive(Serialize)]
 struct AnthropicMessage<'a> {
     role: &'a str,
-    content: &'a str,
+    content: AnthropicContent<'a>,
+}
+
+/// `content` is either a single string (legacy + cheaper on the wire)
+/// or an array of typed blocks — needed for vision (Phase S).
+#[derive(Serialize)]
+#[serde(untagged)]
+enum AnthropicContent<'a> {
+    Text(&'a str),
+    Blocks(Vec<AnthropicBlock<'a>>),
+}
+
+/// One element of a multimodal content array.
+#[derive(Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum AnthropicBlock<'a> {
+    Text { text: &'a str },
+    Image { source: AnthropicImageSource<'a> },
+}
+
+/// Anthropic vision sources are base64-encoded with a `type` discriminator.
+#[derive(Serialize)]
+struct AnthropicImageSource<'a> {
+    #[serde(rename = "type")]
+    source_type: &'static str,
+    media_type: &'a str,
+    data: &'a str,
 }
 
 fn map_role(role: Role) -> Option<&'static str> {
@@ -84,10 +110,37 @@ impl LlmProvider for AnthropicProvider {
             .messages
             .iter()
             .filter_map(|m| {
-                map_role(m.role).map(|r| AnthropicMessage {
-                    role: r,
-                    content: m.content.as_str(),
-                })
+                let role = map_role(m.role)?;
+                // Phase S — when the message carries attachments, the
+                // Anthropic API needs an array of typed content blocks
+                // instead of a plain string. Text-only messages stay on
+                // the cheaper string path.
+                let content = if m.attachments.is_empty() {
+                    AnthropicContent::Text(m.content.as_str())
+                } else {
+                    let mut blocks: Vec<AnthropicBlock<'_>> =
+                        Vec::with_capacity(m.attachments.len() + 1);
+                    for att in &m.attachments {
+                        match att {
+                            aonyx_core::Attachment::Image { media_type, data } => {
+                                blocks.push(AnthropicBlock::Image {
+                                    source: AnthropicImageSource {
+                                        source_type: "base64",
+                                        media_type,
+                                        data,
+                                    },
+                                });
+                            }
+                        }
+                    }
+                    if !m.content.is_empty() {
+                        blocks.push(AnthropicBlock::Text {
+                            text: m.content.as_str(),
+                        });
+                    }
+                    AnthropicContent::Blocks(blocks)
+                };
+                Some(AnthropicMessage { role, content })
             })
             .collect();
 

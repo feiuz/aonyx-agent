@@ -157,6 +157,8 @@ dependencies = [
  "aonyx-memory",
  "aonyx-skills",
  "aonyx-tools",
+ "async-trait",
+ "base64",
  "chrono",
  "clap",
  "crossterm 0.28.1",

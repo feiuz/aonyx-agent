@@ -1398,6 +1398,10 @@ impl TuiApp {
                 ),
                 Span::raw(display_text.clone()),
             ]));
+            // Phase S — track image refs so we can attach them to the
+            // outgoing User message after the text refs have been
+            // resolved.
+            let mut attachments: Vec<aonyx_core::Attachment> = Vec::new();
             if !refs.is_empty() {
                 // Phase N — split image refs from text refs so the
                 // viewport can preview the pixels inline while text
@@ -1407,6 +1411,21 @@ impl TuiApp {
                     refs.iter().cloned().partition(|p| images::looks_like_image(p));
                 for path in &image_refs {
                     self.render_image_ref(path);
+                    // Best-effort base64 encode for vision-capable
+                    // providers (currently Anthropic). Failure here
+                    // just means the model sees the path in text but
+                    // can't see the pixels.
+                    match base64_image(path) {
+                        Ok((media_type, data)) => {
+                            attachments.push(aonyx_core::Attachment::Image {
+                                media_type,
+                                data,
+                            });
+                        }
+                        Err(e) => {
+                            self.push_line(error_line(format!("📷 attach {path}: {e}")));
+                        }
+                    }
                 }
                 if !text_refs.is_empty() {
                     let resolved = resolve_refs(&text_refs).await;
@@ -1428,7 +1447,15 @@ impl TuiApp {
                     }
                 }
             }
-            self.messages.push(Message::new(Role::User, display_text));
+            if attachments.is_empty() {
+                self.messages.push(Message::new(Role::User, display_text));
+            } else {
+                self.messages.push(Message::with_attachments(
+                    Role::User,
+                    display_text,
+                    attachments,
+                ));
+            }
             self.push_thinking_line();
             self.auto_scroll = true;
             self.start_runner();
@@ -3020,6 +3047,30 @@ fn extract_refs(input: &str) -> (String, Vec<String>) {
         }
     }
     (out, refs)
+}
+
+/// Read an image file and return `(media_type, base64_data)` ready to
+/// be plugged into an [`aonyx_core::Attachment::Image`] (Phase S).
+fn base64_image(path: &str) -> std::io::Result<(String, String)> {
+    use base64::Engine;
+    let bytes = std::fs::read(path)?;
+    let lower = path.to_ascii_lowercase();
+    let media_type = if lower.ends_with(".png") {
+        "image/png"
+    } else if lower.ends_with(".jpg") || lower.ends_with(".jpeg") {
+        "image/jpeg"
+    } else if lower.ends_with(".gif") {
+        "image/gif"
+    } else if lower.ends_with(".webp") {
+        "image/webp"
+    } else if lower.ends_with(".bmp") {
+        "image/bmp"
+    } else {
+        "application/octet-stream"
+    }
+    .to_string();
+    let data = base64::engine::general_purpose::STANDARD.encode(&bytes);
+    Ok((media_type, data))
 }
 
 /// Read every `@path` from disk in parallel.
