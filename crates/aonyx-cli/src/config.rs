@@ -89,6 +89,10 @@ pub struct Config {
     /// Active when `theme = "custom"`.
     #[serde(default)]
     pub custom_theme: Option<CustomTheme>,
+    /// Tool names the user chose to "always allow" from the approval
+    /// overlay (Phase OO). Destructive calls to these skip the prompt.
+    #[serde(default)]
+    pub tool_approvals: Vec<String>,
 }
 
 /// Ten RGB colour fields persisted from the `/theme-edit` panel
@@ -222,6 +226,7 @@ impl Default for Config {
             auto_compact_threshold: default_compact_threshold(),
             mcp_servers: Vec::new(),
             custom_theme: None,
+            tool_approvals: Vec::new(),
         }
     }
 }

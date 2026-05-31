@@ -240,6 +240,15 @@ struct TuiApprover {
 #[async_trait]
 impl AsyncApprover for TuiApprover {
     async fn approve(&self, call: &ToolCall, class: SafetyClass) -> bool {
+        // Phase OO — honour a persisted "always allow this tool" choice
+        // without bubbling a prompt up to the UI.
+        if always_allow_set()
+            .lock()
+            .map(|s| s.contains(&call.name))
+            .unwrap_or(false)
+        {
+            return true;
+        }
         let (respond_to, rx) = tokio::sync::oneshot::channel();
         let req = PendingApproval {
             call: call.clone(),
@@ -3096,7 +3105,9 @@ impl TuiApp {
     fn handle_approval_key(&mut self, key: KeyEvent) {
         use KeyCode::*;
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-        let approve = matches!(key.code, Char('y') | Char('Y') | Enter);
+        // Phase OO — `[A]` approves *and* remembers the tool.
+        let always = matches!(key.code, Char('a') | Char('A'));
+        let approve = always || matches!(key.code, Char('y') | Char('Y') | Enter);
         let deny = matches!(key.code, Char('n') | Char('N') | Esc);
         let ctrl_quit = matches!(key.code, Char('c') | Char('d')) && ctrl;
         if !approve && !deny && !ctrl_quit {
@@ -3106,7 +3117,10 @@ impl TuiApp {
             let decision = approve;
             let name = req.call.name.clone();
             let _ = req.respond_to.send(decision);
-            if decision {
+            if always {
+                self.remember_always_allow(&name);
+                self.push_dim(&format!("  ✓ always allowing {name} (saved)"));
+            } else if decision {
                 self.push_dim(&format!("  ✓ approved {name}"));
             } else {
                 self.push_dim(&format!("  ✗ denied {name}"));
@@ -3114,6 +3128,27 @@ impl TuiApp {
         }
         if ctrl_quit {
             self.quit = true;
+        }
+    }
+
+    /// Persist an "always allow this tool" decision (Phase OO): insert
+    /// into the live set the approver consults, then append it to
+    /// `config.tool_approvals` so it survives restarts. Best-effort —
+    /// persistence failure is non-fatal (the session still honours it).
+    fn remember_always_allow(&mut self, name: &str) {
+        if let Ok(mut set) = always_allow_set().lock() {
+            set.insert(name.to_string());
+        }
+        if let Ok(mut cfg) = crate::config::Config::load_or_init() {
+            if !cfg.tool_approvals.iter().any(|t| t == name) {
+                cfg.tool_approvals.push(name.to_string());
+                if let (Ok(path), Ok(s)) = (
+                    crate::config::Config::config_path(),
+                    toml::to_string_pretty(&cfg),
+                ) {
+                    let _ = std::fs::write(path, s);
+                }
+            }
         }
     }
 
@@ -4558,6 +4593,28 @@ fn extract_refs(input: &str) -> (String, Vec<String>) {
     (out, refs)
 }
 
+/// Process-wide set of tool names the user chose to "always allow" from
+/// the approval overlay (Phase OO). The [`TuiApprover`] consults it
+/// before bubbling a prompt; the overlay's `[A]` key inserts into it.
+/// Seeded from `config.tool_approvals` at startup via
+/// [`seed_tool_approvals`].
+fn always_allow_set() -> &'static std::sync::Mutex<std::collections::HashSet<String>> {
+    static SET: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+        std::sync::OnceLock::new();
+    SET.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
+}
+
+/// Seed the always-allow approval set from persisted config (Phase OO).
+/// Called once at startup, before the TUI runs, so tools the user
+/// previously chose to always allow skip the prompt this session too.
+pub fn seed_tool_approvals(names: &[String]) {
+    if let Ok(mut set) = always_allow_set().lock() {
+        for n in names {
+            set.insert(n.clone());
+        }
+    }
+}
+
 /// Read an image file and return `(media_type, base64_data)` ready to
 /// be plugged into an [`aonyx_core::Attachment::Image`] (Phase S).
 fn base64_image(path: &str) -> std::io::Result<(String, String)> {
@@ -5227,6 +5284,32 @@ mod tests {
         );
         // A non-image content-type falls back to the URL extension.
         assert_eq!(media_type_for("http://x/y.gif", "text/html"), "image/gif");
+    }
+
+    #[tokio::test]
+    async fn approver_honours_always_allow_set() {
+        use aonyx_agent::approval::AsyncApprover;
+        // Seed a tool as always-allowed (Phase OO).
+        seed_tool_approvals(&["fs_write".to_string()]);
+        // Drop the receiver: any attempt to actually prompt fails closed
+        // (false). So a `true` here proves the set short-circuited before
+        // any send was attempted.
+        let (tx, rx) = tokio::sync::mpsc::channel::<PendingApproval>(1);
+        drop(rx);
+        let approver = TuiApprover { tx };
+        let allowed = ToolCall {
+            id: "1".into(),
+            name: "fs_write".into(),
+            args: serde_json::Value::Null,
+        };
+        assert!(approver.approve(&allowed, SafetyClass::Destructive).await);
+        // A tool NOT in the set would try to prompt → fail closed → false.
+        let other = ToolCall {
+            id: "2".into(),
+            name: "bash_unseeded_oo".into(),
+            args: serde_json::Value::Null,
+        };
+        assert!(!approver.approve(&other, SafetyClass::Destructive).await);
     }
 
     #[test]

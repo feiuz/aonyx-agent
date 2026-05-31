@@ -7,9 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] — the connected agent
 
-The post-0.2.0 arc (phases AA → NN) opens Aonyx up to the wider tool
+The post-0.2.0 arc (phases AA → OO) opens Aonyx up to the wider tool
 ecosystem and deepens the memory-palace integration. `clippy --workspace
---all-targets --all-features -D warnings` clean; ~259 workspace tests.
+--all-targets --all-features -D warnings` clean; ~268 workspace tests.
 
 ### Added
 
@@ -19,7 +19,8 @@ ecosystem and deepens the memory-palace integration. `clippy --workspace
   `<server>__<tool>` and are callable like any built-in.
 - **MCP server** — `aonyx mcp serve` exposes Aonyx's own tools to other
   clients (Claude Code, Cursor, …) over stdio (HH). It now also serves the
-  palace-backed `memory_*` tools scoped to the current directory (**NN**).
+  palace-backed `memory_*` tools scoped to the current directory (**NN**),
+  and over a minimal **Streamable HTTP** transport via `--port` (**OO**).
 
 #### Built-in tools
 - `web_fetch` (readability extraction) and `web_search` (Brave → Tavily
@@ -36,9 +37,16 @@ ecosystem and deepens the memory-palace integration. `clippy --workspace
 
 #### Vision & export
 - Local `@image` references are downscaled to ≤1568px before being sent to
-  a vision model, capping token cost (**NN**).
+  a vision model, capping token cost (**NN**). Remote image **URLs** are
+  fetched (and downscaled) into vision attachments too (**OO**).
 - `/export-html` standalone styled HTML (FF); `/export-bundle` writes a
-  `.zip` of Markdown + HTML + `meta.json` (**NN**).
+  `.zip` of Markdown + HTML + `meta.json` (**NN**), plus a `messages.json`
+  transcript for re-import (**OO**).
+
+#### Approval
+- Per-tool **always-allow**: the approval overlay's `[A]` key remembers a
+  destructive tool so future calls skip the prompt; persisted to config
+  (**OO**).
 
 #### Skills & theming
 - Custom skills loaded from `~/.aonyx/skills/` (DD); live theme editor

@@ -275,6 +275,10 @@ async fn start_interactive(project_path: Option<PathBuf>, use_tui: bool) -> anyh
         }
     }
 
+    // Phase OO — seed the always-allow approval set from persisted config
+    // so tools the user chose to always allow skip the prompt this run.
+    tui::seed_tool_approvals(&config.tool_approvals);
+
     if use_tui {
         return tui::run(
             provider,
