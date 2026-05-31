@@ -1,4 +1,11 @@
+# Pin the toolchain so local and CI run the *same* rustc / clippy /
+# rustfmt. Phase OO/PP postmortem: a bare `stable` resolved to an old
+# 1.94 locally but the latest 1.96 in CI, so newer clippy lints
+# (`unnecessary_sort_by`, `never_loop`, `needless_borrow`) failed CI
+# even though `cargo clippy` passed locally. With an exact version,
+# "green locally" means "green in CI". The CI workflows install this
+# same version via `dtolnay/rust-toolchain@<v>`; bump both in lock-step.
 [toolchain]
-channel = "stable"
+channel = "1.96.0"
 components = ["rustfmt", "clippy"]
 profile = "minimal"

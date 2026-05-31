@@ -50,7 +50,7 @@ pub async fn serve_stdio(registry: ToolRegistry) -> aonyx_core::Result<()> {
             Ok(v) => v,
             Err(e) => {
                 // Malformed JSON — reply with a parse error (id null).
-                let resp = error_response(Value::Null, -32700, &format!("parse error: {e}"));
+                let resp = error_response(Value::Null, -32700, format!("parse error: {e}"));
                 write_line(&mut stdout, &resp).await?;
                 continue;
             }
@@ -102,7 +102,7 @@ pub async fn handle_message(request: &Value, registry: &ToolRegistry) -> Option<
         other => Some(error_response(
             id,
             -32601,
-            &format!("method not found: {other}"),
+            format!("method not found: {other}"),
         )),
     }
 }
@@ -173,7 +173,8 @@ fn result_response(id: Value, result: Value) -> Value {
     json!({ "jsonrpc": "2.0", "id": id, "result": result })
 }
 
-fn error_response(id: Value, code: i64, message: &str) -> Value {
+fn error_response(id: Value, code: i64, message: impl Into<String>) -> Value {
+    let message = message.into();
     json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": message } })
 }
 
@@ -238,9 +239,12 @@ async fn read_http_request(stream: &mut TcpStream) -> aonyx_core::Result<Vec<u8>
     const MAX_BODY: usize = 16 * 1024 * 1024;
     let mut buf = Vec::new();
     let mut tmp = [0u8; 4096];
-    let head_end = loop {
+    // Read until the header terminator appears, the cap is hit, or EOF.
+    let mut head_end = None;
+    while head_end.is_none() {
         if let Some(p) = find_subsequence(&buf, b"\r\n\r\n") {
-            break p + 4;
+            head_end = Some(p + 4);
+            break;
         }
         if buf.len() > MAX_HEADER {
             return Ok(buf); // headers too large — bail, handler treats as health.
@@ -253,6 +257,10 @@ async fn read_http_request(stream: &mut TcpStream) -> aonyx_core::Result<Vec<u8>
             return Ok(buf); // EOF before full headers.
         }
         buf.extend_from_slice(&tmp[..n]);
+    }
+    let head_end = match head_end {
+        Some(p) => p,
+        None => return Ok(buf),
     };
     let want = head_end.saturating_add(parse_content_length(&buf[..head_end]).min(MAX_BODY));
     while buf.len() < want {
@@ -300,7 +308,7 @@ async fn http_response_for(raw: &[u8], registry: &ToolRegistry, token: Option<&s
             Err(e) => Some(error_response(
                 Value::Null,
                 -32700,
-                &format!("parse error: {e}"),
+                format!("parse error: {e}"),
             )),
         }
     } else {
