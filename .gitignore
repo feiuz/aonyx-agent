@@ -38,3 +38,7 @@ dist/
 # Local fixtures
 /tmp/
 /scratch/
+
+# scratch dumps (Read-tool workaround)
+_scan.txt
+_eb.txt

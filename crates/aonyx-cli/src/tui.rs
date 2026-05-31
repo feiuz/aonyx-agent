@@ -3473,6 +3473,10 @@ impl TuiApp {
     async fn export_bundle(&self, path: &std::path::Path) -> std::io::Result<()> {
         let md = self.build_transcript_markdown();
         let html = self.build_transcript_html();
+        // Phase OO — full-fidelity transcript (roles + content +
+        // attachments) so the bundle can be re-imported, not just read.
+        let messages =
+            serde_json::to_string_pretty(&self.messages).unwrap_or_else(|_| "[]".to_string());
         let meta = serde_json::json!({
             "generator": concat!("aonyx-agent ", env!("CARGO_PKG_VERSION")),
             "project": self.project_slug,
@@ -3481,14 +3485,22 @@ impl TuiApp {
             "model": self.model_name,
             "turns": self.turns,
             "messages": self.messages.len(),
-            "files": ["session.md", "session.html", "meta.json"],
+            "files": ["session.md", "session.html", "messages.json", "meta.json"],
         })
         .to_string();
-        let bytes =
-            match tokio::task::spawn_blocking(move || build_zip_bytes(&md, &html, &meta)).await {
-                Ok(inner) => inner?,
-                Err(join) => return Err(std::io::Error::other(join)),
-            };
+        let bytes = match tokio::task::spawn_blocking(move || {
+            build_zip_bytes(&[
+                ("session.md", md.as_str()),
+                ("session.html", html.as_str()),
+                ("messages.json", messages.as_str()),
+                ("meta.json", meta.as_str()),
+            ])
+        })
+        .await
+        {
+            Ok(inner) => inner?,
+            Err(join) => return Err(std::io::Error::other(join)),
+        };
         tokio::fs::write(path, bytes).await
     }
 
@@ -4422,6 +4434,7 @@ impl TuiApp {
             Line::default(),
             Line::from(vec![
                 Span::styled("  [Y] approve   ", header_style),
+                Span::styled("[A] always   ", header_style),
                 Span::styled("[n] deny   ", dim_style),
                 Span::styled("[Esc] also denies", dim_style),
             ]),

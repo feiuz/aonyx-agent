@@ -310,6 +310,7 @@ mod tests {
                 bearer_token: None,
             }],
             custom_theme: None,
+            tool_approvals: Vec::new(),
         };
         let s = toml::to_string(&original).unwrap();
         let parsed: Config = toml::from_str(&s).unwrap();

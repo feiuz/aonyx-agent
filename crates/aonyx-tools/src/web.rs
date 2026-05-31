@@ -468,6 +468,13 @@ mod tests {
         assert!(!text.contains("alert(1)"));
     }
 
+    #[tokio::test]
+    async fn fetch_bytes_rejects_non_http_scheme() {
+        // No network: a non-http(s) scheme must fail fast, before any GET.
+        let err = fetch_bytes("ftp://example.com/x").await.unwrap_err();
+        assert!(format!("{err}").contains("http(s)"));
+    }
+
     #[test]
     fn looks_like_html_detects_doctype_and_html() {
         assert!(looks_like_html("<!DOCTYPE html><html>"));
