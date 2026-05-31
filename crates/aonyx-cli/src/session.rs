@@ -110,6 +110,9 @@ pub enum SlashCommand {
     /// Switch the active LLM provider live (Phase LL). `None` lists the
     /// available ids. TUI-only.
     Provider(Option<String>),
+    /// Show the session genealogy tree for this project (Phase MM).
+    /// TUI-only.
+    Tree,
 }
 
 impl SlashCommand {
@@ -149,6 +152,7 @@ impl SlashCommand {
             "/export-html" | "/exporthtml" => Some(Self::ExportHtml(rest.map(str::to_string))),
             "/theme-edit" | "/themeedit" => Some(Self::ThemeEdit),
             "/provider" => Some(Self::Provider(rest.map(str::to_string))),
+            "/tree" => Some(Self::Tree),
             _ => None,
         }
     }
@@ -459,6 +463,11 @@ impl InteractiveSession {
             }
             SlashCommand::Provider(_) => {
                 out.write_all(b"\x1b[90m/provider runs in TUI mode (aonyx --tui)\x1b[0m\n")
+                    .await?;
+                Ok(true)
+            }
+            SlashCommand::Tree => {
+                out.write_all(b"\x1b[90m/tree runs in TUI mode (aonyx --tui)\x1b[0m\n")
                     .await?;
                 Ok(true)
             }

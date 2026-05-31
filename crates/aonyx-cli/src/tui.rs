@@ -120,6 +120,7 @@ const SLASH_CANDIDATES: &[&str] = &[
     "/undo",
     "/find",
     "/load",
+    "/tree",
     "/kg",
     "/tools",
     "/skills",
@@ -290,6 +291,25 @@ impl ToolsPanel {
         if self.selected + 1 < self.entries.len() {
             self.selected += 1;
         }
+    }
+}
+
+/// Floating `/tree` session-genealogy panel (Phase MM). Scrollable
+/// text, like the inspect / kg panels.
+#[derive(Debug, Default)]
+struct TreePanel {
+    /// `true` while visible.
+    open: bool,
+    /// Pre-built display lines.
+    lines: Vec<Line<'static>>,
+    /// Vertical scroll offset.
+    scroll: u16,
+}
+
+impl TreePanel {
+    fn close(&mut self) {
+        self.open = false;
+        self.scroll = 0;
     }
 }
 
@@ -596,6 +616,11 @@ fn build_palette_entries() -> Vec<PaletteEntry> {
             action: PaletteAction::Slash(SlashCommand::Provider(None)),
         },
         PaletteEntry {
+            label: "/tree".into(),
+            hint: "Show the session genealogy (fork/compact tree)".into(),
+            action: PaletteAction::Slash(SlashCommand::Tree),
+        },
+        PaletteEntry {
             label: "/mouse".into(),
             hint: "Toggle mouse capture (off = native drag-to-select)".into(),
             action: PaletteAction::Slash(SlashCommand::Mouse),
@@ -761,6 +786,7 @@ pub async fn run(
         last_request,
         inspect_panel: InspectPanel::default(),
         theme_editor: ThemeEditor::default(),
+        tree_panel: TreePanel::default(),
         recent_session_ids: Vec::new(),
         approval_rx,
         pending_approval: None,
@@ -900,6 +926,9 @@ struct TuiApp {
 
     /// Live theme editor (Phase KK).
     theme_editor: ThemeEditor,
+
+    /// Floating `/tree` session-genealogy panel (Phase MM).
+    tree_panel: TreePanel,
 
     /// Cache of recent session id-prefixes (`(short_id, title)`) used
     /// by `/load` argument autocomplete (Phase R). Refreshed at
@@ -1338,6 +1367,12 @@ impl TuiApp {
         // Theme editor (Phase KK) swallows every key while open.
         if self.theme_editor.open {
             self.handle_theme_editor_key(key).await;
+            return;
+        }
+
+        // Session tree (Phase MM) swallows every key while open.
+        if self.tree_panel.open {
+            self.handle_tree_panel_key(key);
             return;
         }
 
@@ -2092,6 +2127,9 @@ impl TuiApp {
             SlashCommand::Provider(target) => {
                 self.switch_provider(target);
             }
+            SlashCommand::Tree => {
+                self.open_tree_panel().await;
+            }
             SlashCommand::Mouse => {
                 self.toggle_mouse_capture();
             }
@@ -2324,8 +2362,17 @@ impl TuiApp {
         }
         self.provider_name = id.clone();
         self.pricing = pricing::lookup(&id, &self.model_name);
+        // Phase MM — persist the choice so the next launch starts here.
+        let persisted = match crate::config::Config::config_path() {
+            Ok(path) => toml::to_string_pretty(&cfg)
+                .ok()
+                .and_then(|s| std::fs::write(&path, s).ok())
+                .is_some(),
+            Err(_) => false,
+        };
+        let note = if persisted { " (saved)" } else { "" };
         self.push_dim(&format!(
-            "provider → {id} (model stays {}; /model to change it)",
+            "provider → {id}{note} (model stays {}; /model to change it)",
             self.model_name
         ));
     }
@@ -2594,6 +2641,106 @@ impl TuiApp {
                 self.refresh_recent_sessions().await;
             }
             Err(e) => self.push_line(error_line(format!("fork failed: {e}"))),
+        }
+    }
+
+    /// Build + open the `/tree` session-genealogy panel (Phase MM):
+    /// every session for this project laid out as a parent → child
+    /// forest using `parent_id`. The active session is marked `▸`.
+    async fn open_tree_panel(&mut self) {
+        let sessions = match self
+            .session_store
+            .list_by_project(&self.project_slug, 200)
+            .await
+        {
+            Ok(s) => s,
+            Err(e) => {
+                self.push_line(error_line(format!("tree: {e}")));
+                return;
+            }
+        };
+        self.tree_panel.lines = self.build_tree_lines(&sessions);
+        self.tree_panel.scroll = 0;
+        self.tree_panel.open = true;
+    }
+
+    /// Lay out sessions as an indented forest by `parent_id` (Phase MM).
+    fn build_tree_lines(&self, sessions: &[aonyx_memory::SessionRecord]) -> Vec<Line<'static>> {
+        use std::collections::HashMap;
+        let dim = Style::default().fg(self.theme.dim);
+        if sessions.is_empty() {
+            return vec![Line::from(Span::styled("  (no sessions yet)", dim))];
+        }
+        // children[parent_id] = [child ids]; roots = no parent (or
+        // parent not in this project's set).
+        let ids: std::collections::HashSet<_> = sessions.iter().map(|s| s.id).collect();
+        let by_id: HashMap<_, _> = sessions.iter().map(|s| (s.id, s)).collect();
+        let mut children: HashMap<aonyx_memory::SessionId, Vec<aonyx_memory::SessionId>> =
+            HashMap::new();
+        let mut roots: Vec<aonyx_memory::SessionId> = Vec::new();
+        for s in sessions {
+            match s.parent_id {
+                Some(p) if ids.contains(&p) => children.entry(p).or_default().push(s.id),
+                _ => roots.push(s.id),
+            }
+        }
+
+        let name_style = Style::default().fg(self.theme.header_fg);
+        let active_style = Style::default()
+            .fg(self.theme.assistant_prefix)
+            .add_modifier(Modifier::BOLD);
+        let mut lines: Vec<Line<'static>> = Vec::new();
+
+        // Iterative DFS preserving order, tracking depth.
+        let mut stack: Vec<(aonyx_memory::SessionId, usize)> =
+            roots.iter().rev().map(|id| (*id, 0usize)).collect();
+        while let Some((id, depth)) = stack.pop() {
+            if let Some(s) = by_id.get(&id) {
+                let short: String = s.id.to_string().chars().take(8).collect();
+                let indent = "  ".repeat(depth);
+                let active = s.id == self.session_id;
+                let marker = if active { "▸ " } else { "• " };
+                let label_style = if active { active_style } else { name_style };
+                lines.push(Line::from(vec![
+                    Span::styled(format!("  {indent}{marker}"), dim),
+                    Span::styled(format!("[{short}] "), dim),
+                    Span::styled(s.title.clone(), label_style),
+                    Span::styled(
+                        format!(
+                            "  · {} turn(s) · {}",
+                            s.turns,
+                            s.updated_at.format("%m-%d %H:%M")
+                        ),
+                        dim,
+                    ),
+                ]));
+            }
+            if let Some(kids) = children.get(&id) {
+                for kid in kids.iter().rev() {
+                    stack.push((*kid, depth + 1));
+                }
+            }
+        }
+        lines
+    }
+
+    /// Drive the `/tree` panel: ↑/↓ scroll, g/G ends, Esc / q close.
+    fn handle_tree_panel_key(&mut self, key: KeyEvent) {
+        use KeyCode::*;
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        match key.code {
+            Esc | Char('q') => self.tree_panel.close(),
+            Char('c') | Char('d') if ctrl => {
+                self.tree_panel.close();
+                self.quit = true;
+            }
+            Up | Char('k') => self.tree_panel.scroll = self.tree_panel.scroll.saturating_sub(1),
+            Down | Char('j') => self.tree_panel.scroll = self.tree_panel.scroll.saturating_add(1),
+            PageUp => self.tree_panel.scroll = self.tree_panel.scroll.saturating_sub(8),
+            PageDown => self.tree_panel.scroll = self.tree_panel.scroll.saturating_add(8),
+            Home | Char('g') => self.tree_panel.scroll = 0,
+            End | Char('G') => self.tree_panel.scroll = u16::MAX,
+            _ => {}
         }
     }
 
@@ -3670,9 +3817,51 @@ impl TuiApp {
         if self.theme_editor.open {
             self.render_theme_editor(f);
         }
+        if self.tree_panel.open {
+            self.render_tree_panel(f);
+        }
         if self.pending_approval.is_some() {
             self.render_approval_overlay(f);
         }
+    }
+
+    /// Draw the `/tree` session-genealogy panel (Phase MM) — a wide
+    /// scrollable forest view.
+    fn render_tree_panel(&mut self, f: &mut Frame<'_>) {
+        let area = f.area();
+        let width = (area.width as u32 * 75 / 100).clamp(44, 110) as u16;
+        let height = (area.height as u32 * 70 / 100).clamp(10, 30) as u16;
+        let x = area.x + (area.width.saturating_sub(width)) / 2;
+        let y = area.y + (area.height.saturating_sub(height)) / 2;
+        let popup = Rect::new(x, y, width, height);
+        f.render_widget(ratatui::widgets::Clear, popup);
+
+        let total = self.tree_panel.lines.len() as u16;
+        let visible = popup.height.saturating_sub(2);
+        let max_scroll = total.saturating_sub(visible);
+        if self.tree_panel.scroll > max_scroll {
+            self.tree_panel.scroll = max_scroll;
+        }
+
+        let footer = Line::from(Span::styled(
+            " ↑/↓ scroll · g/G ends · Esc / q close ",
+            Style::default().fg(self.theme.dim),
+        ));
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(self.theme.suggestion_border))
+            .title(format!(
+                " /tree · {} · {} session(s) ",
+                self.project_slug,
+                self.tree_panel.lines.len()
+            ))
+            .title_alignment(Alignment::Left)
+            .title_bottom(footer);
+        let para = Paragraph::new(Text::from(self.tree_panel.lines.clone()))
+            .wrap(Wrap { trim: false })
+            .scroll((self.tree_panel.scroll, 0))
+            .block(block);
+        f.render_widget(para, popup);
     }
 
     /// Draw the live theme editor (Phase KK): one row per editable
@@ -4209,6 +4398,7 @@ const HELP_LINES: &[&str] = &[
     "  /undo /u [N|list]    revert last N fs changes or list the journal (Phase J + W)",
     "  /find /f <query>     search past sessions across every project (Phase L)",
     "  /load /switch <id>   switch to a session by id prefix (Phase L)",
+    "  /tree                show the session genealogy tree (Phase MM)",
     "  /kg /palace          open the memory-palace visualization (Phase O)",
     "  /tools               enable / disable registered tools live (Phase Q)",
     "  /skills              enable / disable loaded skills live (Phase X)",
