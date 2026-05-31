@@ -105,6 +105,8 @@ pub enum SlashCommand {
     /// Export the conversation to a standalone styled HTML file
     /// (Phase FF). TUI-only.
     ExportHtml(Option<String>),
+    /// Open the live theme editor (Phase KK). TUI-only.
+    ThemeEdit,
 }
 
 impl SlashCommand {
@@ -142,6 +144,7 @@ impl SlashCommand {
             "/retry" | "/r" => Some(Self::Retry),
             "/model" => Some(Self::Model(rest.map(str::to_string))),
             "/export-html" | "/exporthtml" => Some(Self::ExportHtml(rest.map(str::to_string))),
+            "/theme-edit" | "/themeedit" => Some(Self::ThemeEdit),
             _ => None,
         }
     }
@@ -442,6 +445,11 @@ impl InteractiveSession {
             }
             SlashCommand::ExportHtml(_) => {
                 out.write_all(b"\x1b[90m/export-html runs in TUI mode (aonyx --tui)\x1b[0m\n")
+                    .await?;
+                Ok(true)
+            }
+            SlashCommand::ThemeEdit => {
+                out.write_all(b"\x1b[90m/theme-edit runs in TUI mode (aonyx --tui)\x1b[0m\n")
                     .await?;
                 Ok(true)
             }

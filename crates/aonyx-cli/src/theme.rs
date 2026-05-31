@@ -113,6 +113,122 @@ pub const GRUVBOX_DARK: Theme = Theme {
 
 const ALL: &[Theme] = &[DEFAULT, CATPPUCCIN_MOCHA, DRACULA, GRUVBOX_DARK];
 
+/// Labels of the editable scalar colour fields, in panel order
+/// (Phase KK). `accents` + `name` are not directly editable.
+pub const EDITABLE_FIELDS: [&str; 10] = [
+    "header_fg",
+    "composer_border",
+    "suggestion_border",
+    "status_bg",
+    "status_fg",
+    "user_prefix",
+    "assistant_prefix",
+    "thinking",
+    "dim",
+    "status_busy_bg",
+];
+
+impl Theme {
+    /// Read the colour of the editable field at `idx` (see
+    /// [`EDITABLE_FIELDS`]). Out-of-range → `Color::Reset`.
+    pub fn field_color(&self, idx: usize) -> Color {
+        match idx {
+            0 => self.header_fg,
+            1 => self.composer_border,
+            2 => self.suggestion_border,
+            3 => self.status_bg,
+            4 => self.status_fg,
+            5 => self.user_prefix,
+            6 => self.assistant_prefix,
+            7 => self.thinking,
+            8 => self.dim,
+            9 => self.status_busy_bg,
+            _ => Color::Reset,
+        }
+    }
+
+    /// Set the editable field at `idx` to `c` (Phase KK).
+    pub fn set_field(&mut self, idx: usize, c: Color) {
+        match idx {
+            0 => self.header_fg = c,
+            1 => self.composer_border = c,
+            2 => self.suggestion_border = c,
+            3 => self.status_bg = c,
+            4 => self.status_fg = c,
+            5 => self.user_prefix = c,
+            6 => self.assistant_prefix = c,
+            7 => self.thinking = c,
+            8 => self.dim = c,
+            9 => self.status_busy_bg = c,
+            _ => {}
+        }
+    }
+
+    /// Snapshot the ten editable fields as RGB triples, in
+    /// [`EDITABLE_FIELDS`] order (Phase KK) — for serialization.
+    pub fn editable_rgb(&self) -> [(u8, u8, u8); 10] {
+        let mut out = [(0u8, 0u8, 0u8); 10];
+        for (i, slot) in out.iter_mut().enumerate() {
+            *slot = color_to_rgb(self.field_color(i));
+        }
+        out
+    }
+}
+
+/// Build a `custom` theme from ten RGB triples in [`EDITABLE_FIELDS`]
+/// order (Phase KK). Accents are derived from the chosen accent-ish
+/// colours so the spinner stays coherent; the slice is leaked once to
+/// satisfy the `&'static` field (a single tiny per-process leak).
+pub fn from_rgb_fields(fields: &[(u8, u8, u8); 10]) -> Theme {
+    let c = |i: usize| {
+        let (r, g, b) = fields[i];
+        Color::Rgb(r, g, b)
+    };
+    // accents: assistant_prefix, suggestion_border, composer_border, user_prefix.
+    let accents: &'static [Color] = Box::leak(vec![c(6), c(2), c(1), c(5)].into_boxed_slice());
+    Theme {
+        name: "custom",
+        header_fg: c(0),
+        composer_border: c(1),
+        suggestion_border: c(2),
+        status_bg: c(3),
+        status_fg: c(4),
+        user_prefix: c(5),
+        assistant_prefix: c(6),
+        accents,
+        thinking: c(7),
+        dim: c(8),
+        status_busy_bg: c(9),
+    }
+}
+
+/// Resolve any [`Color`] to an `(r, g, b)` triple. Named ANSI colours
+/// use conventional xterm approximations so the editor can work purely
+/// in RGB space (Phase KK).
+pub fn color_to_rgb(c: Color) -> (u8, u8, u8) {
+    match c {
+        Color::Rgb(r, g, b) => (r, g, b),
+        Color::Black => (0, 0, 0),
+        Color::Red => (205, 0, 0),
+        Color::Green => (0, 205, 0),
+        Color::Yellow => (205, 205, 0),
+        Color::Blue => (0, 0, 238),
+        Color::Magenta => (205, 0, 205),
+        Color::Cyan => (0, 205, 205),
+        Color::Gray => (229, 229, 229),
+        Color::DarkGray => (127, 127, 127),
+        Color::LightRed => (255, 0, 0),
+        Color::LightGreen => (0, 255, 0),
+        Color::LightYellow => (255, 255, 0),
+        Color::LightBlue => (92, 92, 255),
+        Color::LightMagenta => (255, 0, 255),
+        Color::LightCyan => (0, 255, 255),
+        Color::White => (255, 255, 255),
+        // Indexed / Reset have no fixed RGB — use a neutral mid-gray.
+        _ => (128, 128, 128),
+    }
+}
+
 /// List the names of every bundled theme.
 pub fn available_names() -> Vec<&'static str> {
     ALL.iter().map(|t| t.name).collect()
@@ -152,5 +268,41 @@ mod tests {
     #[test]
     fn by_name_falls_back_to_default_for_unknown() {
         assert_eq!(by_name("nope").name, "default");
+    }
+
+    #[test]
+    fn color_to_rgb_resolves_named_and_rgb() {
+        assert_eq!(color_to_rgb(Color::Rgb(1, 2, 3)), (1, 2, 3));
+        assert_eq!(color_to_rgb(Color::White), (255, 255, 255));
+        assert_eq!(color_to_rgb(Color::Black), (0, 0, 0));
+        // Indexed has no fixed RGB → neutral gray.
+        assert_eq!(color_to_rgb(Color::Indexed(42)), (128, 128, 128));
+    }
+
+    #[test]
+    fn field_get_set_round_trips() {
+        let mut t = DEFAULT;
+        t.set_field(0, Color::Rgb(10, 20, 30));
+        assert_eq!(t.field_color(0), Color::Rgb(10, 20, 30));
+        // Out-of-range set is a no-op; get returns Reset.
+        t.set_field(99, Color::Rgb(1, 1, 1));
+        assert_eq!(t.field_color(99), Color::Reset);
+    }
+
+    #[test]
+    fn editable_rgb_has_one_entry_per_field() {
+        let rgb = DEFAULT.editable_rgb();
+        assert_eq!(rgb.len(), EDITABLE_FIELDS.len());
+        // header_fg is White in DEFAULT.
+        assert_eq!(rgb[0], (255, 255, 255));
+    }
+
+    #[test]
+    fn from_rgb_fields_builds_a_custom_theme() {
+        let fields = [(10, 20, 30); 10];
+        let t = from_rgb_fields(&fields);
+        assert_eq!(t.name, "custom");
+        assert_eq!(t.header_fg, Color::Rgb(10, 20, 30));
+        assert!(!t.accents.is_empty());
     }
 }

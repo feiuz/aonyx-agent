@@ -85,6 +85,74 @@ pub struct Config {
     /// registry (Phase GG).
     #[serde(default)]
     pub mcp_servers: Vec<McpServerConfig>,
+    /// User-authored theme saved by the `/theme-edit` panel (Phase KK).
+    /// Active when `theme = "custom"`.
+    #[serde(default)]
+    pub custom_theme: Option<CustomTheme>,
+}
+
+/// Ten RGB colour fields persisted from the `/theme-edit` panel
+/// (Phase KK), in [`crate::theme::EDITABLE_FIELDS`] order. Each is an
+/// `[r, g, b]` array.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CustomTheme {
+    /// Header text.
+    pub header_fg: [u8; 3],
+    /// Composer border (idle).
+    pub composer_border: [u8; 3],
+    /// Suggestion / panel border.
+    pub suggestion_border: [u8; 3],
+    /// Status bar background (idle).
+    pub status_bg: [u8; 3],
+    /// Status bar foreground (idle).
+    pub status_fg: [u8; 3],
+    /// `you>` prefix.
+    pub user_prefix: [u8; 3],
+    /// `aonyx>` prefix.
+    pub assistant_prefix: [u8; 3],
+    /// Thinking placeholder.
+    pub thinking: [u8; 3],
+    /// Dim / secondary text.
+    pub dim: [u8; 3],
+    /// Status bar background (busy).
+    pub status_busy_bg: [u8; 3],
+}
+
+impl CustomTheme {
+    /// Pack into the `[(u8,u8,u8); 10]` order expected by
+    /// [`crate::theme::from_rgb_fields`].
+    pub fn to_rgb_fields(&self) -> [(u8, u8, u8); 10] {
+        let t = |a: [u8; 3]| (a[0], a[1], a[2]);
+        [
+            t(self.header_fg),
+            t(self.composer_border),
+            t(self.suggestion_border),
+            t(self.status_bg),
+            t(self.status_fg),
+            t(self.user_prefix),
+            t(self.assistant_prefix),
+            t(self.thinking),
+            t(self.dim),
+            t(self.status_busy_bg),
+        ]
+    }
+
+    /// Build from the `[(u8,u8,u8); 10]` snapshot a `Theme` produces.
+    pub fn from_rgb_fields(f: &[(u8, u8, u8); 10]) -> Self {
+        let a = |t: (u8, u8, u8)| [t.0, t.1, t.2];
+        Self {
+            header_fg: a(f[0]),
+            composer_border: a(f[1]),
+            suggestion_border: a(f[2]),
+            status_bg: a(f[3]),
+            status_fg: a(f[4]),
+            user_prefix: a(f[5]),
+            assistant_prefix: a(f[6]),
+            thinking: a(f[7]),
+            dim: a(f[8]),
+            status_busy_bg: a(f[9]),
+        }
+    }
 }
 
 /// An MCP server declaration. Either **stdio** (set `command`, Phase GG)
@@ -153,6 +221,7 @@ impl Default for Config {
             auto_compact: false,
             auto_compact_threshold: default_compact_threshold(),
             mcp_servers: Vec::new(),
+            custom_theme: None,
         }
     }
 }
@@ -235,6 +304,7 @@ mod tests {
                 url: None,
                 bearer_token: None,
             }],
+            custom_theme: None,
         };
         let s = toml::to_string(&original).unwrap();
         let parsed: Config = toml::from_str(&s).unwrap();

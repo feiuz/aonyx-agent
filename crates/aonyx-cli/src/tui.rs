@@ -112,6 +112,7 @@ const SLASH_CANDIDATES: &[&str] = &[
     "/sessions",
     "/export",
     "/export-html",
+    "/theme-edit",
     "/details",
     "/thinking",
     "/themes",
@@ -288,6 +289,24 @@ impl ToolsPanel {
         if self.selected + 1 < self.entries.len() {
             self.selected += 1;
         }
+    }
+}
+
+/// Live theme editor overlay (Phase KK). Edits `TuiApp.theme` in place
+/// for instant preview; `s` persists to `config.toml`.
+#[derive(Debug, Default)]
+struct ThemeEditor {
+    /// `true` while the editor is visible.
+    open: bool,
+    /// Index into [`theme::EDITABLE_FIELDS`] of the highlighted field.
+    field: usize,
+    /// 0 = R, 1 = G, 2 = B — the channel `+`/`-` adjusts.
+    channel: usize,
+}
+
+impl ThemeEditor {
+    fn close(&mut self) {
+        self.open = false;
     }
 }
 
@@ -486,6 +505,11 @@ fn build_palette_entries() -> Vec<PaletteEntry> {
             action: PaletteAction::Slash(SlashCommand::ExportHtml(None)),
         },
         PaletteEntry {
+            label: "/theme-edit".into(),
+            hint: "Live-edit theme colours and save them".into(),
+            action: PaletteAction::Slash(SlashCommand::ThemeEdit),
+        },
+        PaletteEntry {
             label: "/details".into(),
             hint: "Toggle verbose tool output".into(),
             action: PaletteAction::Slash(SlashCommand::Details),
@@ -608,6 +632,7 @@ pub async fn run(
     session_messages: Vec<Message>,
     session_turns: u32,
     theme_name: Option<String>,
+    custom_theme_fields: Option<[(u8, u8, u8); 10]>,
     show_thinking: bool,
     desktop_notifications: bool,
     auto_compact: bool,
@@ -652,10 +677,15 @@ pub async fn run(
     composer.set_cursor_line_style(Style::default());
     composer.set_placeholder_text("type a message — Enter to send, Shift+Enter for newline");
 
-    let active_theme = theme_name
-        .as_deref()
-        .map(theme::by_name)
-        .unwrap_or(theme::DEFAULT);
+    // `theme = "custom"` + a saved `[custom_theme]` builds the
+    // user-authored palette (Phase KK); otherwise resolve by name.
+    let active_theme = match theme_name.as_deref() {
+        Some("custom") => custom_theme_fields
+            .map(|f| theme::from_rgb_fields(&f))
+            .unwrap_or(theme::DEFAULT),
+        Some(name) => theme::by_name(name),
+        None => theme::DEFAULT,
+    };
     // Cache pricing once — provider + model can't change mid-session.
     let cached_pricing = pricing::lookup(&provider_name, &model);
 
@@ -708,6 +738,7 @@ pub async fn run(
         skills_panel: SkillsPanel::default(),
         last_request,
         inspect_panel: InspectPanel::default(),
+        theme_editor: ThemeEditor::default(),
         recent_session_ids: Vec::new(),
         approval_rx,
         pending_approval: None,
@@ -843,6 +874,9 @@ struct TuiApp {
     last_request: Arc<std::sync::Mutex<Option<String>>>,
     /// Floating `/inspect` panel state (Phase Y).
     inspect_panel: InspectPanel,
+
+    /// Live theme editor (Phase KK).
+    theme_editor: ThemeEditor,
 
     /// Cache of recent session id-prefixes (`(short_id, title)`) used
     /// by `/load` argument autocomplete (Phase R). Refreshed at
@@ -1271,6 +1305,12 @@ impl TuiApp {
         // Inspect panel (Phase Y) swallows every key while open.
         if self.inspect_panel.open {
             self.handle_inspect_panel_key(key);
+            return;
+        }
+
+        // Theme editor (Phase KK) swallows every key while open.
+        if self.theme_editor.open {
+            self.handle_theme_editor_key(key).await;
             return;
         }
 
@@ -1842,6 +1882,14 @@ impl TuiApp {
                     )),
                     Err(e) => self.push_line(error_line(format!("export-html failed: {e}"))),
                 }
+            }
+            SlashCommand::ThemeEdit => {
+                self.theme_editor.open = true;
+                self.theme_editor.field = 0;
+                self.theme_editor.channel = 0;
+                self.push_dim(
+                    "theme editor: ↑/↓ field · ←/→ R/G/B · +/- adjust · s save · Esc close",
+                );
             }
             SlashCommand::Details => {
                 self.show_tool_details = !self.show_tool_details;
@@ -2534,6 +2582,83 @@ impl TuiApp {
             Home | Char('g') => self.inspect_panel.scroll = 0,
             End | Char('G') => self.inspect_panel.scroll = u16::MAX,
             _ => {}
+        }
+    }
+
+    /// Drive the live theme editor (Phase KK): ↑/↓ pick field, ←/→
+    /// pick R/G/B channel, +/- (or h/l) adjust by 8, `s` save, Esc / q
+    /// close. Edits apply to `self.theme` immediately for live preview.
+    async fn handle_theme_editor_key(&mut self, key: KeyEvent) {
+        use KeyCode::*;
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let field_count = theme::EDITABLE_FIELDS.len();
+        match key.code {
+            Esc | Char('q') => self.theme_editor.close(),
+            Char('c') | Char('d') if ctrl => {
+                self.theme_editor.close();
+                self.quit = true;
+            }
+            Up => {
+                if self.theme_editor.field > 0 {
+                    self.theme_editor.field -= 1;
+                }
+            }
+            Down => {
+                if self.theme_editor.field + 1 < field_count {
+                    self.theme_editor.field += 1;
+                }
+            }
+            Left => self.theme_editor.channel = self.theme_editor.channel.saturating_sub(1),
+            Right => {
+                if self.theme_editor.channel < 2 {
+                    self.theme_editor.channel += 1;
+                }
+            }
+            Char('+') | Char('=') | Char('l') => self.adjust_theme_channel(8),
+            Char('-') | Char('_') | Char('h') => self.adjust_theme_channel(-8),
+            Char('s') => self.save_custom_theme().await,
+            _ => {}
+        }
+    }
+
+    /// Nudge the selected field's selected channel by `delta`, clamped
+    /// to 0..=255, and apply it to the live theme (Phase KK).
+    fn adjust_theme_channel(&mut self, delta: i16) {
+        let idx = self.theme_editor.field;
+        let (mut r, mut g, mut b) = theme::color_to_rgb(self.theme.field_color(idx));
+        let chan = match self.theme_editor.channel {
+            0 => &mut r,
+            1 => &mut g,
+            _ => &mut b,
+        };
+        *chan = (*chan as i16 + delta).clamp(0, 255) as u8;
+        self.theme.set_field(idx, Color::Rgb(r, g, b));
+    }
+
+    /// Persist the live theme as `[custom_theme]` in `config.toml` and
+    /// set `theme = "custom"` (Phase KK).
+    async fn save_custom_theme(&mut self) {
+        let fields = self.theme.editable_rgb();
+        let custom = crate::config::CustomTheme::from_rgb_fields(&fields);
+        match crate::config::Config::load_or_init() {
+            Ok(mut cfg) => {
+                cfg.theme = Some("custom".to_string());
+                cfg.custom_theme = Some(custom);
+                match crate::config::Config::config_path() {
+                    Ok(path) => match toml::to_string_pretty(&cfg) {
+                        Ok(s) => match tokio::fs::write(&path, s).await {
+                            Ok(()) => self.push_dim(&format!(
+                                "✓ theme saved to {} (theme = \"custom\")",
+                                path.display()
+                            )),
+                            Err(e) => self.push_line(error_line(format!("theme save: {e}"))),
+                        },
+                        Err(e) => self.push_line(error_line(format!("theme encode: {e}"))),
+                    },
+                    Err(e) => self.push_line(error_line(format!("theme path: {e}"))),
+                }
+            }
+            Err(e) => self.push_line(error_line(format!("theme load config: {e}"))),
         }
     }
 
@@ -3434,9 +3559,72 @@ impl TuiApp {
         if self.inspect_panel.open {
             self.render_inspect_panel(f);
         }
+        if self.theme_editor.open {
+            self.render_theme_editor(f);
+        }
         if self.pending_approval.is_some() {
             self.render_approval_overlay(f);
         }
+    }
+
+    /// Draw the live theme editor (Phase KK): one row per editable
+    /// colour with an RGB swatch, the selected field/channel marked,
+    /// and a hint footer.
+    fn render_theme_editor(&self, f: &mut Frame<'_>) {
+        let area = f.area();
+        let width = (area.width as u32 * 60 / 100).clamp(44, 78) as u16;
+        let height = (theme::EDITABLE_FIELDS.len() as u16) + 4;
+        let height = height.min(area.height);
+        let x = area.x + (area.width.saturating_sub(width)) / 2;
+        let y = area.y + (area.height.saturating_sub(height)) / 2;
+        let popup = Rect::new(x, y, width, height);
+        f.render_widget(ratatui::widgets::Clear, popup);
+
+        let dim = Style::default().fg(self.theme.dim);
+        let header = Style::default()
+            .fg(self.theme.assistant_prefix)
+            .add_modifier(Modifier::BOLD);
+
+        let mut lines: Vec<Line> = Vec::new();
+        for (i, label) in theme::EDITABLE_FIELDS.iter().enumerate() {
+            let (r, g, b) = theme::color_to_rgb(self.theme.field_color(i));
+            let selected = i == self.theme_editor.field;
+            let marker = if selected { "▸ " } else { "  " };
+            // Channel values; bold the selected channel on the selected row.
+            let chan_span = |idx: usize, val: u8, tag: &str| {
+                let mut st = Style::default().fg(self.theme.header_fg);
+                if selected && self.theme_editor.channel == idx {
+                    st = st.add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
+                }
+                Span::styled(format!("{tag}{val:>3} "), st)
+            };
+            let row = Line::from(vec![
+                Span::styled(marker, header),
+                Span::styled(
+                    format!("{label:<18}"),
+                    Style::default().fg(self.theme.header_fg),
+                ),
+                // Swatch in the field's own colour.
+                Span::styled("███ ", Style::default().fg(Color::Rgb(r, g, b))),
+                chan_span(0, r, "R"),
+                chan_span(1, g, "G"),
+                chan_span(2, b, "B"),
+            ]);
+            lines.push(row);
+        }
+
+        let footer = Line::from(Span::styled(
+            " ↑/↓ field · ←/→ R·G·B · +/- adjust · s save · Esc close ",
+            dim,
+        ));
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(self.theme.suggestion_border))
+            .title(" /theme-edit · live preview ")
+            .title_alignment(Alignment::Left)
+            .title_bottom(footer);
+        let para = Paragraph::new(Text::from(lines)).block(block);
+        f.render_widget(para, popup);
     }
 
     /// Draw the `/inspect` panel (Phase Y) — a wide scrollable view of
@@ -3905,6 +4093,7 @@ const HELP_LINES: &[&str] = &[
     "  /sessions /s         multi-session UI (Phase D)",
     "  /export [path]       dump the conversation to Markdown",
     "  /export-html [path]  dump the conversation to standalone HTML (Phase FF)",
+    "  /theme-edit          live-edit theme colours, save to config (Phase KK)",
     "  /details             toggle verbose tool output",
     "  /thinking            reasoning visibility (Phase E)",
     "  /themes /t [name]    switch palette (default, catppuccin, dracula, gruvbox)",

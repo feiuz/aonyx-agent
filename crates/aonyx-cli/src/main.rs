@@ -271,6 +271,7 @@ async fn start_interactive(project_path: Option<PathBuf>, use_tui: bool) -> anyh
             session_messages,
             session_turns,
             config.theme.clone(),
+            config.custom_theme.as_ref().map(|c| c.to_rgb_fields()),
             config.show_thinking,
             config.desktop_notifications,
             config.auto_compact,
