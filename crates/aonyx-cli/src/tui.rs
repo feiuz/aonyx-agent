@@ -655,6 +655,19 @@ pub async fn run(
     // shallow: handlers are Arc-shared and the disabled set lives
     // behind Arc<Mutex<_>>. The registry is built by the caller (it
     // already folds in any MCP-server tools — Phase GG).
+    // Phase MM — register the palace-backed memory tools now that the
+    // palace is open (they can't be in `default_set`, which has no
+    // palace). They join the registry alongside fs / git / web / MCP.
+    let mut tool_registry = tool_registry;
+    tool_registry.register(std::sync::Arc::new(aonyx_tools::memory::MemorySearch::new(
+        palace.clone(),
+    )));
+    tool_registry.register(std::sync::Arc::new(
+        aonyx_tools::memory::MemoryDiaryAppend::new(palace.clone(), project_slug.clone()),
+    ));
+    tool_registry.register(std::sync::Arc::new(
+        aonyx_tools::memory::MemoryKgQuery::new(palace.kg.clone()),
+    ));
     // Phase X — keep a copy of the skill catalogue for the `/skills`
     // panel before the runner takes ownership.
     let skills_catalogue = skills.clone();

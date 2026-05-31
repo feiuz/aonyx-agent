@@ -263,6 +263,7 @@ name = "aonyx-tools"
 version = "0.2.0"
 dependencies = [
  "aonyx-core",
+ "aonyx-memory",
  "async-trait",
  "glob",
  "regex",
