@@ -112,6 +112,7 @@ const SLASH_CANDIDATES: &[&str] = &[
     "/sessions",
     "/export",
     "/export-html",
+    "/export-bundle",
     "/theme-edit",
     "/details",
     "/thinking",
@@ -524,6 +525,11 @@ fn build_palette_entries() -> Vec<PaletteEntry> {
             label: "/export-html".into(),
             hint: "Export conversation to a styled standalone HTML".into(),
             action: PaletteAction::Slash(SlashCommand::ExportHtml(None)),
+        },
+        PaletteEntry {
+            label: "/export-bundle".into(),
+            hint: "Export a .zip bundle (Markdown + HTML + meta.json)".into(),
+            action: PaletteAction::Slash(SlashCommand::ExportBundle(None)),
         },
         PaletteEntry {
             label: "/theme-edit".into(),
@@ -1954,6 +1960,17 @@ impl TuiApp {
                     Err(e) => self.push_line(error_line(format!("export-html failed: {e}"))),
                 }
             }
+            SlashCommand::ExportBundle(target) => {
+                let path = export_bundle_path(target);
+                match self.export_bundle(&path).await {
+                    Ok(()) => self.push_dim(&format!(
+                        "exported bundle: {} (md + html + meta.json, {} messages)",
+                        path.display(),
+                        self.messages.len()
+                    )),
+                    Err(e) => self.push_line(error_line(format!("export-bundle failed: {e}"))),
+                }
+            }
             SlashCommand::ThemeEdit => {
                 self.theme_editor.open = true;
                 self.theme_editor.field = 0;
@@ -3292,6 +3309,12 @@ impl TuiApp {
     }
 
     async fn export_markdown(&self, path: &std::path::Path) -> std::io::Result<()> {
+        tokio::fs::write(path, self.build_transcript_markdown()).await
+    }
+
+    /// Render the whole transcript to a Markdown string (Phase FF;
+    /// extracted in Phase NN so the bundle export can reuse it).
+    fn build_transcript_markdown(&self) -> String {
         let mut out = String::new();
         out.push_str(&format!(
             "# Aonyx Agent session — {project}\n\n",
@@ -3310,7 +3333,7 @@ impl TuiApp {
             };
             out.push_str(&format!("### {role}\n\n{}\n\n", m.content));
         }
-        tokio::fs::write(path, out).await
+        out
     }
 
     /// Export the conversation to a standalone, styled HTML file
@@ -3318,6 +3341,13 @@ impl TuiApp {
     /// lands in a role-coloured card; the whole document is
     /// self-contained (inline CSS, no external assets).
     async fn export_html(&self, path: &std::path::Path) -> std::io::Result<()> {
+        tokio::fs::write(path, self.build_transcript_html()).await
+    }
+
+    /// Render the whole transcript to a standalone HTML document
+    /// (Phase FF; extracted in Phase NN so the bundle export can reuse
+    /// it).
+    fn build_transcript_html(&self) -> String {
         let mut body = String::new();
         for m in &self.messages {
             let (role, css) = match m.role {
@@ -3351,7 +3381,33 @@ impl TuiApp {
 <header><h1>🦦 {title}</h1><p class=\"meta\">{meta}</p></header>\n<main>\n{body}</main>\
 <footer>Exported by Aonyx Agent</footer></body></html>\n"
         );
-        tokio::fs::write(path, doc).await
+        doc
+    }
+
+    /// Export the session as a `.zip` bundle bundling the Markdown
+    /// transcript, the styled HTML, and a `meta.json` descriptor
+    /// (Phase NN). The archive is built off-thread so the UI never
+    /// blocks on compression.
+    async fn export_bundle(&self, path: &std::path::Path) -> std::io::Result<()> {
+        let md = self.build_transcript_markdown();
+        let html = self.build_transcript_html();
+        let meta = serde_json::json!({
+            "generator": concat!("aonyx-agent ", env!("CARGO_PKG_VERSION")),
+            "project": self.project_slug,
+            "session_id": self.session_id.to_string(),
+            "provider": self.provider_name,
+            "model": self.model_name,
+            "turns": self.turns,
+            "messages": self.messages.len(),
+            "files": ["session.md", "session.html", "meta.json"],
+        })
+        .to_string();
+        let bytes =
+            match tokio::task::spawn_blocking(move || build_zip_bytes(&md, &html, &meta)).await {
+                Ok(inner) => inner?,
+                Err(join) => return Err(std::io::Error::other(join)),
+            };
+        tokio::fs::write(path, bytes).await
     }
 
     fn push_dim(&mut self, text: &str) {
@@ -4390,6 +4446,7 @@ const HELP_LINES: &[&str] = &[
     "  /sessions /s         multi-session UI (Phase D)",
     "  /export [path]       dump the conversation to Markdown",
     "  /export-html [path]  dump the conversation to standalone HTML (Phase FF)",
+    "  /export-bundle [p]   dump a .zip bundle: Markdown + HTML + meta.json (Phase NN)",
     "  /theme-edit          live-edit theme colours, save to config (Phase KK)",
     "  /details             toggle verbose tool output",
     "  /thinking            reasoning visibility (Phase E)",
@@ -4794,6 +4851,35 @@ fn export_html_path(target: Option<String>) -> std::path::PathBuf {
     std::path::PathBuf::from(format!("aonyx-session-{stamp}.html"))
 }
 
+/// Default path for a `.zip` bundle export (Phase NN) — timestamped
+/// `.zip`.
+fn export_bundle_path(target: Option<String>) -> std::path::PathBuf {
+    if let Some(t) = target.filter(|s| !s.is_empty()) {
+        return std::path::PathBuf::from(t);
+    }
+    let stamp = chrono::Utc::now().format("%Y%m%d-%H%M%S").to_string();
+    std::path::PathBuf::from(format!("aonyx-session-{stamp}.zip"))
+}
+
+/// Build an in-memory `.zip` archive holding the three bundle members
+/// (Phase NN). Runs on a blocking thread — see [`TuiApp::export_bundle`].
+fn build_zip_bytes(md: &str, html: &str, meta: &str) -> std::io::Result<Vec<u8>> {
+    use std::io::Write;
+    use zip::write::SimpleFileOptions;
+    let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::<u8>::new()));
+    let opts = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+    for (name, content) in [
+        ("session.md", md),
+        ("session.html", html),
+        ("meta.json", meta),
+    ] {
+        zip.start_file(name, opts).map_err(std::io::Error::other)?;
+        zip.write_all(content.as_bytes())?;
+    }
+    let cursor = zip.finish().map_err(std::io::Error::other)?;
+    Ok(cursor.into_inner())
+}
+
 /// Minimal HTML entity escaping for text injected outside the
 /// Markdown-rendered region (titles, metadata).
 fn html_escape(s: &str) -> String {
@@ -4995,6 +5081,36 @@ mod tests {
     fn export_html_path_uses_explicit_target() {
         let p = export_html_path(Some("out.html".into()));
         assert_eq!(p, std::path::PathBuf::from("out.html"));
+    }
+
+    #[test]
+    fn export_bundle_path_defaults_to_zip_extension() {
+        let p = export_bundle_path(None);
+        assert!(p.to_string_lossy().ends_with(".zip"));
+        assert!(p.to_string_lossy().starts_with("aonyx-session-"));
+        assert_eq!(
+            export_bundle_path(Some("out.zip".into())),
+            std::path::PathBuf::from("out.zip")
+        );
+    }
+
+    #[test]
+    fn build_zip_bytes_round_trips_all_three_members() {
+        let bytes = build_zip_bytes("# md body", "<html>body</html>", "{\"k\":1}").unwrap();
+        // ZIP local-file signature.
+        assert_eq!(&bytes[..2], b"PK");
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+        let names: Vec<String> = (0..archive.len())
+            .map(|i| archive.by_index(i).unwrap().name().to_string())
+            .collect();
+        assert!(names.contains(&"session.md".to_string()));
+        assert!(names.contains(&"session.html".to_string()));
+        assert!(names.contains(&"meta.json".to_string()));
+        // Content survives the deflate round-trip.
+        let mut md = archive.by_name("session.md").unwrap();
+        let mut s = String::new();
+        std::io::Read::read_to_string(&mut md, &mut s).unwrap();
+        assert_eq!(s, "# md body");
     }
 
     #[test]

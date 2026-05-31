@@ -113,6 +113,9 @@ pub enum SlashCommand {
     /// Show the session genealogy tree for this project (Phase MM).
     /// TUI-only.
     Tree,
+    /// Export the conversation as a `.zip` bundle (Markdown + HTML +
+    /// `meta.json`) (Phase NN). TUI-only.
+    ExportBundle(Option<String>),
 }
 
 impl SlashCommand {
@@ -153,6 +156,7 @@ impl SlashCommand {
             "/theme-edit" | "/themeedit" => Some(Self::ThemeEdit),
             "/provider" => Some(Self::Provider(rest.map(str::to_string))),
             "/tree" => Some(Self::Tree),
+            "/export-bundle" | "/bundle" => Some(Self::ExportBundle(rest.map(str::to_string))),
             _ => None,
         }
     }
@@ -453,6 +457,11 @@ impl InteractiveSession {
             }
             SlashCommand::ExportHtml(_) => {
                 out.write_all(b"\x1b[90m/export-html runs in TUI mode (aonyx --tui)\x1b[0m\n")
+                    .await?;
+                Ok(true)
+            }
+            SlashCommand::ExportBundle(_) => {
+                out.write_all(b"\x1b[90m/export-bundle runs in TUI mode (aonyx --tui)\x1b[0m\n")
                     .await?;
                 Ok(true)
             }
