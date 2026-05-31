@@ -148,9 +148,14 @@ async fn main() -> anyhow::Result<()> {
                     eprintln!("aonyx: TCP transport not yet supported — serving over stdio");
                 }
                 // Phase HH — expose the built-in tool catalogue over the
-                // stdio MCP transport. Blocks until stdin closes.
-                eprintln!("aonyx: MCP server ready on stdio (fs / bash / git)");
-                aonyx_mcp::server::serve_default()
+                // stdio MCP transport. Phase NN — also expose the
+                // palace-backed `memory_*` tools, scoped to the current
+                // directory's palace, so remote clients (Claude Code,
+                // Cursor, …) can read and write *this project's* memory.
+                // Blocks until stdin closes.
+                let registry = build_serve_registry()?;
+                eprintln!("aonyx: MCP server ready on stdio (fs / bash / git / web / memory_*)");
+                aonyx_mcp::server::serve_stdio(registry)
                     .await
                     .map_err(|e| anyhow::anyhow!("mcp serve: {e}"))
             }
@@ -386,6 +391,32 @@ fn project_slug(root: &std::path::Path) -> String {
     root.file_name()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_else(|| "session".to_string())
+}
+
+/// Build the tool catalogue served by `aonyx mcp serve` (Phase NN).
+///
+/// Starts from the static [`ToolRegistry::default_set`](aonyx_tools::ToolRegistry::default_set)
+/// (fs / bash / git / web) and folds in the three palace-backed
+/// `memory_*` tools, scoped to the **current directory**'s palace — so a
+/// remote MCP client operates on the same memory the local TUI does.
+fn build_serve_registry() -> anyhow::Result<aonyx_tools::ToolRegistry> {
+    let project_root = std::env::current_dir()?;
+    let palace_dir = Palace::default_project_dir(&project_root);
+    let palace = Palace::open(&palace_dir)?;
+    let slug = project_slug(&project_root);
+
+    let mut registry = aonyx_tools::ToolRegistry::default_set();
+    registry.register(Arc::new(aonyx_tools::memory::MemorySearch::new(
+        palace.clone(),
+    )));
+    registry.register(Arc::new(aonyx_tools::memory::MemoryDiaryAppend::new(
+        palace.clone(),
+        slug,
+    )));
+    registry.register(Arc::new(aonyx_tools::memory::MemoryKgQuery::new(
+        palace.kg.clone(),
+    )));
+    Ok(registry)
 }
 
 /// Build the active skill catalogue: the four built-ins plus any

@@ -257,4 +257,30 @@ mod tests {
         assert_eq!(tool_output_text(&json!("hello")), "hello");
         assert!(tool_output_text(&json!({"a":1})).contains("\"a\""));
     }
+
+    #[tokio::test]
+    async fn tools_list_includes_registered_memory_tools() {
+        // Phase NN — `aonyx mcp serve` folds palace-backed `memory_*`
+        // tools into the served registry. Verify they surface through
+        // `tools/list` once registered (the wiring `build_serve_registry`
+        // performs against the cwd palace).
+        use aonyx_memory::Palace;
+        let palace = Palace::open_in_memory().expect("palace");
+        let mut reg = ToolRegistry::default_set();
+        reg.register(std::sync::Arc::new(aonyx_tools::memory::MemorySearch::new(
+            palace.clone(),
+        )));
+        reg.register(std::sync::Arc::new(
+            aonyx_tools::memory::MemoryKgQuery::new(palace.kg.clone()),
+        ));
+
+        let req = json!({"jsonrpc":"2.0","id":7,"method":"tools/list","params":{}});
+        let resp = handle_message(&req, &reg).await.expect("response");
+        let tools = resp["result"]["tools"].as_array().expect("array");
+        let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
+        assert!(names.contains(&"memory_search"));
+        assert!(names.contains(&"memory_kg_query"));
+        // The static set is still present alongside them.
+        assert!(names.contains(&"fs_read"));
+    }
 }

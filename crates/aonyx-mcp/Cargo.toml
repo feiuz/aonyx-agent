@@ -17,3 +17,6 @@ async-trait = { workspace = true }
 tracing = { workspace = true }
 tokio = { workspace = true }
 reqwest = { workspace = true }
+
+[dev-dependencies]
+aonyx-memory = { workspace = true }

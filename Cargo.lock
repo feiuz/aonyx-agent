@@ -217,6 +217,7 @@ name = "aonyx-mcp"
 version = "0.2.0"
 dependencies = [
  "aonyx-core",
+ "aonyx-memory",
  "aonyx-tools",
  "async-trait",
  "reqwest",
