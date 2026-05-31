@@ -110,17 +110,28 @@ impl ToolHandler for WebFetch {
             .and_then(|v| v.to_str().ok())
             .unwrap_or("")
             .to_string();
-        let body = resp
-            .text()
-            .await
-            .map_err(|e| AonyxError::Tool(format!("web_fetch body: {e}")))?;
-
-        // HTML gets stripped to text; anything else (json, plain) is
-        // returned as-is (still truncated).
-        let text = if content_type.contains("html") || looks_like_html(&body) {
-            html_to_text(&body)
+        // Phase PP — PDFs are binary: read raw bytes and extract their
+        // text. Everything else is decoded as UTF-8; HTML is stripped to
+        // readable text, anything else returned as-is.
+        let (text, byte_len) = if is_pdf_response(&content_type, &args.url) {
+            let bytes = resp
+                .bytes()
+                .await
+                .map_err(|e| AonyxError::Tool(format!("web_fetch body: {e}")))?;
+            let n = bytes.len();
+            (pdf_to_text(&bytes)?, n)
         } else {
-            body
+            let body = resp
+                .text()
+                .await
+                .map_err(|e| AonyxError::Tool(format!("web_fetch body: {e}")))?;
+            let n = body.len();
+            let t = if content_type.contains("html") || looks_like_html(&body) {
+                html_to_text(&body)
+            } else {
+                body
+            };
+            (t, n)
         };
         let truncated = truncate_chars(&text, FETCH_MAX_CHARS);
 
@@ -466,6 +477,24 @@ mod tests {
         assert!(text.contains("visible"));
         assert!(!text.contains("color:red"));
         assert!(!text.contains("alert(1)"));
+    }
+
+    #[test]
+    fn is_pdf_response_detects_pdf() {
+        assert!(is_pdf_response("application/pdf", "http://x/y"));
+        assert!(is_pdf_response(
+            "application/pdf; charset=binary",
+            "http://x/y"
+        ));
+        assert!(is_pdf_response("", "http://x/report.PDF"));
+        assert!(!is_pdf_response("text/html", "http://x/page.html"));
+        assert!(!is_pdf_response("application/json", "http://x/data"));
+    }
+
+    #[test]
+    fn pdf_to_text_errors_on_non_pdf_bytes() {
+        // Random bytes aren't a valid PDF → graceful Tool error, no panic.
+        assert!(pdf_to_text(b"not a pdf at all").is_err());
     }
 
     #[tokio::test]
