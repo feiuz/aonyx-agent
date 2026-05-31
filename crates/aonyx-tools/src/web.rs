@@ -22,6 +22,40 @@ const BRAVE_ENDPOINT: &str = "https://api.search.brave.com/res/v1/web/search";
 /// Tavily Search API endpoint (fallback when Brave is unconfigured).
 const TAVILY_ENDPOINT: &str = "https://api.tavily.com/search";
 
+/// GET `url` and return `(content_type, body_bytes)` (Phase OO).
+///
+/// Shared raw-bytes fetch — the CLI reuses it to pull a remote image
+/// URL into a vision attachment (rather than only local `@file` refs).
+/// Read-only; the caller owns any size / format handling.
+pub async fn fetch_bytes(url: &str) -> Result<(String, Vec<u8>)> {
+    if !url.starts_with("http://") && !url.starts_with("https://") {
+        return Err(AonyxError::Tool(format!(
+            "fetch_bytes: url must be http(s): {url}"
+        )));
+    }
+    let client = reqwest::Client::new();
+    let resp = client
+        .get(url)
+        .header(
+            "user-agent",
+            "aonyx-agent/0.2 (+https://github.com/feiuz/aonyx-agent)",
+        )
+        .send()
+        .await
+        .map_err(|e| AonyxError::Tool(format!("fetch_bytes {url}: {e}")))?;
+    let content_type = resp
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    let bytes = resp
+        .bytes()
+        .await
+        .map_err(|e| AonyxError::Tool(format!("fetch_bytes body: {e}")))?;
+    Ok((content_type, bytes.to_vec()))
+}
+
 /// `web_fetch` — GET a URL and return its readable text. Safe.
 pub struct WebFetch;
 

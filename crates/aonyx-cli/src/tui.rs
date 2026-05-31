@@ -1743,12 +1743,24 @@ impl TuiApp {
                     .cloned()
                     .partition(|p| images::looks_like_image(p));
                 for path in &image_refs {
-                    self.render_image_ref(path);
-                    // Best-effort base64 encode for vision-capable
-                    // providers (currently Anthropic). Failure here
-                    // just means the model sees the path in text but
-                    // can't see the pixels.
-                    match base64_image(path) {
+                    // Phase OO — an image ref may be a remote http(s) URL,
+                    // not just a local file. URLs are fetched then
+                    // downscaled; local paths also get an inline preview.
+                    let from_url = is_http_url(path);
+                    if from_url {
+                        self.push_dim(&format!("  📷 fetching {path}"));
+                    } else {
+                        self.render_image_ref(path);
+                    }
+                    // Best-effort encode for vision-capable providers.
+                    // Failure here just means the model sees the path in
+                    // text but can't see the pixels.
+                    let encoded = if from_url {
+                        attach_image_from_url(path).await
+                    } else {
+                        base64_image(path)
+                    };
+                    match encoded {
                         Ok((media_type, data)) => {
                             attachments.push(aonyx_core::Attachment::Image { media_type, data });
                         }
@@ -4551,8 +4563,23 @@ fn extract_refs(input: &str) -> (String, Vec<String>) {
 fn base64_image(path: &str) -> std::io::Result<(String, String)> {
     use base64::Engine;
     let bytes = std::fs::read(path)?;
+    // Phase NN — cap token cost by downscaling oversized images before
+    // they reach a vision model. A resize re-encodes as PNG, so the
+    // media type follows the actual bytes we send.
+    let (media_type, payload) = match images::downscale_for_vision(&bytes, images::MAX_VISION_DIM) {
+        Some(png) => ("image/png".to_string(), png),
+        None => (media_type_from_ext(path).to_string(), bytes),
+    };
+    let data = base64::engine::general_purpose::STANDARD.encode(&payload);
+    Ok((media_type, data))
+}
+
+/// Map a path / URL extension to an image MIME type (Phase S; extracted
+/// in Phase OO so the URL path can reuse it). Falls back to
+/// `application/octet-stream`.
+fn media_type_from_ext(path: &str) -> &'static str {
     let lower = path.to_ascii_lowercase();
-    let orig_media_type = if lower.ends_with(".png") {
+    if lower.ends_with(".png") {
         "image/png"
     } else if lower.ends_with(".jpg") || lower.ends_with(".jpeg") {
         "image/jpeg"
@@ -4564,13 +4591,38 @@ fn base64_image(path: &str) -> std::io::Result<(String, String)> {
         "image/bmp"
     } else {
         "application/octet-stream"
-    };
-    // Phase NN — cap token cost by downscaling oversized images before
-    // they reach a vision model. A resize re-encodes as PNG, so the
-    // media type follows the actual bytes we send.
+    }
+}
+
+/// True when `s` is a remote http(s) URL rather than a local path
+/// (Phase OO).
+fn is_http_url(s: &str) -> bool {
+    s.starts_with("http://") || s.starts_with("https://")
+}
+
+/// Pick the MIME type for a fetched image: trust the server's
+/// `Content-Type` when it advertises `image/*`, else infer from the
+/// URL's extension (Phase OO).
+fn media_type_for(url: &str, content_type: &str) -> String {
+    let ct = content_type.split(';').next().unwrap_or("").trim();
+    if ct.starts_with("image/") {
+        ct.to_string()
+    } else {
+        media_type_from_ext(url).to_string()
+    }
+}
+
+/// Fetch a remote image URL and return `(media_type, base64_data)` ready
+/// for an [`aonyx_core::Attachment::Image`] (Phase OO). Oversized images
+/// are downscaled first (re-encoded as PNG) to cap vision token cost.
+async fn attach_image_from_url(url: &str) -> std::io::Result<(String, String)> {
+    use base64::Engine;
+    let (content_type, bytes) = aonyx_tools::web::fetch_bytes(url)
+        .await
+        .map_err(std::io::Error::other)?;
     let (media_type, payload) = match images::downscale_for_vision(&bytes, images::MAX_VISION_DIM) {
         Some(png) => ("image/png".to_string(), png),
-        None => (orig_media_type.to_string(), bytes),
+        None => (media_type_for(url, &content_type), bytes),
     };
     let data = base64::engine::general_purpose::STANDARD.encode(&payload);
     Ok((media_type, data))
@@ -5151,6 +5203,28 @@ mod tests {
     #[test]
     fn html_escape_neutralises_markup() {
         assert_eq!(html_escape("a<b>&\"c"), "a&lt;b&gt;&amp;&quot;c");
+    }
+
+    #[test]
+    fn is_http_url_detects_remote_refs() {
+        assert!(is_http_url("https://x.com/cat.png"));
+        assert!(is_http_url("http://x.com/cat.png"));
+        assert!(!is_http_url("cat.png"));
+        assert!(!is_http_url("/abs/path/cat.png"));
+    }
+
+    #[test]
+    fn media_type_helpers_pick_sensible_types() {
+        assert_eq!(media_type_from_ext("dir/IMG.PNG"), "image/png");
+        assert_eq!(media_type_from_ext("x.jpeg"), "image/jpeg");
+        assert_eq!(media_type_from_ext("x.bin"), "application/octet-stream");
+        // An image/* content-type wins over the extension.
+        assert_eq!(
+            media_type_for("http://x/y", "image/webp; charset=binary"),
+            "image/webp"
+        );
+        // A non-image content-type falls back to the URL extension.
+        assert_eq!(media_type_for("http://x/y.gif", "text/html"), "image/gif");
     }
 
     #[test]
