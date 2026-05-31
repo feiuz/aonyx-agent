@@ -107,6 +107,9 @@ pub enum SlashCommand {
     ExportHtml(Option<String>),
     /// Open the live theme editor (Phase KK). TUI-only.
     ThemeEdit,
+    /// Switch the active LLM provider live (Phase LL). `None` lists the
+    /// available ids. TUI-only.
+    Provider(Option<String>),
 }
 
 impl SlashCommand {
@@ -145,6 +148,7 @@ impl SlashCommand {
             "/model" => Some(Self::Model(rest.map(str::to_string))),
             "/export-html" | "/exporthtml" => Some(Self::ExportHtml(rest.map(str::to_string))),
             "/theme-edit" | "/themeedit" => Some(Self::ThemeEdit),
+            "/provider" => Some(Self::Provider(rest.map(str::to_string))),
             _ => None,
         }
     }
@@ -450,6 +454,11 @@ impl InteractiveSession {
             }
             SlashCommand::ThemeEdit => {
                 out.write_all(b"\x1b[90m/theme-edit runs in TUI mode (aonyx --tui)\x1b[0m\n")
+                    .await?;
+                Ok(true)
+            }
+            SlashCommand::Provider(_) => {
+                out.write_all(b"\x1b[90m/provider runs in TUI mode (aonyx --tui)\x1b[0m\n")
                     .await?;
                 Ok(true)
             }

@@ -101,7 +101,9 @@ pub struct TurnResult {
 /// task which needs an owned value.
 #[derive(Clone)]
 pub struct AgentRunner {
-    provider: Arc<dyn LlmProvider>,
+    /// Active provider — shared behind an `Arc<Mutex<_>>` so the TUI
+    /// `/provider` command (Phase LL) can swap the whole backend live.
+    provider: Arc<std::sync::Mutex<Arc<dyn LlmProvider>>>,
     tools: ToolRegistry,
     skills: Vec<Skill>,
     /// Skill ids the user has switched off for this session — shared
@@ -129,7 +131,7 @@ impl AgentRunner {
         model: impl Into<String>,
     ) -> Self {
         Self {
-            provider,
+            provider: Arc::new(std::sync::Mutex::new(provider)),
             tools,
             skills: Vec::new(),
             disabled_skills: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
@@ -150,6 +152,20 @@ impl AgentRunner {
     /// the active model mid-session (Phase EE).
     pub fn model_handle(&self) -> Arc<std::sync::Mutex<String>> {
         Arc::clone(&self.model)
+    }
+
+    /// Share the live provider handle so the TUI `/provider` command
+    /// can swap the whole backend mid-session (Phase LL).
+    pub fn provider_handle(&self) -> Arc<std::sync::Mutex<Arc<dyn LlmProvider>>> {
+        Arc::clone(&self.provider)
+    }
+
+    /// Snapshot the active provider.
+    fn current_provider(&self) -> Arc<dyn LlmProvider> {
+        self.provider
+            .lock()
+            .map(|p| Arc::clone(&p))
+            .unwrap_or_else(|e| Arc::clone(&e.into_inner()))
     }
 
     /// Share a live skill-toggle set with the caller. Skill ids present
@@ -416,7 +432,8 @@ impl AgentRunner {
             max_tokens: Some(1024),
         };
 
-        let mut stream = self.provider.chat_stream(req).await?;
+        let provider = self.current_provider();
+        let mut stream = provider.chat_stream(req).await?;
         let mut text = String::new();
         while let Some(item) = stream.next().await {
             let chunk = item?;
@@ -433,7 +450,8 @@ impl AgentRunner {
         req: ChatRequest,
         events: &mpsc::Sender<TurnEvent>,
     ) -> Result<(String, Vec<ToolCall>)> {
-        let mut stream = self.provider.chat_stream(req).await?;
+        let provider = self.current_provider();
+        let mut stream = provider.chat_stream(req).await?;
         let mut text = String::new();
         let mut tool_calls: Vec<ToolCall> = Vec::new();
 

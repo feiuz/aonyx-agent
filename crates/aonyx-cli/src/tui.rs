@@ -128,6 +128,7 @@ const SLASH_CANDIDATES: &[&str] = &[
     "/compact",
     "/retry",
     "/model",
+    "/provider",
     "/mouse",
     "/ingest",
     "/editor",
@@ -590,6 +591,11 @@ fn build_palette_entries() -> Vec<PaletteEntry> {
             action: PaletteAction::Slash(SlashCommand::Model(None)),
         },
         PaletteEntry {
+            label: "/provider".into(),
+            hint: "Switch the LLM provider live (/provider <id>)".into(),
+            action: PaletteAction::Slash(SlashCommand::Provider(None)),
+        },
+        PaletteEntry {
             label: "/mouse".into(),
             hint: "Toggle mouse capture (off = native drag-to-select)".into(),
             action: PaletteAction::Slash(SlashCommand::Mouse),
@@ -665,6 +671,9 @@ pub async fn run(
     // Phase EE — share the runner's model handle so `/model` can swap
     // the active model live.
     let model_handle = runner.model_handle();
+    // Phase LL — share the provider handle so `/provider` can swap the
+    // whole backend live.
+    let provider_handle = runner.provider_handle();
 
     let messages: Vec<Message> = session_messages;
 
@@ -753,6 +762,7 @@ pub async fn run(
         compact_threshold: auto_compact_threshold,
         compact_nudged: false,
         model_handle,
+        provider_handle,
         quit: false,
     };
 
@@ -927,6 +937,10 @@ struct TuiApp {
     /// Shared model handle (Arc clone of the runner's) so `/model` can
     /// swap the active model mid-session (Phase EE).
     model_handle: Arc<std::sync::Mutex<String>>,
+
+    /// Shared provider handle (Arc clone of the runner's) so `/provider`
+    /// can swap the whole backend mid-session (Phase LL).
+    provider_handle: Arc<std::sync::Mutex<Arc<dyn LlmProvider>>>,
 
     quit: bool,
 }
@@ -1459,6 +1473,15 @@ impl TuiApp {
                 .iter()
                 .map(|s| (*s).to_string())
                 .collect(),
+            // Phase LL — `/provider <id>` available providers.
+            "provider" => vec![
+                "anthropic".to_string(),
+                "openai".to_string(),
+                "openrouter".to_string(),
+                "ollama".to_string(),
+                "lm-studio".to_string(),
+                "claude-code".to_string(),
+            ],
             _ => Vec::new(),
         }
     }
@@ -2053,6 +2076,9 @@ impl TuiApp {
             SlashCommand::Model(target) => {
                 self.switch_model(target);
             }
+            SlashCommand::Provider(target) => {
+                self.switch_provider(target);
+            }
             SlashCommand::Mouse => {
                 self.toggle_mouse_capture();
             }
@@ -2220,6 +2246,74 @@ impl TuiApp {
         self.push_dim(&format!(
             "📥 ingested {path} → {appended}/{chunk_count} chunk(s) · kind={kind} · {} chars",
             total_chars
+        ));
+    }
+
+    /// Switch the active LLM provider live (Phase LL). With no argument,
+    /// list the available ids. With one, rebuild the provider from
+    /// config (overriding only the provider id) and swap it through the
+    /// shared handle — the next turn uses the new backend. Refreshes
+    /// the status-bar provider name + the cost-estimator pricing.
+    fn switch_provider(&mut self, target: Option<String>) {
+        const AVAILABLE: [&str; 6] = [
+            "anthropic",
+            "openai",
+            "openrouter",
+            "ollama",
+            "lm-studio",
+            "claude-code",
+        ];
+        let Some(id) = target
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+        else {
+            self.push_dim(&format!("active provider: {}", self.provider_name));
+            self.push_dim(&format!("available: {}", AVAILABLE.join(" · ")));
+            return;
+        };
+        if id == self.provider_name {
+            self.push_dim(&format!("already on {id}"));
+            return;
+        }
+        // Rebuild from config with the provider id overridden, reusing
+        // the binary's `build_provider` (keys / base URLs come from
+        // config / env).
+        let cfg = match crate::config::Config::load_or_init() {
+            Ok(mut c) => {
+                c.provider = id.clone();
+                c
+            }
+            Err(e) => {
+                self.push_line(error_line(format!("provider: load config: {e}")));
+                return;
+            }
+        };
+        let provider = match crate::build_provider(&cfg) {
+            Ok(p) => p,
+            Err(e) => {
+                self.push_line(error_line(format!("provider '{id}': {e}")));
+                return;
+            }
+        };
+        // Swap in a tight scope so the guard drops before touching self.
+        let swapped = {
+            match self.provider_handle.lock() {
+                Ok(mut slot) => {
+                    *slot = provider;
+                    true
+                }
+                Err(_) => false,
+            }
+        };
+        if !swapped {
+            self.push_line(error_line("provider: could not acquire lock".to_string()));
+            return;
+        }
+        self.provider_name = id.clone();
+        self.pricing = pricing::lookup(&id, &self.model_name);
+        self.push_dim(&format!(
+            "provider → {id} (model stays {}; /model to change it)",
+            self.model_name
         ));
     }
 
@@ -3402,6 +3496,7 @@ impl TuiApp {
                     "ingest" => "files",
                     "undo" | "u" => "undo",
                     "model" => "models",
+                    "provider" => "providers",
                     _ => "args",
                 },
                 None => "",
@@ -4109,6 +4204,7 @@ const HELP_LINES: &[&str] = &[
     "  /compact             summarize old turns, keep the tail (Phase BB)",
     "  /retry /r            re-run the last user message (Phase CC)",
     "  /model [name]        switch the active model live (Phase EE)",
+    "  /provider [id]       switch the LLM provider live (Phase LL)",
     "  /mouse /select       toggle mouse capture (off = native text selection, Phase U)",
     "  /ingest <path>       add a local file to the project palace (Phase V)",
     "  /editor /e           legacy-mode only for now",
