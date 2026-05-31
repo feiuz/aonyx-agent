@@ -144,20 +144,34 @@ async fn main() -> anyhow::Result<()> {
         }
         Some(Command::Mcp { action }) => match action {
             McpAction::Serve { port } => {
-                if port.is_some() {
-                    eprintln!("aonyx: TCP transport not yet supported — serving over stdio");
-                }
-                // Phase HH — expose the built-in tool catalogue over the
-                // stdio MCP transport. Phase NN — also expose the
-                // palace-backed `memory_*` tools, scoped to the current
-                // directory's palace, so remote clients (Claude Code,
+                // Phase HH/NN — expose the built-in tools plus the
+                // palace-backed `memory_*` tools (scoped to the current
+                // directory's palace) so remote clients (Claude Code,
                 // Cursor, …) can read and write *this project's* memory.
-                // Blocks until stdin closes.
                 let registry = build_serve_registry()?;
-                eprintln!("aonyx: MCP server ready on stdio (fs / bash / git / web / memory_*)");
-                aonyx_mcp::server::serve_stdio(registry)
-                    .await
-                    .map_err(|e| anyhow::anyhow!("mcp serve: {e}"))
+                match port {
+                    // Phase OO — Streamable HTTP transport on a TCP port.
+                    Some(p) => {
+                        let addr = format!("127.0.0.1:{p}");
+                        eprintln!(
+                            "aonyx: MCP server ready on http://{addr} \
+                             (fs / bash / git / web / memory_*)"
+                        );
+                        aonyx_mcp::server::serve_http(registry, &addr)
+                            .await
+                            .map_err(|e| anyhow::anyhow!("mcp serve http: {e}"))
+                    }
+                    // Default: stdio, blocks until stdin closes (HH).
+                    None => {
+                        eprintln!(
+                            "aonyx: MCP server ready on stdio \
+                             (fs / bash / git / web / memory_*)"
+                        );
+                        aonyx_mcp::server::serve_stdio(registry)
+                            .await
+                            .map_err(|e| anyhow::anyhow!("mcp serve: {e}"))
+                    }
+                }
             }
         },
     }
