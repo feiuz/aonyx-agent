@@ -4929,7 +4929,7 @@ fn fuzzy_top(query: &str, pool: &[String], limit: usize) -> Vec<String> {
             pattern.score(utf32, &mut matcher).map(|s_| (s.clone(), s_))
         })
         .collect();
-    scored.sort_by(|a, b| b.1.cmp(&a.1));
+    scored.sort_by_key(|b| std::cmp::Reverse(b.1));
     scored.truncate(limit);
     scored.into_iter().map(|(s, _)| s).collect()
 }
@@ -4954,7 +4954,7 @@ fn fuzzy_top_idx(query: &str, pool: &[String], limit: usize) -> Vec<usize> {
             pattern.score(utf32, &mut matcher).map(|sc| (i, sc))
         })
         .collect();
-    scored.sort_by(|a, b| b.1.cmp(&a.1));
+    scored.sort_by_key(|b| std::cmp::Reverse(b.1));
     scored.truncate(limit);
     scored.into_iter().map(|(i, _)| i).collect()
 }
