@@ -18,6 +18,7 @@ tokio = { workspace = true }
 glob = "0.3"
 walkdir = "2"
 regex = "1"
+reqwest = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }

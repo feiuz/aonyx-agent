@@ -8,6 +8,7 @@ use aonyx_core::ToolHandler;
 use crate::bash::Bash;
 use crate::fs::{FsEdit, FsGlob, FsGrep, FsRead, FsWrite};
 use crate::git::{GitDiff, GitLog, GitShow, GitStatus};
+use crate::web::{WebFetch, WebSearch};
 
 /// A registry of registered [`ToolHandler`]s keyed by name.
 ///
@@ -116,6 +117,8 @@ impl ToolRegistry {
         r.register(Arc::new(GitDiff));
         r.register(Arc::new(GitLog));
         r.register(Arc::new(GitShow));
+        r.register(Arc::new(WebFetch));
+        r.register(Arc::new(WebSearch));
         r
     }
 }
@@ -142,9 +145,11 @@ mod tests {
                 "git_log",
                 "git_show",
                 "git_status",
+                "web_fetch",
+                "web_search",
             ]
         );
-        assert_eq!(r.len(), 10);
+        assert_eq!(r.len(), 12);
     }
 
     #[test]
