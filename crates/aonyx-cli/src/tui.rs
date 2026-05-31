@@ -528,7 +528,7 @@ fn build_palette_entries() -> Vec<PaletteEntry> {
         },
         PaletteEntry {
             label: "/export-bundle".into(),
-            hint: "Export a .zip bundle (Markdown + HTML + meta.json)".into(),
+            hint: "Export a .zip bundle (Markdown + HTML + messages.json + meta.json)".into(),
             action: PaletteAction::Slash(SlashCommand::ExportBundle(None)),
         },
         PaletteEntry {
@@ -1976,7 +1976,7 @@ impl TuiApp {
                 let path = export_bundle_path(target);
                 match self.export_bundle(&path).await {
                     Ok(()) => self.push_dim(&format!(
-                        "exported bundle: {} (md + html + meta.json, {} messages)",
+                        "exported bundle: {} (md + html + messages.json + meta.json, {} messages)",
                         path.display(),
                         self.messages.len()
                     )),
@@ -4493,7 +4493,7 @@ const HELP_LINES: &[&str] = &[
     "  /sessions /s         multi-session UI (Phase D)",
     "  /export [path]       dump the conversation to Markdown",
     "  /export-html [path]  dump the conversation to standalone HTML (Phase FF)",
-    "  /export-bundle [p]   dump a .zip bundle: Markdown + HTML + meta.json (Phase NN)",
+    "  /export-bundle [p]   .zip: Markdown + HTML + messages.json + meta.json (NN/OO)",
     "  /theme-edit          live-edit theme colours, save to config (Phase KK)",
     "  /details             toggle verbose tool output",
     "  /thinking            reasoning visibility (Phase E)",
@@ -4950,17 +4950,13 @@ fn export_bundle_path(target: Option<String>) -> std::path::PathBuf {
 
 /// Build an in-memory `.zip` archive holding the three bundle members
 /// (Phase NN). Runs on a blocking thread — see [`TuiApp::export_bundle`].
-fn build_zip_bytes(md: &str, html: &str, meta: &str) -> std::io::Result<Vec<u8>> {
+fn build_zip_bytes(members: &[(&str, &str)]) -> std::io::Result<Vec<u8>> {
     use std::io::Write;
     use zip::write::SimpleFileOptions;
     let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::<u8>::new()));
     let opts = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
-    for (name, content) in [
-        ("session.md", md),
-        ("session.html", html),
-        ("meta.json", meta),
-    ] {
-        zip.start_file(name, opts).map_err(std::io::Error::other)?;
+    for (name, content) in members {
+        zip.start_file(*name, opts).map_err(std::io::Error::other)?;
         zip.write_all(content.as_bytes())?;
     }
     let cursor = zip.finish().map_err(std::io::Error::other)?;
@@ -5182,17 +5178,23 @@ mod tests {
     }
 
     #[test]
-    fn build_zip_bytes_round_trips_all_three_members() {
-        let bytes = build_zip_bytes("# md body", "<html>body</html>", "{\"k\":1}").unwrap();
+    fn build_zip_bytes_round_trips_members() {
+        let bytes = build_zip_bytes(&[
+            ("session.md", "# md body"),
+            ("session.html", "<html>body</html>"),
+            ("messages.json", "[]"),
+            ("meta.json", "{\"k\":1}"),
+        ])
+        .unwrap();
         // ZIP local-file signature.
         assert_eq!(&bytes[..2], b"PK");
         let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
         let names: Vec<String> = (0..archive.len())
             .map(|i| archive.by_index(i).unwrap().name().to_string())
             .collect();
-        assert!(names.contains(&"session.md".to_string()));
-        assert!(names.contains(&"session.html".to_string()));
-        assert!(names.contains(&"meta.json".to_string()));
+        for want in ["session.md", "session.html", "messages.json", "meta.json"] {
+            assert!(names.contains(&want.to_string()), "missing {want}");
+        }
         // Content survives the deflate round-trip.
         let mut md = archive.by_name("session.md").unwrap();
         let mut s = String::new();
