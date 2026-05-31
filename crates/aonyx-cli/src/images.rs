@@ -50,6 +50,39 @@ pub fn looks_like_image(path: &str) -> bool {
         .any(|ext| lower.ends_with(ext))
 }
 
+/// Longest-side pixel cap for an image sent to a vision model
+/// (Phase NN). Above this we downscale before base64-encoding to cap
+/// token cost — most providers tile-bill by pixel area and gain nothing
+/// from higher resolution. 1568px matches Anthropic's documented sweet
+/// spot and stays comfortably inside OpenAI's high-detail tile budget.
+pub const MAX_VISION_DIM: u32 = 1568;
+
+/// Downscale an oversized image before it is base64-encoded for a vision
+/// model (Phase NN).
+///
+/// If `bytes` decodes and its longest side exceeds `max_dim`, the image
+/// is resized (preserving aspect ratio) to fit a `max_dim × max_dim` box
+/// and re-encoded as PNG — returning `Some(png_bytes)`. Returns `None`
+/// when the image is already within bounds, `max_dim` is 0, or the bytes
+/// can't be decoded; in every `None` case the caller keeps the original
+/// bytes untouched.
+pub fn downscale_for_vision(bytes: &[u8], max_dim: u32) -> Option<Vec<u8>> {
+    if max_dim == 0 {
+        return None;
+    }
+    let img = image::load_from_memory(bytes).ok()?;
+    let (w, h) = img.dimensions();
+    if w.max(h) <= max_dim {
+        return None; // already small enough — send as-is.
+    }
+    let scaled = img.resize(max_dim, max_dim, FilterType::Triangle);
+    let mut out = Vec::new();
+    scaled
+        .write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)
+        .ok()?;
+    Some(out)
+}
+
 /// Decode an image and render it as half-block ratatui lines.
 ///
 /// The image is scaled (preserving aspect ratio) to fit inside
@@ -179,6 +212,40 @@ mod tests {
         // Wide aspect → near 64-cell width, fewer rows.
         assert!(cols >= 32);
         assert!(rows < 24);
+    }
+
+    #[test]
+    fn downscale_for_vision_shrinks_oversized_and_keeps_aspect() {
+        // 3000×1000 → longest side must land on exactly max_dim.
+        let buf: ImageBuffer<Rgba<u8>, Vec<u8>> =
+            ImageBuffer::from_pixel(3000, 1000, Rgba([10, 20, 30, 255]));
+        let mut png = Vec::new();
+        DynamicImage::ImageRgba8(buf)
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .unwrap();
+        let out = downscale_for_vision(&png, 1568).expect("downscaled");
+        let decoded = image::load_from_memory(&out).unwrap();
+        let (w, h) = decoded.dimensions();
+        assert_eq!(w.max(h), 1568);
+        assert!(w > h); // aspect ratio preserved (still landscape).
+    }
+
+    #[test]
+    fn downscale_for_vision_leaves_small_images_alone() {
+        let buf: ImageBuffer<Rgba<u8>, Vec<u8>> =
+            ImageBuffer::from_pixel(100, 100, Rgba([1, 2, 3, 255]));
+        let mut png = Vec::new();
+        DynamicImage::ImageRgba8(buf)
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .unwrap();
+        assert!(downscale_for_vision(&png, 1568).is_none());
+    }
+
+    #[test]
+    fn downscale_for_vision_ignores_undecodable_bytes() {
+        assert!(downscale_for_vision(b"not an image", 1568).is_none());
+        // max_dim == 0 is a no-op guard.
+        assert!(downscale_for_vision(&[0u8; 4], 0).is_none());
     }
 
     #[test]

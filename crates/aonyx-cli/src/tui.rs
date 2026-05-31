@@ -4460,7 +4460,7 @@ fn base64_image(path: &str) -> std::io::Result<(String, String)> {
     use base64::Engine;
     let bytes = std::fs::read(path)?;
     let lower = path.to_ascii_lowercase();
-    let media_type = if lower.ends_with(".png") {
+    let orig_media_type = if lower.ends_with(".png") {
         "image/png"
     } else if lower.ends_with(".jpg") || lower.ends_with(".jpeg") {
         "image/jpeg"
@@ -4472,9 +4472,15 @@ fn base64_image(path: &str) -> std::io::Result<(String, String)> {
         "image/bmp"
     } else {
         "application/octet-stream"
-    }
-    .to_string();
-    let data = base64::engine::general_purpose::STANDARD.encode(&bytes);
+    };
+    // Phase NN — cap token cost by downscaling oversized images before
+    // they reach a vision model. A resize re-encodes as PNG, so the
+    // media type follows the actual bytes we send.
+    let (media_type, payload) = match images::downscale_for_vision(&bytes, images::MAX_VISION_DIM) {
+        Some(png) => ("image/png".to_string(), png),
+        None => (orig_media_type.to_string(), bytes),
+    };
+    let data = base64::engine::general_purpose::STANDARD.encode(&payload);
     Ok((media_type, data))
 }
 
