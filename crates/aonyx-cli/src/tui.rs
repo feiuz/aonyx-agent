@@ -2346,7 +2346,7 @@ impl TuiApp {
         // Rebuild from config with the provider id overridden, reusing
         // the binary's `build_provider` (keys / base URLs come from
         // config / env).
-        let cfg = match crate::config::Config::load_or_init() {
+        let mut cfg = match crate::config::Config::load_or_init() {
             Ok(mut c) => {
                 c.provider = id.clone();
                 c
@@ -2378,8 +2378,38 @@ impl TuiApp {
             return;
         }
         self.provider_name = id.clone();
+
+        // Phase NN — model-mapping. A model id from the previous provider
+        // rarely works against the new one (a `claude-*` id on OpenAI,
+        // say). If the active model isn't recognised for `id` and we ship
+        // a preset list for it, remap to that provider's default and write
+        // it through the shared handle so the very next turn uses it.
+        let remapped = if pricing::model_matches_provider(&id, &self.model_name) {
+            None
+        } else if let Some(def) = pricing::default_model(&id) {
+            let wrote = {
+                match self.model_handle.lock() {
+                    Ok(mut slot) => {
+                        *slot = def.to_string();
+                        true
+                    }
+                    Err(_) => false,
+                }
+            };
+            if wrote {
+                self.model_name = def.to_string();
+                Some(def)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
         self.pricing = pricing::lookup(&id, &self.model_name);
-        // Phase MM — persist the choice so the next launch starts here.
+        // Persist both the provider and the (possibly remapped) model so
+        // the next launch starts coherent (Phase MM + NN).
+        cfg.model = self.model_name.clone();
         let persisted = match crate::config::Config::config_path() {
             Ok(path) => toml::to_string_pretty(&cfg)
                 .ok()
@@ -2388,10 +2418,15 @@ impl TuiApp {
             Err(_) => false,
         };
         let note = if persisted { " (saved)" } else { "" };
-        self.push_dim(&format!(
-            "provider → {id}{note} (model stays {}; /model to change it)",
-            self.model_name
-        ));
+        match remapped {
+            Some(m) => self.push_dim(&format!(
+                "provider → {id}{note} · model remapped → {m} (/model to change it)"
+            )),
+            None => self.push_dim(&format!(
+                "provider → {id}{note} (model stays {}; /model to change it)",
+                self.model_name
+            )),
+        }
     }
 
     /// Switch the active model live (Phase EE). With no argument, show

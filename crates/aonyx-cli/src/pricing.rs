@@ -167,6 +167,26 @@ pub fn known_models(provider: &str) -> &'static [&'static str] {
     }
 }
 
+/// The recommended default model id for a provider (Phase NN) — the
+/// head of its [`known_models`] list. `None` when we ship no preset list
+/// (e.g. `lm-studio` / `claude-code`), in which case the caller keeps
+/// whatever model is already active.
+pub fn default_model(provider: &str) -> Option<&'static str> {
+    known_models(provider).first().copied()
+}
+
+/// Whether `model` is a sensible id for `provider` (Phase NN).
+///
+/// Used when switching providers to decide whether the active model
+/// needs remapping: a `claude-*` id won't work against OpenAI, and an
+/// OpenAI id won't work against Anthropic. Providers with no preset list
+/// (empty [`known_models`]) accept arbitrary ids — local servers, custom
+/// gateways — so this returns `true` for them rather than forcing a swap.
+pub fn model_matches_provider(provider: &str, model: &str) -> bool {
+    let known = known_models(provider);
+    known.is_empty() || known.contains(&model)
+}
+
 /// Estimate token count from a UTF-8 string. Uses the standard 4
 /// chars-per-token rule of thumb. Always rounds up — empty input
 /// returns 0.
@@ -267,5 +287,28 @@ mod tests {
         assert_eq!(format_cost(0.0001), "<$0.01");
         assert_eq!(format_cost(0.123), "$0.123");
         assert_eq!(format_cost(12.34), "$12.34");
+    }
+
+    #[test]
+    fn default_model_is_head_of_known_list() {
+        assert_eq!(default_model("anthropic"), Some("claude-opus-4-5-20250929"));
+        assert_eq!(default_model("openai"), Some("gpt-4o"));
+        // No preset list → no default (caller keeps current model).
+        assert_eq!(default_model("lm-studio"), None);
+        assert_eq!(default_model("claude-code"), None);
+    }
+
+    #[test]
+    fn model_matches_provider_gates_remapping() {
+        // A claude id is foreign to openai → needs remap.
+        assert!(!model_matches_provider(
+            "openai",
+            "claude-opus-4-5-20250929"
+        ));
+        // A gpt id is native to openai → no remap.
+        assert!(model_matches_provider("openai", "gpt-4o"));
+        // Providers with no preset list accept any id (local servers).
+        assert!(model_matches_provider("lm-studio", "whatever-local-model"));
+        assert!(model_matches_provider("claude-code", "anything"));
     }
 }

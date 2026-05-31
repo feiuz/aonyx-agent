@@ -5,6 +5,45 @@ All notable changes to **Aonyx Agent** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] — the connected agent
+
+The post-0.2.0 arc (phases AA → NN) opens Aonyx up to the wider tool
+ecosystem and deepens the memory-palace integration. `clippy --workspace
+--all-targets --all-features -D warnings` clean; ~259 workspace tests.
+
+### Added
+
+#### MCP (Model Context Protocol)
+- **MCP client** — connect to remote MCP servers over **stdio** (GG) and
+  **Streamable HTTP/SSE** (II); their tools register into the catalogue as
+  `<server>__<tool>` and are callable like any built-in.
+- **MCP server** — `aonyx mcp serve` exposes Aonyx's own tools to other
+  clients (Claude Code, Cursor, …) over stdio (HH). It now also serves the
+  palace-backed `memory_*` tools scoped to the current directory (**NN**).
+
+#### Built-in tools
+- `web_fetch` (readability extraction) and `web_search` (Brave → Tavily
+  fallback) (JJ, MM).
+- `memory_search` / `memory_diary_append` / `memory_kg_query` — the agent
+  reads and writes its own memory palace mid-turn (MM).
+
+#### Sessions & providers
+- `/fork` a session into a child branch (Z); auto-compact long sessions
+  (BB); `/retry` the last turn (CC); `/tree` session genealogy (MM).
+- `/model` and `/provider` live-switch (EE, LL); `/provider` persists the
+  choice and **remaps the model to the new provider's default** when the
+  active id doesn't fit (**NN**).
+
+#### Vision & export
+- Local `@image` references are downscaled to ≤1568px before being sent to
+  a vision model, capping token cost (**NN**).
+- `/export-html` standalone styled HTML (FF); `/export-bundle` writes a
+  `.zip` of Markdown + HTML + `meta.json` (**NN**).
+
+#### Skills & theming
+- Custom skills loaded from `~/.aonyx/skills/` (DD); live theme editor
+  `/theme-edit` (KK).
+
 ## [0.2.0] — 2026-05-29 — the full-screen TUI
 
 A 25-phase arc (B → Z) turning the line-based REPL into a full-screen
