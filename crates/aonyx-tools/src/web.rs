@@ -19,6 +19,8 @@ const FETCH_MAX_CHARS: usize = 20_000;
 const SEARCH_DEFAULT_COUNT: u64 = 5;
 /// Brave Search API endpoint.
 const BRAVE_ENDPOINT: &str = "https://api.search.brave.com/res/v1/web/search";
+/// Tavily Search API endpoint (fallback when Brave is unconfigured).
+const TAVILY_ENDPOINT: &str = "https://api.tavily.com/search";
 
 /// `web_fetch` — GET a URL and return its readable text. Safe.
 pub struct WebFetch;
@@ -135,42 +137,90 @@ impl ToolHandler for WebSearch {
     async fn invoke(&self, call: ToolCall) -> Result<ToolResult> {
         let args: WebSearchArgs = serde_json::from_value(call.args)
             .map_err(|e| AonyxError::Tool(format!("web_search args: {e}")))?;
-        let key = std::env::var("BRAVE_API_KEY").map_err(|_| {
-            AonyxError::Tool(
-                "web_search: set BRAVE_API_KEY (https://brave.com/search/api/) to enable search"
-                    .to_string(),
-            )
-        })?;
         let count = args.count.unwrap_or(SEARCH_DEFAULT_COUNT).clamp(1, 20);
-
         let client = reqwest::Client::new();
-        let resp = client
-            .get(BRAVE_ENDPOINT)
-            .header("x-subscription-token", key)
-            .header("accept", "application/json")
-            .query(&[("q", args.query.as_str()), ("count", &count.to_string())])
-            .send()
-            .await
-            .map_err(|e| AonyxError::Tool(format!("web_search send: {e}")))?;
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let txt = resp.text().await.unwrap_or_default();
-            return Err(AonyxError::Tool(format!(
-                "web_search: HTTP {status}: {txt}"
-            )));
-        }
-        let payload: Value = resp
-            .json()
-            .await
-            .map_err(|e| AonyxError::Tool(format!("web_search json: {e}")))?;
-        let results = parse_brave_results(&payload, count as usize);
+
+        // Prefer Brave; fall back to Tavily (Phase MM). At least one key
+        // must be set.
+        let (provider, results) = if let Ok(key) = std::env::var("BRAVE_API_KEY") {
+            let payload = brave_request(&client, &key, &args.query, count).await?;
+            ("brave", parse_brave_results(&payload, count as usize))
+        } else if let Ok(key) = std::env::var("TAVILY_API_KEY") {
+            let payload = tavily_request(&client, &key, &args.query, count).await?;
+            ("tavily", parse_tavily_results(&payload, count as usize))
+        } else {
+            return Err(AonyxError::Tool(
+                "web_search: set BRAVE_API_KEY (brave.com/search/api) or TAVILY_API_KEY \
+                 (tavily.com) to enable search"
+                    .to_string(),
+            ));
+        };
 
         Ok(ToolResult {
             call_id: call.id,
-            output: json!({ "query": args.query, "results": results }),
+            output: json!({ "query": args.query, "provider": provider, "results": results }),
             error: None,
         })
     }
+}
+
+/// Issue a Brave web-search request and return the decoded JSON.
+async fn brave_request(
+    client: &reqwest::Client,
+    key: &str,
+    query: &str,
+    count: u64,
+) -> Result<Value> {
+    let resp = client
+        .get(BRAVE_ENDPOINT)
+        .header("x-subscription-token", key)
+        .header("accept", "application/json")
+        .query(&[("q", query), ("count", &count.to_string())])
+        .send()
+        .await
+        .map_err(|e| AonyxError::Tool(format!("web_search (brave) send: {e}")))?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let txt = resp.text().await.unwrap_or_default();
+        return Err(AonyxError::Tool(format!(
+            "web_search (brave): HTTP {status}: {txt}"
+        )));
+    }
+    resp.json()
+        .await
+        .map_err(|e| AonyxError::Tool(format!("web_search (brave) json: {e}")))
+}
+
+/// Issue a Tavily search request (POST) and return the decoded JSON.
+async fn tavily_request(
+    client: &reqwest::Client,
+    key: &str,
+    query: &str,
+    count: u64,
+) -> Result<Value> {
+    let body = json!({
+        "api_key": key,
+        "query": query,
+        "max_results": count,
+        "search_depth": "basic",
+    });
+    let resp = client
+        .post(TAVILY_ENDPOINT)
+        .header("content-type", "application/json")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| AonyxError::Tool(format!("web_search (tavily) send: {e}")))?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let txt = resp.text().await.unwrap_or_default();
+        return Err(AonyxError::Tool(format!(
+            "web_search (tavily): HTTP {status}: {txt}"
+        )));
+    }
+    resp.json()
+        .await
+        .map_err(|e| AonyxError::Tool(format!("web_search (tavily) json: {e}")))
 }
 
 // ---- pure helpers (unit-tested) ----
@@ -187,8 +237,15 @@ fn looks_like_html(body: &str) -> bool {
 /// collapses runs of whitespace. Not a full DOM parse — good enough to
 /// feed a model the gist of a page.
 pub fn html_to_text(html: &str) -> String {
-    let without_blocks = strip_blocks(html, "script");
+    // Readability pass (Phase MM): focus on the main content and drop
+    // page chrome before stripping tags.
+    let main = isolate_main(html);
+    let without_blocks = strip_blocks(&main, "script");
     let without_blocks = strip_blocks(&without_blocks, "style");
+    let without_blocks = strip_blocks(&without_blocks, "nav");
+    let without_blocks = strip_blocks(&without_blocks, "header");
+    let without_blocks = strip_blocks(&without_blocks, "footer");
+    let without_blocks = strip_blocks(&without_blocks, "aside");
 
     // Remove tags.
     let mut out = String::with_capacity(without_blocks.len());
@@ -206,8 +263,35 @@ pub fn html_to_text(html: &str) -> String {
     collapse_whitespace(&decoded)
 }
 
+/// Readability heuristic (Phase MM): if the page has a `<main>` or
+/// `<article>` element, return just that subtree's HTML; otherwise the
+/// whole document. Prefers `<article>` (usually tighter than `<main>`).
+fn isolate_main(html: &str) -> String {
+    for tag in ["article", "main"] {
+        if let Some(inner) = first_block_inner(html, tag) {
+            if inner.trim().len() > 200 {
+                return inner;
+            }
+        }
+    }
+    html.to_string()
+}
+
+/// Return the inner HTML of the first `<tag …> … </tag>` block
+/// (case-insensitive), or `None` when absent / unclosed.
+fn first_block_inner(html: &str, tag: &str) -> Option<String> {
+    let lower = html.to_lowercase();
+    let open = format!("<{tag}");
+    let close = format!("</{tag}>");
+    let open_at = lower.find(&open)?;
+    // Skip to the end of the opening tag (`>`).
+    let after_open = html[open_at..].find('>')? + open_at + 1;
+    let close_rel = lower[after_open..].find(&close)?;
+    Some(html[after_open..after_open + close_rel].to_string())
+}
+
 /// Remove `<tag …> … </tag>` blocks (case-insensitive) including their
-/// contents. Used to drop `<script>` and `<style>`.
+/// contents. Used to drop `<script>`, `<style>`, and page chrome.
 fn strip_blocks(html: &str, tag: &str) -> String {
     let lower = html.to_lowercase();
     let open = format!("<{tag}");
@@ -277,6 +361,27 @@ fn truncate_chars(s: &str, max: usize) -> String {
     }
     let cut: String = s.chars().take(max).collect();
     format!("{cut}\n\n[… truncated at {max} chars]")
+}
+
+/// Pull `{title, url, description}` triples out of a Tavily search
+/// response (`results[]` with `content` as the snippet, Phase MM).
+fn parse_tavily_results(payload: &Value, limit: usize) -> Vec<Value> {
+    payload
+        .get("results")
+        .and_then(|r| r.as_array())
+        .map(|arr| {
+            arr.iter()
+                .take(limit)
+                .map(|r| {
+                    json!({
+                        "title": r.get("title").and_then(|t| t.as_str()).unwrap_or(""),
+                        "url": r.get("url").and_then(|u| u.as_str()).unwrap_or(""),
+                        "description": r.get("content").and_then(|c| c.as_str()).unwrap_or(""),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Pull `{title, url, description}` triples out of a Brave web-search
@@ -371,6 +476,42 @@ mod tests {
         assert_eq!(results[0]["title"], "Rust");
         assert_eq!(results[0]["url"], "https://rust-lang.org");
         assert_eq!(results[1]["url"], ""); // missing fields default to empty
+    }
+
+    #[test]
+    fn parse_tavily_results_maps_content_to_description() {
+        let payload = json!({
+            "results": [
+                { "title": "Rust", "url": "https://rust-lang.org", "content": "systems lang" }
+            ]
+        });
+        let results = parse_tavily_results(&payload, 10);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0]["title"], "Rust");
+        assert_eq!(results[0]["description"], "systems lang");
+    }
+
+    #[test]
+    fn isolate_main_prefers_article_subtree() {
+        let body = format!(
+            "<html><body><nav>menu menu menu</nav><article>{}</article><footer>foot</footer></body></html>",
+            "the real content goes here ".repeat(10)
+        );
+        let main = isolate_main(&body);
+        assert!(main.contains("the real content"));
+        assert!(!main.contains("menu menu"));
+    }
+
+    #[test]
+    fn html_to_text_drops_nav_and_footer_chrome() {
+        let body = format!(
+            "<html><body><nav>NAVLINK</nav><article>{}</article><footer>FOOTSTUFF</footer></body></html>",
+            "real article body text ".repeat(12)
+        );
+        let text = html_to_text(&body);
+        assert!(text.contains("real article body text"));
+        assert!(!text.contains("NAVLINK"));
+        assert!(!text.contains("FOOTSTUFF"));
     }
 
     #[test]
