@@ -4606,6 +4606,24 @@ fn extract_refs(input: &str) -> (String, Vec<String>) {
     (out, refs)
 }
 
+/// Does any approval rule allow this call (Phase PP)? A rule is either a
+/// bare tool name (matches any args) or `name:needle` (matches only when
+/// the call's serialized args contain `needle`, e.g. `bash:cargo` to
+/// auto-allow only cargo commands). Authored by hand in
+/// `config.tool_approvals`; the overlay's `[A]` key writes bare names.
+fn approval_matches(
+    rules: &std::collections::HashSet<String>,
+    name: &str,
+    args: &serde_json::Value,
+) -> bool {
+    rules.iter().any(|rule| match rule.split_once(':') {
+        Some((tool, needle)) if !needle.is_empty() => {
+            tool == name && args.to_string().contains(needle)
+        }
+        _ => rule == name,
+    })
+}
+
 /// Process-wide set of tool names the user chose to "always allow" from
 /// the approval overlay (Phase OO). The [`TuiApprover`] consults it
 /// before bubbling a prompt; the overlay's `[A]` key inserts into it.
@@ -5275,6 +5293,22 @@ mod tests {
     #[test]
     fn html_escape_neutralises_markup() {
         assert_eq!(html_escape("a<b>&\"c"), "a&lt;b&gt;&amp;&quot;c");
+    }
+
+    #[test]
+    fn approval_matches_bare_name_and_arg_pattern() {
+        use std::collections::HashSet;
+        let mut rules = HashSet::new();
+        rules.insert("fs_write".to_string()); // bare name: any args
+        rules.insert("bash:cargo".to_string()); // only cargo commands
+        let args = |s: &str| serde_json::json!({ "command": s });
+        // Bare name matches regardless of args.
+        assert!(approval_matches(&rules, "fs_write", &args("anything")));
+        // Pattern matches only when args contain the needle.
+        assert!(approval_matches(&rules, "bash", &args("cargo test")));
+        assert!(!approval_matches(&rules, "bash", &args("rm -rf /")));
+        // Unlisted tool never matches.
+        assert!(!approval_matches(&rules, "git_push", &args("cargo")));
     }
 
     #[test]
