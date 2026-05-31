@@ -191,7 +191,11 @@ pub async fn serve_default() -> aonyx_core::Result<()> {
 /// keep-alive, no chunked encoding). Each connection is handled on its
 /// own task. A `GET` (or any non-POST) is treated as a health probe.
 /// Loops until the listener errors.
-pub async fn serve_http(registry: ToolRegistry, addr: &str) -> aonyx_core::Result<()> {
+pub async fn serve_http(
+    registry: ToolRegistry,
+    addr: &str,
+    token: Option<String>,
+) -> aonyx_core::Result<()> {
     let listener = TcpListener::bind(addr)
         .await
         .map_err(|e| aonyx_core::AonyxError::Mcp(format!("bind {addr}: {e}")))?;
@@ -201,16 +205,21 @@ pub async fn serve_http(registry: ToolRegistry, addr: &str) -> aonyx_core::Resul
             .await
             .map_err(|e| aonyx_core::AonyxError::Mcp(format!("accept: {e}")))?;
         let reg = registry.clone();
+        let tok = token.clone();
         tokio::spawn(async move {
-            let _ = serve_http_conn(stream, &reg).await;
+            let _ = serve_http_conn(stream, &reg, tok.as_deref()).await;
         });
     }
 }
 
 /// Read one HTTP request off `stream`, dispatch it, write the reply.
-async fn serve_http_conn(mut stream: TcpStream, registry: &ToolRegistry) -> aonyx_core::Result<()> {
+async fn serve_http_conn(
+    mut stream: TcpStream,
+    registry: &ToolRegistry,
+    token: Option<&str>,
+) -> aonyx_core::Result<()> {
     let raw = read_http_request(&mut stream).await?;
-    let resp = http_response_for(&raw, registry).await;
+    let resp = http_response_for(&raw, registry, token).await;
     stream
         .write_all(resp.as_bytes())
         .await
@@ -261,7 +270,24 @@ async fn read_http_request(stream: &mut TcpStream) -> aonyx_core::Result<Vec<u8>
 
 /// Turn a raw HTTP request into a full HTTP/1.1 response string. Pure
 /// (no socket) so it can be unit-tested directly.
-async fn http_response_for(raw: &[u8], registry: &ToolRegistry) -> String {
+///
+/// When `token` is `Some`, the request must carry a matching
+/// `Authorization: Bearer <token>` header or it is rejected with `401`
+/// before any dispatch (Phase PP).
+async fn http_response_for(raw: &[u8], registry: &ToolRegistry, token: Option<&str>) -> String {
+    if let Some(expected) = token {
+        let authorized = header_value(raw, "authorization")
+            .map(|v| v == format!("Bearer {expected}"))
+            .unwrap_or(false);
+        if !authorized {
+            let payload = json!({ "error": "unauthorized" }).to_string();
+            return format!(
+                "HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json\r\nContent-Length: {}\r\nWWW-Authenticate: Bearer\r\nConnection: close\r\n\r\n{}",
+                payload.len(),
+                payload
+            );
+        }
+    }
     let head_end = find_subsequence(raw, b"\r\n\r\n")
         .map(|p| p + 4)
         .unwrap_or(raw.len());
@@ -321,6 +347,20 @@ fn parse_content_length(headers: &[u8]) -> usize {
 fn first_line(raw: &[u8]) -> String {
     let end = find_subsequence(raw, b"\r\n").unwrap_or(raw.len());
     String::from_utf8_lossy(&raw[..end]).into_owned()
+}
+
+/// Case-insensitive lookup of a header value from the request's header
+/// block (Phase PP). Returns the trimmed value, or `None` if absent.
+fn header_value(raw: &[u8], name: &str) -> Option<String> {
+    let head_end = find_subsequence(raw, b"\r\n\r\n").unwrap_or(raw.len());
+    let head = String::from_utf8_lossy(&raw[..head_end]);
+    head.lines().skip(1).find_map(|line| {
+        line.split_once(':').and_then(|(k, v)| {
+            k.trim()
+                .eq_ignore_ascii_case(name)
+                .then(|| v.trim().to_string())
+        })
+    })
 }
 
 #[cfg(test)]
@@ -425,7 +465,7 @@ mod tests {
             body.len(),
             body
         );
-        let resp = http_response_for(raw.as_bytes(), &ToolRegistry::default_set()).await;
+        let resp = http_response_for(raw.as_bytes(), &ToolRegistry::default_set(), None).await;
         assert!(resp.starts_with("HTTP/1.1 200 OK"));
         assert!(resp.contains("Content-Type: application/json"));
         // The JSON-RPC body must carry the initialize result.
@@ -436,7 +476,7 @@ mod tests {
     #[tokio::test]
     async fn http_response_for_treats_get_as_health_probe() {
         let raw = b"GET / HTTP/1.1\r\nHost: localhost\r\n\r\n";
-        let resp = http_response_for(raw, &ToolRegistry::default_set()).await;
+        let resp = http_response_for(raw, &ToolRegistry::default_set(), None).await;
         assert!(resp.starts_with("HTTP/1.1 200 OK"));
         assert!(resp.contains("\"status\":\"ok\""));
     }
@@ -451,7 +491,7 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
             let (stream, _) = listener.accept().await.unwrap();
-            serve_http_conn(stream, &ToolRegistry::default_set())
+            serve_http_conn(stream, &ToolRegistry::default_set(), None)
                 .await
                 .unwrap();
         });
@@ -480,8 +520,51 @@ mod tests {
             body.len(),
             body
         );
-        let resp = http_response_for(raw.as_bytes(), &ToolRegistry::default_set()).await;
+        let resp = http_response_for(raw.as_bytes(), &ToolRegistry::default_set(), None).await;
         assert!(resp.contains("-32700")); // JSON-RPC parse error code.
+    }
+
+    #[test]
+    fn header_value_is_case_insensitive() {
+        let raw = b"POST / HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer abc\r\n\r\n";
+        assert_eq!(
+            header_value(raw, "authorization").as_deref(),
+            Some("Bearer abc")
+        );
+        assert_eq!(
+            header_value(raw, "AUTHORIZATION").as_deref(),
+            Some("Bearer abc")
+        );
+        assert_eq!(header_value(raw, "x-missing"), None);
+    }
+
+    #[tokio::test]
+    async fn http_auth_required_when_token_set() {
+        let body = json!({"jsonrpc":"2.0","id":1,"method":"ping"}).to_string();
+        let mk = |auth: Option<&str>| {
+            let hdr = auth
+                .map(|a| format!("Authorization: {a}\r\n"))
+                .unwrap_or_default();
+            format!(
+                "POST / HTTP/1.1\r\nHost: x\r\n{hdr}Content-Length: {}\r\n\r\n{}",
+                body.len(),
+                body
+            )
+        };
+        let reg = ToolRegistry::default_set();
+        // Correct token → 200.
+        let ok =
+            http_response_for(mk(Some("Bearer s3cret")).as_bytes(), &reg, Some("s3cret")).await;
+        assert!(ok.starts_with("HTTP/1.1 200"));
+        // Wrong token → 401.
+        let bad = http_response_for(mk(Some("Bearer nope")).as_bytes(), &reg, Some("s3cret")).await;
+        assert!(bad.starts_with("HTTP/1.1 401"));
+        // Missing header → 401.
+        let none = http_response_for(mk(None).as_bytes(), &reg, Some("s3cret")).await;
+        assert!(none.starts_with("HTTP/1.1 401"));
+        // No token configured → open (200) even without a header.
+        let open = http_response_for(mk(None).as_bytes(), &reg, None).await;
+        assert!(open.starts_with("HTTP/1.1 200"));
     }
 
     #[tokio::test]

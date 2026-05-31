@@ -116,6 +116,10 @@ enum McpAction {
         /// TCP port; omit for stdio.
         #[arg(short, long)]
         port: Option<u16>,
+        /// Require this bearer token on the HTTP transport (Phase PP).
+        /// Falls back to $AONYX_MCP_TOKEN. Ignored for stdio.
+        #[arg(long)]
+        token: Option<String>,
     },
 }
 
@@ -143,7 +147,7 @@ async fn main() -> anyhow::Result<()> {
             Ok(())
         }
         Some(Command::Mcp { action }) => match action {
-            McpAction::Serve { port } => {
+            McpAction::Serve { port, token } => {
                 // Phase HH/NN — expose the built-in tools plus the
                 // palace-backed `memory_*` tools (scoped to the current
                 // directory's palace) so remote clients (Claude Code,
@@ -152,12 +156,19 @@ async fn main() -> anyhow::Result<()> {
                 match port {
                     // Phase OO — Streamable HTTP transport on a TCP port.
                     Some(p) => {
+                        // Phase PP — optional bearer auth (flag or env).
+                        let token = token.or_else(|| std::env::var("AONYX_MCP_TOKEN").ok());
+                        let auth = if token.is_some() {
+                            "bearer auth ON"
+                        } else {
+                            "no auth — bind localhost only"
+                        };
                         let addr = format!("127.0.0.1:{p}");
                         eprintln!(
                             "aonyx: MCP server ready on http://{addr} \
-                             (fs / bash / git / web / memory_*)"
+                             (fs / bash / git / web / memory_*) [{auth}]"
                         );
-                        aonyx_mcp::server::serve_http(registry, &addr)
+                        aonyx_mcp::server::serve_http(registry, &addr, token)
                             .await
                             .map_err(|e| anyhow::anyhow!("mcp serve http: {e}"))
                     }
