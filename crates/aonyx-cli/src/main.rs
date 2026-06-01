@@ -3,11 +3,11 @@
 //! ```text
 //! aonyx                  open an interactive session in the current dir
 //! aonyx new <path>       start a new session scoped to <path>
-//! aonyx resume [id]      resume a previous session                 (V1.1)
-//! aonyx config <subcmd>  manage configuration                       (V1.1)
-//! aonyx memory <subcmd>  inspect / search / export / import         (V1.1)
-//! aonyx skills <subcmd>  list / install / enable / disable          (V1.1)
-//! aonyx mcp <subcmd>     run the MCP server or connect to a remote  (V1.1)
+//! aonyx resume [id]      resume the latest session, or one by id-prefix
+//! aonyx config <subcmd>  show / locate the config file
+//! aonyx memory <subcmd>  stats / hybrid-search the palace
+//! aonyx skills <subcmd>  list the active skill catalogue
+//! aonyx mcp <subcmd>     run the MCP server (stdio or HTTP)
 //! ```
 
 #![forbid(unsafe_code)]
@@ -130,22 +130,26 @@ async fn main() -> anyhow::Result<()> {
 
     let use_tui = cli.tui;
     match cli.command {
-        None => start_interactive(None, use_tui).await,
-        Some(Command::New { path }) => start_interactive(path, use_tui).await,
+        None => start_interactive(None, use_tui, StartMode::Default).await,
+        Some(Command::New { path }) => start_interactive(path, use_tui, StartMode::Default).await,
         Some(Command::Resume { id }) => {
-            println!("aonyx resume {id:?} — coming in V1.1");
-            Ok(())
+            // Phase QQ — `aonyx resume` reopens the latest session for the
+            // current dir; `aonyx resume <id-prefix>` reopens a specific
+            // one (across projects).
+            let mode = match id {
+                Some(prefix) => StartMode::ResumeById(prefix),
+                None => StartMode::ResumeLatest,
+            };
+            start_interactive(None, use_tui, mode).await
         }
         Some(Command::Config { action }) => handle_config(action),
         Some(Command::Memory { action }) => handle_memory(action).await,
-        Some(Command::Skills { action }) => {
-            match action {
-                SkillsAction::List => {
-                    println!("aonyx skills list — coming in V1.1");
-                }
+        Some(Command::Skills { action }) => match action {
+            SkillsAction::List => {
+                handle_skills_list();
+                Ok(())
             }
-            Ok(())
-        }
+        },
         Some(Command::Mcp { action }) => match action {
             McpAction::Serve { port, token } => {
                 // Phase HH/NN — expose the built-in tools plus the
@@ -200,7 +204,22 @@ fn init_tracing(verbose: bool) {
         .init();
 }
 
-async fn start_interactive(project_path: Option<PathBuf>, use_tui: bool) -> anyhow::Result<()> {
+/// How a session launches (Phase QQ). `Default` (and `aonyx new`)
+/// restores the most recent session for the project or creates one;
+/// `ResumeLatest` is `aonyx resume` (same, but announces it);
+/// `ResumeById` is `aonyx resume <id-prefix>`, resolving a specific
+/// past session across all projects.
+enum StartMode {
+    Default,
+    ResumeLatest,
+    ResumeById(String),
+}
+
+async fn start_interactive(
+    project_path: Option<PathBuf>,
+    use_tui: bool,
+    mode: StartMode,
+) -> anyhow::Result<()> {
     let config = Config::load_or_init()?;
 
     let project_root = match project_path {
@@ -237,7 +256,46 @@ async fn start_interactive(project_path: Option<PathBuf>, use_tui: bool) -> anyh
         })
         .unwrap_or_default();
 
-    let restored = session_store.latest(&project_slug).await?;
+    // Phase QQ — resolve which session to open per the launch mode.
+    let mut project_slug = project_slug;
+    let restored = match &mode {
+        StartMode::ResumeById(prefix) => {
+            let mut matches = session_store.find_by_id_prefix(prefix.trim(), 5).await?;
+            if matches.is_empty() {
+                anyhow::bail!("no session matches id prefix '{}'", prefix.trim());
+            }
+            if matches.len() > 1 {
+                eprintln!(
+                    "aonyx: ambiguous prefix '{}' — {} matches:",
+                    prefix.trim(),
+                    matches.len()
+                );
+                for r in &matches {
+                    let short: String = r.id.to_string().chars().take(8).collect();
+                    eprintln!(
+                        "  [{short}] {} · {} · {} turns",
+                        r.project, r.title, r.turns
+                    );
+                }
+                anyhow::bail!("refine the id prefix");
+            }
+            let rec = matches.remove(0);
+            // Adopt the resumed session's project so its palace + slug
+            // line up with the transcript we're reopening.
+            project_slug = rec.project.clone();
+            Some(rec)
+        }
+        StartMode::ResumeLatest | StartMode::Default => session_store.latest(&project_slug).await?,
+    };
+    if let Some(s) = &restored {
+        let short: String = s.id.to_string().chars().take(8).collect();
+        eprintln!(
+            "aonyx: resuming session [{short}] · {} · {} turns",
+            s.project, s.turns
+        );
+    } else if matches!(mode, StartMode::ResumeLatest) {
+        eprintln!("aonyx: no prior session for '{project_slug}' — starting fresh");
+    }
     let (session_id, session_messages, session_turns) = match restored {
         Some(s) => (s.id, s.messages, s.turns),
         None => {
@@ -470,6 +528,48 @@ fn load_all_skills() -> Vec<aonyx_skills::Skill> {
                 user_dir.display()
             );
             builtins
+        }
+    }
+}
+
+/// `aonyx skills list` — print the active skill catalogue: built-ins
+/// plus any user skills under `~/.aonyx/skills/`, tagging each by origin
+/// and showing a one-line trigger summary (Phase QQ).
+fn handle_skills_list() {
+    let builtins: std::collections::HashSet<String> = aonyx_skills::builtin_skills()
+        .into_iter()
+        .map(|s| s.id)
+        .collect();
+    let skills = load_all_skills();
+    if skills.is_empty() {
+        println!("(no skills found)");
+        return;
+    }
+    println!("{} skill(s):", skills.len());
+    for s in &skills {
+        let origin = if builtins.contains(&s.id) {
+            "builtin"
+        } else {
+            "user"
+        };
+        let state = if s.enabled { "on" } else { "off" };
+        println!("  • {} [{origin}, {state}]  {}", s.id, s.name);
+        let t = &s.trigger;
+        let mut hints = Vec::new();
+        if t.always_on {
+            hints.push("always-on".to_string());
+        }
+        if t.manual {
+            hints.push("manual".to_string());
+        }
+        if !t.keywords.is_empty() {
+            hints.push(format!("keywords: {}", t.keywords.join(", ")));
+        }
+        if let Some(p) = &t.project_matches {
+            hints.push(format!("project ~ /{p}/"));
+        }
+        if !hints.is_empty() {
+            println!("      {}", hints.join(" · "));
         }
     }
 }
