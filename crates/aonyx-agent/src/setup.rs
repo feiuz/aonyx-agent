@@ -307,6 +307,59 @@ pub async fn run_telegram_wizard() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Entry point for `aonyx setup discord` — store the bot token in the
+/// keyring and the allowed-channel list in `config.toml`.
+pub async fn run_discord_wizard() -> anyhow::Result<()> {
+    let theme = ColorfulTheme::default();
+    println!("aonyx setup discord — configure the Discord bot\n");
+    println!(
+        "  note: enable the MESSAGE CONTENT intent for your bot at\n  \
+         https://discord.com/developers/applications → Bot → Privileged Gateway Intents\n"
+    );
+    let mut config = Config::load_raw()?;
+
+    let token: String = Password::with_theme(&theme)
+        .with_prompt("Bot token (hidden — empty to keep current / use $env)")
+        .allow_empty_password(true)
+        .interact()?;
+    if token.trim().is_empty() {
+        println!("  · no token entered — will read $DISCORD_BOT_TOKEN at runtime");
+    } else {
+        match secrets::set("discord_bot_token", token.trim()) {
+            Ok(()) => println!("  ✓ token stored in the OS keyring"),
+            Err(e) => println!("  ⚠ keyring unavailable ({e}) — export DISCORD_BOT_TOKEN instead"),
+        }
+    }
+
+    let current = config
+        .discord_allowed_channels
+        .iter()
+        .map(|i| i.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    let chans: String = Input::<String>::with_theme(&theme)
+        .with_prompt("Allowed channel ids, comma-separated (empty = allow everywhere)")
+        .allow_empty(true)
+        .default(current)
+        .interact_text()?;
+    config.discord_allowed_channels = parse_chat_ids(&chans);
+
+    config.save()?;
+    println!("\n✓ wrote {}", Config::config_path()?.display());
+    if config.discord_allowed_channels.is_empty() {
+        println!("  ⚠ no allow-list — the bot will answer ANY channel it can see.");
+    }
+    if cfg!(feature = "discord") {
+        println!("  run `aonyx serve discord` to start the bot.");
+    } else {
+        println!(
+            "  this build lacks Discord support — reinstall with \
+             `--features discord` to run the bot."
+        );
+    }
+    Ok(())
+}
+
 /// Parse a comma-separated list of chat ids, dropping blanks / non-numbers.
 fn parse_chat_ids(s: &str) -> Vec<i64> {
     s.split(',')

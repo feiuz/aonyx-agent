@@ -29,6 +29,10 @@ pub enum AonyxError {
     #[error("mcp error: {0}")]
     Mcp(String),
 
+    /// Channel adapter (Telegram / Discord / HTTP server) failure.
+    #[error("adapter error: {0}")]
+    Adapter(String),
+
     /// A destructive action was rejected by the approval gate.
     #[error("approval rejected: {0}")]
     ApprovalRejected(String),

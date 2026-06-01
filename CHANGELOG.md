@@ -255,3 +255,7 @@ adapters, an OpenAI-compatible server, plugins, and skill auto-generation.
   chat-id allow-list, and an `aonyx setup telegram` wizard (token →
   keyring). Behind the opt-in `telegram` cargo feature so the default
   binary stays lean; destructive tools stay denied for remote chats.
+- **Discord bot** (`aonyx serve discord`, Phase UU) — a `serenity` gateway
+  bot sharing the same bridge (per-channel history, allow-list, 2000-char
+  chunking) with an `aonyx setup discord` wizard. Behind the `discord`
+  feature; needs the MESSAGE CONTENT privileged intent enabled.

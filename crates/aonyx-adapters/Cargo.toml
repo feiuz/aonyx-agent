@@ -19,9 +19,11 @@ tracing = { workspace = true }
 # Heavy platform SDKs are opt-in so the default `aonyx` binary stays lean.
 # Telegram (Phase TT):
 teloxide = { version = "0.13", default-features = false, features = ["rustls", "ctrlc_handler"], optional = true }
+# Discord (Phase UU):
+serenity = { version = "0.12", default-features = false, features = ["client", "gateway", "rustls_backend", "model"], optional = true }
 
 [features]
 default = []
 telegram = ["dep:teloxide"]
-discord = []        # Phase UU
+discord = ["dep:serenity"]
 openai-server = []  # Phase VV

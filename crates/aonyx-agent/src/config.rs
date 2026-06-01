@@ -98,6 +98,11 @@ pub struct Config {
     /// OS keyring (`telegram_bot_token`), never in this file.
     #[serde(default)]
     pub telegram_allowed_chats: Vec<i64>,
+    /// Discord channel ids allowed to talk to `aonyx serve discord`
+    /// (Phase UU). Empty = open to all channels. The bot token lives in
+    /// the OS keyring (`discord_bot_token`), never in this file.
+    #[serde(default)]
+    pub discord_allowed_channels: Vec<i64>,
 }
 
 /// Ten RGB colour fields persisted from the `/theme-edit` panel
@@ -236,6 +241,7 @@ impl Default for Config {
             custom_theme: None,
             tool_approvals: Vec::new(),
             telegram_allowed_chats: Vec::new(),
+            discord_allowed_channels: Vec::new(),
         }
     }
 }
@@ -361,6 +367,7 @@ mod tests {
             custom_theme: None,
             tool_approvals: Vec::new(),
             telegram_allowed_chats: Vec::new(),
+            discord_allowed_channels: Vec::new(),
         };
         let s = toml::to_string(&original).unwrap();
         let parsed: Config = toml::from_str(&s).unwrap();

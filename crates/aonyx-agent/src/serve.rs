@@ -7,7 +7,7 @@
 /// Run the Telegram bot (`aonyx serve telegram`).
 #[cfg(feature = "telegram")]
 pub async fn telegram() -> anyhow::Result<()> {
-    telegram_impl::run().await
+    imp::telegram().await
 }
 
 /// Fallback when the binary was built without Telegram support.
@@ -19,12 +19,26 @@ pub async fn telegram() -> anyhow::Result<()> {
     )
 }
 
-#[cfg(feature = "telegram")]
-mod telegram_impl {
+/// Run the Discord bot (`aonyx serve discord`).
+#[cfg(feature = "discord")]
+pub async fn discord() -> anyhow::Result<()> {
+    imp::discord().await
+}
+
+/// Fallback when the binary was built without Discord support.
+#[cfg(not(feature = "discord"))]
+pub async fn discord() -> anyhow::Result<()> {
+    anyhow::bail!(
+        "this build has no Discord support — reinstall with \
+         `cargo install aonyx-agent --features discord`, or grab a release binary"
+    )
+}
+
+#[cfg(any(feature = "telegram", feature = "discord"))]
+mod imp {
     use std::collections::HashMap;
     use std::sync::Arc;
 
-    use aonyx_adapters::telegram::TelegramAdapter;
     use aonyx_adapters::{AgentHandler, ConversationAdapter};
     use aonyx_agent::AgentRunner;
     use aonyx_core::{Message, Role};
@@ -39,9 +53,9 @@ mod telegram_impl {
     const MAX_HISTORY: usize = 40;
 
     /// Bridges each inbound chat message to a shared [`AgentRunner`],
-    /// keeping a separate transcript per `chat_id`. Destructive tools are
-    /// denied (the runner's default policy) — a remote chat must never be
-    /// able to edit files or run shell commands on the host.
+    /// keeping a separate transcript per conversation. Destructive tools
+    /// are denied (the runner's default policy) — a remote chat must never
+    /// be able to edit files or run shell commands on the host.
     struct RunnerHandler {
         runner: AgentRunner,
         system_prompt: Option<String>,
@@ -104,7 +118,37 @@ mod telegram_impl {
         }
     }
 
-    pub async fn run() -> anyhow::Result<()> {
+    /// Build the shared agent handler (provider + tools + memory palace +
+    /// skills) from the current config and working directory.
+    fn build_handler(config: &Config) -> anyhow::Result<Arc<RunnerHandler>> {
+        let provider = crate::build_provider(config)?;
+        let registry = crate::build_serve_registry()?;
+        let project = crate::project_slug(&std::env::current_dir()?);
+        let runner = AgentRunner::new(provider, registry, config.model.clone())
+            .with_max_iterations(config.max_iterations)
+            .with_skills(crate::load_all_skills())
+            .with_project(project);
+        Ok(Arc::new(RunnerHandler {
+            runner,
+            system_prompt: config.system_prompt.clone(),
+            chats: Mutex::new(HashMap::new()),
+        }))
+    }
+
+    fn announce(channel: &str, allowed: usize, setup_cmd: &str) {
+        if allowed == 0 {
+            eprintln!(
+                "aonyx: {channel} bot starting — OPEN to all chats \
+                 (lock it down with `{setup_cmd}`). Ctrl-C to stop."
+            );
+        } else {
+            eprintln!("aonyx: {channel} bot starting — {allowed} allowed. Ctrl-C to stop.");
+        }
+    }
+
+    #[cfg(feature = "telegram")]
+    pub async fn telegram() -> anyhow::Result<()> {
+        use aonyx_adapters::telegram::TelegramAdapter;
         let config = Config::load_or_init()?;
         let token = crate::resolve_key(&None, "TELEGRAM_BOT_TOKEN", "telegram_bot_token").map_err(
             |_| {
@@ -113,39 +157,32 @@ mod telegram_impl {
                 )
             },
         )?;
-
-        let provider = crate::build_provider(&config)?;
-        let registry = crate::build_serve_registry()?;
-        let project = crate::project_slug(&std::env::current_dir()?);
-        let runner = AgentRunner::new(provider, registry, config.model.clone())
-            .with_max_iterations(config.max_iterations)
-            .with_skills(crate::load_all_skills())
-            .with_project(project);
-
-        let handler = Arc::new(RunnerHandler {
-            runner,
-            system_prompt: config.system_prompt.clone(),
-            chats: Mutex::new(HashMap::new()),
-        });
-
+        let handler = build_handler(&config)?;
         let allowed = config.telegram_allowed_chats.clone();
-        if allowed.is_empty() {
-            eprintln!(
-                "aonyx: Telegram bot starting — OPEN to all chats \
-                 (lock it down with `aonyx setup telegram`). Ctrl-C to stop."
-            );
-        } else {
-            eprintln!(
-                "aonyx: Telegram bot starting — {} allowed chat(s). Ctrl-C to stop.",
-                allowed.len()
-            );
-        }
-
-        let adapter = TelegramAdapter::new(token, allowed, handler);
-        adapter
+        announce("Telegram", allowed.len(), "aonyx setup telegram");
+        TelegramAdapter::new(token, allowed, handler)
             .run()
             .await
             .map_err(|e| anyhow::anyhow!("telegram: {e}"))
+    }
+
+    #[cfg(feature = "discord")]
+    pub async fn discord() -> anyhow::Result<()> {
+        use aonyx_adapters::discord::DiscordAdapter;
+        let config = Config::load_or_init()?;
+        let token =
+            crate::resolve_key(&None, "DISCORD_BOT_TOKEN", "discord_bot_token").map_err(|_| {
+                anyhow::anyhow!(
+                    "no Discord bot token — run `aonyx setup discord`, or export DISCORD_BOT_TOKEN"
+                )
+            })?;
+        let handler = build_handler(&config)?;
+        let allowed = config.discord_allowed_channels.clone();
+        announce("Discord", allowed.len(), "aonyx setup discord");
+        DiscordAdapter::new(token, allowed, handler)
+            .run()
+            .await
+            .map_err(|e| anyhow::anyhow!("discord: {e}"))
     }
 
     #[cfg(test)]
