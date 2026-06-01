@@ -79,6 +79,24 @@ struct AnthropicImageSource<'a> {
     data: &'a str,
 }
 
+/// Build the Anthropic `system` field for a (possibly empty) system
+/// prompt (Phase RR). Returns `None` for an empty prompt (the field is
+/// omitted), else a single `text` block tagged
+/// `cache_control: ephemeral` so Anthropic caches the system prompt —
+/// the largest stable prefix of a session — across turns, cutting
+/// input-token cost on every follow-up. cache_control requires the
+/// block-array form, not a bare string.
+fn build_system_field(system_text: &str) -> Option<serde_json::Value> {
+    if system_text.is_empty() {
+        return None;
+    }
+    Some(json!([{
+        "type": "text",
+        "text": system_text,
+        "cache_control": { "type": "ephemeral" },
+    }]))
+}
+
 fn map_role(role: Role) -> Option<&'static str> {
     match role {
         // `System` messages move to the top-level `system` field (handled by the caller).
@@ -150,8 +168,8 @@ impl LlmProvider for AnthropicProvider {
             "messages": messages,
             "stream": true,
         });
-        if !system_text.is_empty() {
-            payload["system"] = json!(system_text);
+        if let Some(system_field) = build_system_field(&system_text) {
+            payload["system"] = system_field;
         }
         if let Some(t) = req.temperature {
             payload["temperature"] = json!(t);
@@ -299,6 +317,19 @@ mod tests {
     fn provider_name_is_anthropic() {
         let p = AnthropicProvider::new("test-key");
         assert_eq!(p.name(), "anthropic");
+    }
+
+    #[test]
+    fn system_field_carries_cache_control() {
+        // Phase RR — non-empty system prompt → one cached text block.
+        let v = build_system_field("be brief").expect("some");
+        let arr = v.as_array().expect("array");
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["type"], "text");
+        assert_eq!(arr[0]["text"], "be brief");
+        assert_eq!(arr[0]["cache_control"]["type"], "ephemeral");
+        // Empty prompt → field omitted entirely.
+        assert!(build_system_field("").is_none());
     }
 
     #[test]
