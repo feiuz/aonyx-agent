@@ -115,6 +115,7 @@ const SLASH_CANDIDATES: &[&str] = &[
     "/export-bundle",
     "/import-bundle",
     "/rename",
+    "/cost",
     "/theme-edit",
     "/details",
     "/thinking",
@@ -553,6 +554,11 @@ fn build_palette_entries() -> Vec<PaletteEntry> {
             label: "/rename".into(),
             hint: "Rename the current session".into(),
             action: PaletteAction::Slash(SlashCommand::Rename(None)),
+        },
+        PaletteEntry {
+            label: "/cost".into(),
+            hint: "Detailed token + cost breakdown for the session".into(),
+            action: PaletteAction::Slash(SlashCommand::Cost),
         },
         PaletteEntry {
             label: "/theme-edit".into(),
@@ -2034,6 +2040,9 @@ impl TuiApp {
                     }
                     Err(e) => self.push_line(error_line(format!("rename failed: {e}"))),
                 }
+            }
+            SlashCommand::Cost => {
+                self.show_cost_breakdown();
             }
             SlashCommand::ThemeEdit => {
                 self.theme_editor.open = true;
@@ -3636,6 +3645,42 @@ impl TuiApp {
     /// point staring at `0 tok · <$0.01` during the opening prompt.
     /// Cost is omitted for providers without pricing (local + claude-
     /// code).
+    /// Print a detailed token + cost breakdown for the session into the
+    /// viewport (Phase RR — `/cost`). Expands on the one-line status-bar
+    /// marker with per-direction tokens, the rate table, and a clear note
+    /// when pricing is unknown (local/free providers).
+    fn show_cost_breakdown(&mut self) {
+        let inp = self.total_input_tokens;
+        let out = self.total_output_tokens;
+        let total = inp.saturating_add(out);
+        self.push_dim(&format!(
+            "cost · {} · {} · {} turns",
+            self.provider_name, self.model_name, self.turns
+        ));
+        self.push_dim(&format!(
+            "  input  ~{:>8}   output ~{:>8}   total ~{}",
+            pricing::format_tokens(inp),
+            pricing::format_tokens(out),
+            pricing::format_tokens(total),
+        ));
+        match self.pricing {
+            Some(p) => {
+                let cost = pricing::estimate_cost(p, inp, out);
+                self.push_dim(&format!(
+                    "  rates  in ${:.2}/Mtok · out ${:.2}/Mtok",
+                    p.input_per_million, p.output_per_million
+                ));
+                self.push_dim(&format!(
+                    "  est. cost ~{}  (token counts are heuristic, ~4 chars/tok)",
+                    pricing::format_cost(cost)
+                ));
+            }
+            None => self.push_dim(
+                "  no pricing table for this provider — tokens shown, cost not estimated",
+            ),
+        }
+    }
+
     fn cost_marker_string(&self) -> String {
         let total = self.total_input_tokens + self.total_output_tokens;
         if total == 0 {
@@ -4632,6 +4677,7 @@ const HELP_LINES: &[&str] = &[
     "  /export-bundle [p]   .zip: Markdown + HTML + messages.json + meta.json (NN/OO)",
     "  /import-bundle <z>   import a session from a .zip bundle's messages.json (PP)",
     "  /rename <title>      rename the current session (RR)",
+    "  /cost                detailed token + cost breakdown (RR)",
     "  /theme-edit          live-edit theme colours, save to config (Phase KK)",
     "  /details             toggle verbose tool output",
     "  /thinking            reasoning visibility (Phase E)",

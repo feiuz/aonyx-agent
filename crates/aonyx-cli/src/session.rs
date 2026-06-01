@@ -121,6 +121,9 @@ pub enum SlashCommand {
     ImportBundle(Option<String>),
     /// Rename the current session's title (Phase RR). TUI-only.
     Rename(Option<String>),
+    /// Show a detailed token + cost breakdown for the session
+    /// (Phase RR). TUI-only.
+    Cost,
 }
 
 impl SlashCommand {
@@ -164,6 +167,7 @@ impl SlashCommand {
             "/export-bundle" | "/bundle" => Some(Self::ExportBundle(rest.map(str::to_string))),
             "/import-bundle" | "/import" => Some(Self::ImportBundle(rest.map(str::to_string))),
             "/rename" => Some(Self::Rename(rest.map(str::to_string))),
+            "/cost" => Some(Self::Cost),
             _ => None,
         }
     }
@@ -479,6 +483,11 @@ impl InteractiveSession {
             }
             SlashCommand::Rename(_) => {
                 out.write_all(b"\x1b[90m/rename runs in TUI mode (aonyx --tui)\x1b[0m\n")
+                    .await?;
+                Ok(true)
+            }
+            SlashCommand::Cost => {
+                out.write_all(b"\x1b[90m/cost runs in TUI mode (aonyx --tui)\x1b[0m\n")
                     .await?;
                 Ok(true)
             }
