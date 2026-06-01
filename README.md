@@ -5,7 +5,8 @@
 
 [![CI](https://github.com/feiuz/aonyx-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/feiuz/aonyx-agent/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Rust](https://img.shields.io/badge/rust-stable-orange.svg)](rust-toolchain.toml)
+[![Rust](https://img.shields.io/badge/rust-1.96+-orange.svg)](rust-toolchain.toml)
+[![crates.io](https://img.shields.io/crates/v/aonyx-agent.svg)](https://crates.io/crates/aonyx-agent)
 
 ---
 
@@ -28,7 +29,9 @@ Inspired by [Hermes Agent](https://github.com/NousResearch/hermes-agent) (Nous R
 
 ## Status
 
-**Pre-alpha — scaffolding phase.** The workspace is laid out, BMAD artefacts are in `.bmad/`, but most crates are stubs. See [`.bmad/prd.md`](.bmad/prd.md) for the MVP scope and [`CHANGELOG.md`](CHANGELOG.md) for progress.
+**v0.3.0 — released.** Vague 1 (MVP) is complete and most of Vague 2 has landed. Published on crates.io (`cargo install aonyx-agent`), with prebuilt binaries on the [Releases](https://github.com/feiuz/aonyx-agent/releases/latest) page. `clippy -D warnings` clean on a pinned 1.96.0 toolchain; ~280 workspace tests. See [`CHANGELOG.md`](CHANGELOG.md) for per-release detail and [`.bmad/prd.md`](.bmad/prd.md) for the roadmap.
+
+> API keys currently live in `~/.aonyx/config.toml` or environment variables; OS-keyring storage is planned (V1.2). Prebuilt binaries cover Linux x86_64, macOS x86_64 + arm64, and Windows x86_64 (Linux arm64 planned).
 
 ---
 
@@ -59,19 +62,18 @@ aonyx memory search "decisions about auth"
 
 ## Architecture
 
-Cargo workspace, 10 crates:
+Cargo workspace, 9 crates:
 
 ```
 aonyx-core        Shared types, traits, errors
-aonyx-memory      ⭐ Memory palace: KG + diary + hybrid search + time-machine
-aonyx-llm         Provider router: Anthropic, OpenAI, OpenRouter, Ollama, LM Studio, Nous Portal
-aonyx-tools       Built-in tools: fs, bash, git, exec, web, memory_*
-aonyx-skills      SKILL.md engine + loader + auto-generation
-aonyx-agent       Agent loop, compaction, classifier, subagents, approval gate
-aonyx-mcp         MCP client (consume servers) + MCP server (expose self)
-aonyx-cli         The `aonyx` binary (clap)
-aonyx-tui         Interactive TUI (ratatui) — Wave 1.5
-aonyx-adapters    Telegram / Discord / OpenAI-compatible HTTP — Wave 2
+aonyx-memory      ⭐ Memory palace: KG + diary + hybrid search (BM25 + fastembed vectors + RRF) + tree-sitter splitter + cross-linking + time-machine
+aonyx-llm         Provider router: Anthropic, OpenAI, OpenRouter, Ollama, LM Studio, Claude Code
+aonyx-tools       Built-in tools: fs, bash, git, web_fetch, web_search, memory_*
+aonyx-skills      SKILL.md engine + loader + 4 built-in skills + trigger matching
+aonyx-agent       The `aonyx` binary (clap CLI + ratatui TUI) AND the agent-loop library (loop, compaction, classifier, subagents, approval gate)
+aonyx-mcp         MCP client (stdio + HTTP) + MCP server (expose self)
+aonyx-adapters    Telegram / Discord / OpenAI-compatible HTTP server
+aonyx-tui         Reserved placeholder (the live TUI ships inside aonyx-agent)
 ```
 
 Full design rationale in [`.bmad/architecture.md`](.bmad/architecture.md).
@@ -80,11 +82,11 @@ Full design rationale in [`.bmad/architecture.md`](.bmad/architecture.md).
 
 ## Roadmap
 
-See [`.bmad/prd.md`](.bmad/prd.md) for the full Vague 1 / Vague 2 / Vague 3 plan. Highlights:
+See [`.bmad/prd.md`](.bmad/prd.md) for the full plan. Where we are:
 
-- **Vague 1 (MVP)** — CLI, memory palace, 5 LLM providers, fs/bash/git/exec/web tools, 4 built-in skills, MCP client+server.
-- **Vague 2** — TUI, Telegram + Discord adapters, OpenAI-compatible server, subagents.
-- **Vague 3** — Browser automation, vision, image gen, TTS, self-evolution (DSPy/GEPA-style), Modal/Daytona backends.
+- **Vague 1 (MVP)** — ✅ done: CLI, memory palace (KG + hybrid search + tree-sitter + cross-linking + time-machine), 6 LLM providers, fs/bash/git/web tools, 4 built-in skills, MCP client + server.
+- **Vague 2** — mostly ✅: full ratatui TUI, OpenAI-compatible HTTP server, Telegram/Discord adapter modules, subagents. Remaining: plugin system (Lua/WASM), skill auto-generation on by default.
+- **Vague 3** — vision ✅ (Anthropic + OpenAI passthrough); browser automation, image gen, TTS, self-evolution, cloud sync — planned.
 
 ---
 
