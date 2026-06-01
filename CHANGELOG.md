@@ -7,9 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] — the connected agent
 
-The post-0.2.0 arc (phases AA → OO) opens Aonyx up to the wider tool
+The post-0.2.0 arc (phases AA → PP) opens Aonyx up to the wider tool
 ecosystem and deepens the memory-palace integration. `clippy --workspace
---all-targets --all-features -D warnings` clean; ~268 workspace tests.
+--all-targets --all-features -D warnings` clean on a pinned 1.96.0
+toolchain (local == CI); ~275 workspace tests.
 
 ### Added
 
@@ -20,11 +21,14 @@ ecosystem and deepens the memory-palace integration. `clippy --workspace
 - **MCP server** — `aonyx mcp serve` exposes Aonyx's own tools to other
   clients (Claude Code, Cursor, …) over stdio (HH). It now also serves the
   palace-backed `memory_*` tools scoped to the current directory (**NN**),
-  and over a minimal **Streamable HTTP** transport via `--port` (**OO**).
+  and over a minimal **Streamable HTTP** transport via `--port` (**OO**),
+  with optional **bearer-token auth** (`--token` / `$AONYX_MCP_TOKEN`)
+  rejecting unauthorized HTTP requests with `401` (**PP**).
 
 #### Built-in tools
 - `web_fetch` (readability extraction) and `web_search` (Brave → Tavily
-  fallback) (JJ, MM).
+  fallback) (JJ, MM); `web_fetch` now extracts text from **PDFs** too
+  (**PP**).
 - `memory_search` / `memory_diary_append` / `memory_kg_query` — the agent
   reads and writes its own memory palace mid-turn (MM).
 
@@ -41,12 +45,14 @@ ecosystem and deepens the memory-palace integration. `clippy --workspace
   fetched (and downscaled) into vision attachments too (**OO**).
 - `/export-html` standalone styled HTML (FF); `/export-bundle` writes a
   `.zip` of Markdown + HTML + `meta.json` (**NN**), plus a `messages.json`
-  transcript for re-import (**OO**).
+  transcript for re-import (**OO**). `/import-bundle <zip>` restores a
+  session from that `messages.json` as a fresh, active session (**PP**).
 
 #### Approval
 - Per-tool **always-allow**: the approval overlay's `[A]` key remembers a
   destructive tool so future calls skip the prompt; persisted to config
-  (**OO**).
+  (**OO**). Rules also accept a `name:needle` arg-pattern form — e.g.
+  `bash:cargo` auto-approves only cargo commands (**PP**).
 
 #### Skills & theming
 - Custom skills loaded from `~/.aonyx/skills/` (DD); live theme editor

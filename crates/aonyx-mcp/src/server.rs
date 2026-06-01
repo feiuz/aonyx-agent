@@ -133,7 +133,7 @@ async fn handle_tools_call(id: Value, request: &Value, registry: &ToolRegistry) 
         .unwrap_or_else(|| json!({}));
 
     let Some(handler) = registry.get(name) else {
-        return error_response(id, -32602, &format!("unknown tool: {name}"));
+        return error_response(id, -32602, format!("unknown tool: {name}"));
     };
     let call = ToolCall {
         id: format!("mcp-{name}"),

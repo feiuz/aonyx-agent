@@ -113,6 +113,7 @@ const SLASH_CANDIDATES: &[&str] = &[
     "/export",
     "/export-html",
     "/export-bundle",
+    "/import-bundle",
     "/theme-edit",
     "/details",
     "/thinking",
@@ -240,11 +241,13 @@ struct TuiApprover {
 #[async_trait]
 impl AsyncApprover for TuiApprover {
     async fn approve(&self, call: &ToolCall, class: SafetyClass) -> bool {
-        // Phase OO — honour a persisted "always allow this tool" choice
-        // without bubbling a prompt up to the UI.
+        // Phase OO/PP — honour a persisted "always allow" rule without
+        // bubbling a prompt up to the UI. A rule is a bare tool name or
+        // `name:needle` (Phase PP) matching only when the call's args
+        // contain `needle`.
         if always_allow_set()
             .lock()
-            .map(|s| s.contains(&call.name))
+            .map(|s| approval_matches(&s, &call.name, &call.args))
             .unwrap_or(false)
         {
             return true;
@@ -539,6 +542,11 @@ fn build_palette_entries() -> Vec<PaletteEntry> {
             label: "/export-bundle".into(),
             hint: "Export a .zip bundle (Markdown + HTML + messages.json + meta.json)".into(),
             action: PaletteAction::Slash(SlashCommand::ExportBundle(None)),
+        },
+        PaletteEntry {
+            label: "/import-bundle".into(),
+            hint: "Import a session from a .zip bundle's messages.json".into(),
+            action: PaletteAction::Slash(SlashCommand::ImportBundle(None)),
         },
         PaletteEntry {
             label: "/theme-edit".into(),
@@ -1990,6 +1998,21 @@ impl TuiApp {
                         self.messages.len()
                     )),
                     Err(e) => self.push_line(error_line(format!("export-bundle failed: {e}"))),
+                }
+            }
+            SlashCommand::ImportBundle(target) => {
+                let Some(path) = target.filter(|q| !q.trim().is_empty()) else {
+                    self.push_dim("usage: /import-bundle <path-to.zip>");
+                    return;
+                };
+                match self.import_bundle(path.trim()).await {
+                    Ok(n) => {
+                        self.push_dim(&format!(
+                            "imported {n} messages as a new session — /load it from /find, \
+                             or it's now active"
+                        ));
+                    }
+                    Err(e) => self.push_line(error_line(format!("import-bundle failed: {e}"))),
                 }
             }
             SlashCommand::ThemeEdit => {
@@ -3504,6 +3527,51 @@ impl TuiApp {
         tokio::fs::write(path, bytes).await
     }
 
+    /// Import a session from a `.zip` bundle's `messages.json` (Phase
+    /// PP) — the inverse of [`Self::export_bundle`]. Reads + unzips off
+    /// the async runtime, deserializes the transcript, persists it as a
+    /// brand-new session row, and swaps it in as the active session.
+    /// Returns the imported message count.
+    async fn import_bundle(&mut self, path: &str) -> std::io::Result<usize> {
+        let raw = tokio::fs::read(path).await?;
+        let json = tokio::task::spawn_blocking(move || unzip_member(&raw, "messages.json"))
+            .await
+            .map_err(std::io::Error::other)??;
+        let messages: Vec<Message> = serde_json::from_slice(&json).map_err(|e| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("messages.json: {e}"),
+            )
+        })?;
+        let count = messages.len();
+
+        // Persist the current session before swapping so no turns are
+        // lost, then create + activate the imported one.
+        let _ = self
+            .session_store
+            .update(self.session_id, self.messages.clone(), self.turns)
+            .await;
+        let created = self
+            .session_store
+            .create(&self.project_slug, messages.clone())
+            .await
+            .map_err(std::io::Error::other)?;
+
+        self.session_id = created.id;
+        self.messages = messages;
+        self.turns = 0;
+        let short: String = created.id.to_string().chars().take(8).collect();
+        self.viewport.clear();
+        self.viewport.push(Line::from(Span::styled(
+            format!("📥 imported bundle [{short}] · {count} messages"),
+            Style::default().fg(self.theme.dim),
+        )));
+        self.auto_scroll = true;
+        self.scroll = 0;
+        self.refresh_recent_sessions().await;
+        Ok(count)
+    }
+
     fn push_dim(&mut self, text: &str) {
         self.push_line(Line::from(Span::styled(
             text.to_string(),
@@ -4542,6 +4610,7 @@ const HELP_LINES: &[&str] = &[
     "  /export [path]       dump the conversation to Markdown",
     "  /export-html [path]  dump the conversation to standalone HTML (Phase FF)",
     "  /export-bundle [p]   .zip: Markdown + HTML + messages.json + meta.json (NN/OO)",
+    "  /import-bundle <z>   import a session from a .zip bundle's messages.json (PP)",
     "  /theme-edit          live-edit theme colours, save to config (Phase KK)",
     "  /details             toggle verbose tool output",
     "  /thinking            reasoning visibility (Phase E)",
@@ -5051,6 +5120,23 @@ fn build_zip_bytes(members: &[(&str, &str)]) -> std::io::Result<Vec<u8>> {
     Ok(cursor.into_inner())
 }
 
+/// Read one named member out of an in-memory `.zip` archive (Phase PP) —
+/// the read side of [`build_zip_bytes`], used by bundle import.
+fn unzip_member(zip_bytes: &[u8], name: &str) -> std::io::Result<Vec<u8>> {
+    use std::io::Read;
+    let mut archive =
+        zip::ZipArchive::new(std::io::Cursor::new(zip_bytes)).map_err(std::io::Error::other)?;
+    let mut file = archive.by_name(name).map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("bundle is missing {name}"),
+        )
+    })?;
+    let mut out = Vec::new();
+    file.read_to_end(&mut out)?;
+    Ok(out)
+}
+
 /// Minimal HTML entity escaping for text injected outside the
 /// Markdown-rendered region (titles, metadata).
 fn html_escape(s: &str) -> String {
@@ -5288,6 +5374,19 @@ mod tests {
         let mut s = String::new();
         std::io::Read::read_to_string(&mut md, &mut s).unwrap();
         assert_eq!(s, "# md body");
+    }
+
+    #[test]
+    fn unzip_member_reads_back_what_build_zip_wrote() {
+        // Phase PP — the import side must recover exactly what export
+        // wrote, and error cleanly on a missing member.
+        let msgs = r#"[{"role":"user","content":"hi"}]"#;
+        let bytes = build_zip_bytes(&[("messages.json", msgs), ("meta.json", "{}")]).unwrap();
+        let got = unzip_member(&bytes, "messages.json").unwrap();
+        assert_eq!(String::from_utf8(got).unwrap(), msgs);
+        // Missing member → NotFound, not a panic.
+        let err = unzip_member(&bytes, "nope.json").unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
     }
 
     #[test]

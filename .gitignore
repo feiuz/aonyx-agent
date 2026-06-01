@@ -42,3 +42,4 @@ dist/
 # scratch dumps (Read-tool workaround)
 _scan.txt
 _eb.txt
+_pp.txt

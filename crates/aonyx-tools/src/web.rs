@@ -113,25 +113,22 @@ impl ToolHandler for WebFetch {
         // Phase PP — PDFs are binary: read raw bytes and extract their
         // text. Everything else is decoded as UTF-8; HTML is stripped to
         // readable text, anything else returned as-is.
-        let (text, byte_len) = if is_pdf_response(&content_type, &args.url) {
+        let text = if is_pdf_response(&content_type, &args.url) {
             let bytes = resp
                 .bytes()
                 .await
                 .map_err(|e| AonyxError::Tool(format!("web_fetch body: {e}")))?;
-            let n = bytes.len();
-            (pdf_to_text(&bytes)?, n)
+            pdf_to_text(&bytes)?
         } else {
             let body = resp
                 .text()
                 .await
                 .map_err(|e| AonyxError::Tool(format!("web_fetch body: {e}")))?;
-            let n = body.len();
-            let t = if content_type.contains("html") || looks_like_html(&body) {
+            if content_type.contains("html") || looks_like_html(&body) {
                 html_to_text(&body)
             } else {
                 body
-            };
-            (t, n)
+            }
         };
         let truncated = truncate_chars(&text, FETCH_MAX_CHARS);
 
@@ -269,6 +266,19 @@ async fn tavily_request(
 }
 
 // ---- pure helpers (unit-tested) ----
+
+/// True when a `web_fetch` response should be treated as a PDF
+/// (Phase PP) — by `content-type` or a `.pdf` URL suffix.
+fn is_pdf_response(content_type: &str, url: &str) -> bool {
+    content_type.contains("pdf") || url.to_ascii_lowercase().ends_with(".pdf")
+}
+
+/// Extract readable text from a PDF byte buffer (Phase PP). Returns a
+/// Tool error when the bytes aren't a parseable PDF.
+fn pdf_to_text(bytes: &[u8]) -> Result<String> {
+    pdf_extract::extract_text_from_mem(bytes)
+        .map_err(|e| AonyxError::Tool(format!("web_fetch: pdf parse: {e}")))
+}
 
 /// Heuristic: does this body look like HTML even without a content-type?
 fn looks_like_html(body: &str) -> bool {
