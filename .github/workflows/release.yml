@@ -24,8 +24,12 @@ jobs:
             os: ubuntu-latest
             ext: ""
             archive: tar.gz
+          # Build the Intel macOS binary by cross-compiling on the ARM
+          # runner: the macos-13 (Intel) runners are deprecated and queue
+          # forever. The toolchain step adds the x86_64 target, and Apple
+          # clang on Apple silicon cross-compiles x86_64 natively.
           - target: x86_64-apple-darwin
-            os: macos-13
+            os: macos-14
             ext: ""
             archive: tar.gz
           - target: aarch64-apple-darwin
