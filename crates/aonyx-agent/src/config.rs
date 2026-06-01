@@ -207,9 +207,12 @@ impl Default for Config {
         Self {
             provider: "anthropic".to_string(),
             model: DEFAULT_MODEL.to_string(),
-            anthropic_api_key: std::env::var("ANTHROPIC_API_KEY").ok(),
-            openai_api_key: std::env::var("OPENAI_API_KEY").ok(),
-            openrouter_api_key: std::env::var("OPENROUTER_API_KEY").ok(),
+            // Keys are NOT read from the environment here — that merge
+            // happens in `load_or_init` (in memory only) so an env-sourced
+            // secret can never be persisted to disk by `save`.
+            anthropic_api_key: None,
+            openai_api_key: None,
+            openrouter_api_key: None,
             openai_base_url: None,
             lm_studio_base_url: None,
             ollama_base_url: None,
@@ -244,7 +247,24 @@ impl Config {
         Ok(Self::config_dir()?.join("config.toml"))
     }
 
-    /// Read the config, creating a default file when none exists.
+    /// Back-fill any unset API key from its environment variable, in
+    /// memory only. Kept separate from persistence so an env-sourced key
+    /// is never written to `config.toml` by [`Self::save`].
+    fn merge_env(&mut self) {
+        if self.anthropic_api_key.is_none() {
+            self.anthropic_api_key = std::env::var("ANTHROPIC_API_KEY").ok();
+        }
+        if self.openai_api_key.is_none() {
+            self.openai_api_key = std::env::var("OPENAI_API_KEY").ok();
+        }
+        if self.openrouter_api_key.is_none() {
+            self.openrouter_api_key = std::env::var("OPENROUTER_API_KEY").ok();
+        }
+    }
+
+    /// Read the config, creating a default file when none exists. API
+    /// keys missing from the file are back-filled from the environment
+    /// (in memory only — see [`Self::merge_env`]).
     pub fn load_or_init() -> anyhow::Result<Self> {
         let path = Self::config_path()?;
         if !path.exists() {
@@ -252,20 +272,33 @@ impl Config {
             let default = Self::default();
             std::fs::write(&path, toml::to_string_pretty(&default)?)?;
             eprintln!("aonyx: created {}", path.display());
-            return Ok(default);
+            let mut config = default;
+            config.merge_env();
+            return Ok(config);
         }
         let raw = std::fs::read_to_string(&path)?;
         let mut config: Config = toml::from_str(&raw)?;
-        if config.anthropic_api_key.is_none() {
-            config.anthropic_api_key = std::env::var("ANTHROPIC_API_KEY").ok();
-        }
-        if config.openai_api_key.is_none() {
-            config.openai_api_key = std::env::var("OPENAI_API_KEY").ok();
-        }
-        if config.openrouter_api_key.is_none() {
-            config.openrouter_api_key = std::env::var("OPENROUTER_API_KEY").ok();
-        }
+        config.merge_env();
         Ok(config)
+    }
+
+    /// Load the config exactly as stored on disk — no environment merge;
+    /// the default (with empty keys) when no file exists. Use this before
+    /// [`Self::save`] so env-sourced secrets never leak into the file.
+    pub fn load_raw() -> anyhow::Result<Self> {
+        let path = Self::config_path()?;
+        if !path.exists() {
+            return Ok(Self::default());
+        }
+        let raw = std::fs::read_to_string(&path)?;
+        Ok(toml::from_str(&raw)?)
+    }
+
+    /// Persist the config to `~/.aonyx/config.toml` as pretty TOML.
+    pub fn save(&self) -> anyhow::Result<()> {
+        std::fs::create_dir_all(Self::config_dir()?)?;
+        std::fs::write(Self::config_path()?, toml::to_string_pretty(self)?)?;
+        Ok(())
     }
 }
 
@@ -278,6 +311,16 @@ mod tests {
         let c = Config::default();
         assert_eq!(c.provider, "anthropic");
         assert_eq!(c.max_iterations, 10);
+    }
+
+    #[test]
+    fn default_has_no_persisted_api_keys() {
+        // default() must not read the environment, so save() can never
+        // leak an env-sourced key into config.toml (Phase SS).
+        let c = Config::default();
+        assert!(c.anthropic_api_key.is_none());
+        assert!(c.openai_api_key.is_none());
+        assert!(c.openrouter_api_key.is_none());
     }
 
     #[test]

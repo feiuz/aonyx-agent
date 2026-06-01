@@ -2,6 +2,7 @@
 //!
 //! ```text
 //! aonyx                  open an interactive session in the current dir
+//! aonyx setup            interactive wizard: provider, key (keyring), model
 //! aonyx new <path>       start a new session scoped to <path>
 //! aonyx resume [id]      resume the latest session, or one by id-prefix
 //! aonyx config <subcmd>  show / locate the config file
@@ -29,7 +30,9 @@ use clap::{Parser, Subcommand};
 mod config;
 mod images;
 mod pricing;
+mod secrets;
 mod session;
+mod setup;
 mod theme;
 mod tui;
 
@@ -85,6 +88,11 @@ enum Command {
         #[command(subcommand)]
         action: McpAction,
     },
+    /// Interactive configuration wizard (provider, credentials, model).
+    Setup {
+        #[command(subcommand)]
+        action: Option<SetupAction>,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -123,6 +131,12 @@ enum McpAction {
     },
 }
 
+#[derive(Debug, Subcommand)]
+enum SetupAction {
+    /// Configure the LLM provider — the default when no subcommand is given.
+    Provider,
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
@@ -149,6 +163,9 @@ async fn main() -> anyhow::Result<()> {
                 handle_skills_list();
                 Ok(())
             }
+        },
+        Some(Command::Setup { action }) => match action {
+            None | Some(SetupAction::Provider) => setup::run_provider_wizard().await,
         },
         Some(Command::Mcp { action }) => match action {
             McpAction::Serve { port, token } => {
@@ -391,12 +408,15 @@ fn resolve_key(
     env_var: &str,
     config_field: &str,
 ) -> anyhow::Result<String> {
+    // Resolution order: explicit value in config.toml → OS keyring (where
+    // `aonyx setup` stores it) → environment variable.
     stored
         .clone()
+        .or_else(|| secrets::get(config_field))
         .or_else(|| std::env::var(env_var).ok())
         .ok_or_else(|| {
             anyhow::anyhow!(
-                "{config_field} missing — set it in ~/.aonyx/config.toml or export {env_var}"
+                "{config_field} missing — run `aonyx setup`, set it in ~/.aonyx/config.toml, or export {env_var}"
             )
         })
 }

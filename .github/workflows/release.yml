@@ -24,6 +24,13 @@ jobs:
             os: ubuntu-latest
             ext: ""
             archive: tar.gz
+          # Native ARM Linux build on a GitHub-hosted arm64 runner — avoids
+          # cross-compiling the native deps (sqlite `bundled`, the ONNX
+          # runtime behind fastembed), which is brittle from x86_64.
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-24.04-arm
+            ext: ""
+            archive: tar.gz
           # Build the Intel macOS binary by cross-compiling on the ARM
           # runner: the macos-13 (Intel) runners are deprecated and queue
           # forever. The toolchain step adds the x86_64 target, and Apple

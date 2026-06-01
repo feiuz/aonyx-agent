@@ -236,4 +236,17 @@ diary, BM25 full-text search) and four built-in skills.
 
 ## [Unreleased]
 
-_(no changes yet)_
+The Vague 2 finishing arc (phases SS → XX): onboarding, real channel
+adapters, an OpenAI-compatible server, plugins, and skill auto-generation.
+
+### Added
+- **`aonyx setup`** — an interactive onboarding wizard (Phase SS): pick a
+  provider, enter the API key, choose a model, and verify it with a live
+  connection ping before writing `config.toml`.
+- **OS keyring** secret storage (`keyring` crate) for API keys — macOS
+  Keychain, Windows Credential Manager, Linux Secret Service. Runtime
+  resolution order: `config.toml` → keyring → environment variable. Keys
+  no longer need to live in plaintext, and an env-sourced key can no
+  longer leak into `config.toml` on save.
+- **Linux `aarch64`** prebuilt binary, built natively on a GitHub-hosted
+  ARM runner.

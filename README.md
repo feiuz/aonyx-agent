@@ -43,6 +43,9 @@ cargo install aonyx-agent
 # or grab a prebuilt static binary from the Releases page:
 #   https://github.com/feiuz/aonyx-agent/releases/latest
 
+# One-time: pick a provider, store the key in your OS keyring, test it
+aonyx setup
+
 # First run — interactive session in the current directory
 aonyx
 aonyx --tui                       # full-screen terminal UI
