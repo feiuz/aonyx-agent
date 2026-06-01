@@ -4656,6 +4656,7 @@ const HELP_LINES: &[&str] = &[
     "  /init                drop an agent.yaml in the project root",
     "inline:",
     "  @path/to/file.rs     load the file into the next turn's context",
+    "  @src/**/*.rs         glob: load every match (RR; capped at 50)",
     "  !ls / !git status    run a shell command locally and feed output back",
     "keys: Ctrl+P palette · Shift+Enter newline · ↑/↓ history · PgUp/PgDn scroll · Esc quit",
 ];
@@ -4808,12 +4809,52 @@ async fn attach_image_from_url(url: &str) -> std::io::Result<(String, String)> {
 
 /// Read every `@path` from disk in parallel.
 async fn resolve_refs(paths: &[String]) -> Vec<(String, Result<String, String>)> {
-    let mut out = Vec::with_capacity(paths.len());
-    for path in paths {
+    // Phase RR — expand glob patterns (`@src/**/*.rs`) into concrete
+    // files before reading; literal paths pass through unchanged.
+    let expanded = expand_glob_refs(paths);
+    let mut out = Vec::with_capacity(expanded.len());
+    for path in &expanded {
         let result = tokio::fs::read_to_string(path)
             .await
             .map_err(|e| e.to_string());
         out.push((path.clone(), result));
+    }
+    out
+}
+
+/// Expand any glob patterns among `paths` into the concrete files they
+/// match (Phase RR). A ref containing a glob metacharacter (`*`, `?`,
+/// `[`) is expanded — matches sorted, capped at [`GLOB_MAX_MATCHES`] to
+/// avoid flooding context, and a pattern that matches nothing is dropped
+/// with a warning entry. Literal paths (no metacharacters) pass through
+/// untouched so a missing literal still surfaces its own read error.
+fn expand_glob_refs(paths: &[String]) -> Vec<String> {
+    /// Per-pattern match cap so `@**/*` can't dump a whole tree.
+    const GLOB_MAX_MATCHES: usize = 50;
+    let mut out = Vec::new();
+    for p in paths {
+        if !p.contains(['*', '?', '[']) {
+            out.push(p.clone());
+            continue;
+        }
+        match glob::glob(p) {
+            Ok(paths_iter) => {
+                let mut matched: Vec<String> = paths_iter
+                    .filter_map(|r| r.ok())
+                    .filter(|pb| pb.is_file())
+                    .map(|pb| pb.to_string_lossy().replace('\\', "/"))
+                    .collect();
+                matched.sort();
+                matched.truncate(GLOB_MAX_MATCHES);
+                if matched.is_empty() {
+                    out.push(p.clone()); // surfaces a clean "no match" read error
+                } else {
+                    out.extend(matched);
+                }
+            }
+            // Bad pattern → keep the literal so the user sees the error.
+            Err(_) => out.push(p.clone()),
+        }
     }
     out
 }
@@ -5708,5 +5749,25 @@ mod tests {
         assert!(msg.content.contains("contents"));
         assert!(msg.content.contains("could not read: nope"));
         assert_eq!(msg.role, Role::System);
+    }
+
+    #[test]
+    fn expand_glob_passes_literals_and_expands_patterns() {
+        // Literal (no metacharacters) passes through verbatim, even if
+        // it doesn't exist — its own read error surfaces later.
+        let lit = expand_glob_refs(&["does/not/exist.rs".to_string()]);
+        assert_eq!(lit, vec!["does/not/exist.rs".to_string()]);
+
+        // A real glob over this crate's own sources matches >1 file and
+        // every result is a concrete .rs path (forward-slashed).
+        let hits = expand_glob_refs(&["src/*.rs".to_string()]);
+        assert!(hits.len() > 1, "expected several src/*.rs, got {hits:?}");
+        assert!(hits.iter().all(|p| p.ends_with(".rs")));
+        assert!(hits.iter().any(|p| p.ends_with("tui.rs")));
+
+        // A pattern that matches nothing degrades to the literal so the
+        // caller reports a clean "no match" read error.
+        let none = expand_glob_refs(&["src/*.zzz".to_string()]);
+        assert_eq!(none, vec!["src/*.zzz".to_string()]);
     }
 }

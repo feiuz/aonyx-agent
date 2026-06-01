@@ -172,6 +172,7 @@ dependencies = [
  "clap",
  "crossterm 0.28.1",
  "dirs",
+ "glob",
  "image",
  "notify-rust",
  "nucleo-matcher",
