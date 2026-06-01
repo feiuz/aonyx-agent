@@ -5,7 +5,7 @@ All notable changes to **Aonyx Agent** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased] — the connected agent
+## [0.3.0] — 2026-06-01 — the connected agent
 
 The post-0.2.0 arc (phases AA → RR) opens Aonyx up to the wider tool
 ecosystem and deepens the memory-palace integration. `clippy --workspace
