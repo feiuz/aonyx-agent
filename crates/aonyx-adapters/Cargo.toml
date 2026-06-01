@@ -21,9 +21,14 @@ tracing = { workspace = true }
 teloxide = { version = "0.13", default-features = false, features = ["rustls", "ctrlc_handler"], optional = true }
 # Discord (Phase UU):
 serenity = { version = "0.12", default-features = false, features = ["client", "gateway", "rustls_backend", "model"], optional = true }
+# OpenAI-compatible HTTP server (Phase VV):
+axum = { version = "0.7", optional = true }
+tokio = { workspace = true, optional = true }
+serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
 
 [features]
 default = []
 telegram = ["dep:teloxide"]
 discord = ["dep:serenity"]
-openai-server = []  # Phase VV
+openai-server = ["dep:axum", "dep:tokio", "dep:serde", "dep:serde_json"]

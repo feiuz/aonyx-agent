@@ -34,12 +34,27 @@ pub async fn discord() -> anyhow::Result<()> {
     )
 }
 
-#[cfg(any(feature = "telegram", feature = "discord"))]
+/// Run the OpenAI-compatible HTTP server (`aonyx serve openai`).
+#[cfg(feature = "openai-server")]
+pub async fn openai(port: u16, token: Option<String>) -> anyhow::Result<()> {
+    imp::openai(port, token).await
+}
+
+/// Fallback when the binary was built without OpenAI-server support.
+#[cfg(not(feature = "openai-server"))]
+pub async fn openai(_port: u16, _token: Option<String>) -> anyhow::Result<()> {
+    anyhow::bail!(
+        "this build has no OpenAI-server support — reinstall with \
+         `cargo install aonyx-agent --features openai-server`, or grab a release binary"
+    )
+}
+
+#[cfg(any(feature = "telegram", feature = "discord", feature = "openai-server"))]
 mod imp {
     use std::collections::HashMap;
     use std::sync::Arc;
 
-    use aonyx_adapters::{AgentHandler, ConversationAdapter};
+    use aonyx_adapters::AgentHandler;
     use aonyx_agent::AgentRunner;
     use aonyx_core::{Message, Role};
     use async_trait::async_trait;
@@ -52,10 +67,11 @@ mod imp {
     /// request unbounded.
     const MAX_HISTORY: usize = 40;
 
-    /// Bridges each inbound chat message to a shared [`AgentRunner`],
-    /// keeping a separate transcript per conversation. Destructive tools
-    /// are denied (the runner's default policy) — a remote chat must never
-    /// be able to edit files or run shell commands on the host.
+    /// Bridges inbound messages to a shared [`AgentRunner`]. Chat adapters
+    /// keep a separate transcript per conversation; the OpenAI server is
+    /// stateless. Destructive tools are denied (the runner's default
+    /// policy) — a remote client must never edit files or run shell on the
+    /// host.
     struct RunnerHandler {
         runner: AgentRunner,
         system_prompt: Option<String>,
@@ -86,6 +102,27 @@ mod imp {
             let trimmed = trim_history(result.messages, MAX_HISTORY);
             self.chats.lock().await.insert(chat_id.to_string(), trimmed);
             Ok(reply)
+        }
+
+        async fn complete(&self, messages: Vec<(String, String)>) -> aonyx_core::Result<String> {
+            // Stateless: the caller (OpenAI server) owns the history, so we
+            // run one turn over exactly the messages it sent.
+            let msgs: Vec<Message> = messages
+                .into_iter()
+                .map(|(role, content)| Message::new(role_from_str(&role), content))
+                .collect();
+            let result = self.runner.run(msgs).await?;
+            Ok(last_assistant_text(&result.messages))
+        }
+    }
+
+    /// Map an OpenAI role string to an Aonyx [`Role`].
+    fn role_from_str(role: &str) -> Role {
+        match role {
+            "system" => Role::System,
+            "assistant" => Role::Assistant,
+            "tool" => Role::Tool,
+            _ => Role::User,
         }
     }
 
@@ -135,6 +172,7 @@ mod imp {
         }))
     }
 
+    #[cfg(any(feature = "telegram", feature = "discord"))]
     fn announce(channel: &str, allowed: usize, setup_cmd: &str) {
         if allowed == 0 {
             eprintln!(
@@ -148,7 +186,7 @@ mod imp {
 
     #[cfg(feature = "telegram")]
     pub async fn telegram() -> anyhow::Result<()> {
-        use aonyx_adapters::telegram::TelegramAdapter;
+        use aonyx_adapters::{telegram::TelegramAdapter, ConversationAdapter};
         let config = Config::load_or_init()?;
         let token = crate::resolve_key(&None, "TELEGRAM_BOT_TOKEN", "telegram_bot_token").map_err(
             |_| {
@@ -168,7 +206,7 @@ mod imp {
 
     #[cfg(feature = "discord")]
     pub async fn discord() -> anyhow::Result<()> {
-        use aonyx_adapters::discord::DiscordAdapter;
+        use aonyx_adapters::{discord::DiscordAdapter, ConversationAdapter};
         let config = Config::load_or_init()?;
         let token =
             crate::resolve_key(&None, "DISCORD_BOT_TOKEN", "discord_bot_token").map_err(|_| {
@@ -183,6 +221,29 @@ mod imp {
             .run()
             .await
             .map_err(|e| anyhow::anyhow!("discord: {e}"))
+    }
+
+    #[cfg(feature = "openai-server")]
+    pub async fn openai(port: u16, token: Option<String>) -> anyhow::Result<()> {
+        use aonyx_adapters::openai_server::OpenAiServer;
+        let config = Config::load_or_init()?;
+        let handler = build_handler(&config)?;
+        let token = token.or_else(|| std::env::var("AONYX_OPENAI_TOKEN").ok());
+        let addr = format!("127.0.0.1:{port}");
+        if token.is_some() {
+            eprintln!(
+                "aonyx: OpenAI-compatible server on http://{addr}/v1 (bearer auth ON). Ctrl-C to stop."
+            );
+        } else {
+            eprintln!(
+                "aonyx: OpenAI-compatible server on http://{addr}/v1 \
+                 (no auth — keep it on localhost). Ctrl-C to stop."
+            );
+        }
+        OpenAiServer::new(addr, token, handler)
+            .run()
+            .await
+            .map_err(|e| anyhow::anyhow!("openai-server: {e}"))
     }
 
     #[cfg(test)]
@@ -221,6 +282,15 @@ mod imp {
                 msg(Role::Assistant, "final"),
             ];
             assert_eq!(last_assistant_text(&v), "final");
+        }
+
+        #[test]
+        fn role_mapping() {
+            assert!(matches!(role_from_str("system"), Role::System));
+            assert!(matches!(role_from_str("assistant"), Role::Assistant));
+            assert!(matches!(role_from_str("tool"), Role::Tool));
+            assert!(matches!(role_from_str("user"), Role::User));
+            assert!(matches!(role_from_str("whatever"), Role::User));
         }
     }
 }

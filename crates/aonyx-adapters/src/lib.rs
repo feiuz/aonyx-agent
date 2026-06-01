@@ -35,6 +35,16 @@ use async_trait::async_trait;
 pub trait AgentHandler: Send + Sync + 'static {
     /// Produce the agent's reply to `text` arriving on `chat_id`.
     async fn handle(&self, chat_id: &str, text: &str) -> Result<String>;
+
+    /// Run one **stateless** turn over a full `(role, content)` message
+    /// list — used by the OpenAI-compatible server, where the client owns
+    /// the conversation history. Defaults to unsupported so chat adapters
+    /// need not implement it.
+    async fn complete(&self, _messages: Vec<(String, String)>) -> Result<String> {
+        Err(aonyx_core::AonyxError::Adapter(
+            "this handler does not support stateless completion".into(),
+        ))
+    }
 }
 
 /// Common surface every adapter implements.

@@ -259,3 +259,8 @@ adapters, an OpenAI-compatible server, plugins, and skill auto-generation.
   bot sharing the same bridge (per-channel history, allow-list, 2000-char
   chunking) with an `aonyx setup discord` wizard. Behind the `discord`
   feature; needs the MESSAGE CONTENT privileged intent enabled.
+- **OpenAI-compatible HTTP server** (`aonyx serve openai --port`, Phase VV)
+  — an `axum` server exposing `POST /v1/chat/completions` + `/v1/models`
+  so any OpenAI SDK can point at the local agent. Stateless (the client
+  owns history, bridged through a new `AgentHandler::complete`), optional
+  bearer auth. Behind the `openai-server` feature.

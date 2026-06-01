@@ -9,7 +9,7 @@
 //! aonyx memory <subcmd>  stats / hybrid-search the palace
 //! aonyx skills <subcmd>  list the active skill catalogue
 //! aonyx mcp <subcmd>     run the MCP server (stdio or HTTP)
-//! aonyx serve <channel>  run a chat adapter (telegram, discord) bridged to the agent
+//! aonyx serve <channel>  run an adapter: telegram, discord, or openai (HTTP)
 //! ```
 
 #![forbid(unsafe_code)]
@@ -154,6 +154,15 @@ enum ServeChannel {
     Telegram,
     /// Run the Discord bot (needs the `discord` build feature).
     Discord,
+    /// Run the OpenAI-compatible HTTP server (needs the `openai-server` feature).
+    Openai {
+        /// TCP port to listen on (binds localhost).
+        #[arg(short, long, default_value_t = 8787)]
+        port: u16,
+        /// Require this bearer token (falls back to $AONYX_OPENAI_TOKEN).
+        #[arg(long)]
+        token: Option<String>,
+    },
 }
 
 #[tokio::main]
@@ -191,6 +200,7 @@ async fn main() -> anyhow::Result<()> {
         Some(Command::Serve { channel }) => match channel {
             ServeChannel::Telegram => serve::telegram().await,
             ServeChannel::Discord => serve::discord().await,
+            ServeChannel::Openai { port, token } => serve::openai(port, token).await,
         },
         Some(Command::Mcp { action }) => match action {
             McpAction::Serve { port, token } => {
