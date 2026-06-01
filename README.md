@@ -32,19 +32,19 @@ Inspired by [Hermes Agent](https://github.com/NousResearch/hermes-agent) (Nous R
 
 ---
 
-## Quickstart (target — not yet shippable)
+## Quickstart
 
 ```bash
-# Install (once the first release is published)
+# Install from crates.io (installs the `aonyx` binary)
 cargo install aonyx-agent
-# or:
-brew install aonyx-agent
-# or download a static binary from Releases
+# or grab a prebuilt static binary from the Releases page:
+#   https://github.com/feiuz/aonyx-agent/releases/latest
 
-# First run — picks a provider, downloads a local model if none configured
+# First run — interactive session in the current directory
 aonyx
+aonyx --tui                       # full-screen terminal UI
 
-# New session in a project
+# New session scoped to a project
 aonyx new ./my-research
 
 # Resume the last session
