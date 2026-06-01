@@ -127,6 +127,7 @@ const SLASH_CANDIDATES: &[&str] = &[
     "/tree",
     "/kg",
     "/tools",
+    "/mcp",
     "/skills",
     "/inspect",
     "/fork",
@@ -265,6 +266,46 @@ impl AsyncApprover for TuiApprover {
             return false;
         }
         rx.await.unwrap_or(false)
+    }
+}
+
+/// One row of the `/mcp` panel (Phase RR): a connected MCP server,
+/// derived from the `<server>__<tool>` naming of registered tools.
+#[derive(Debug, Clone)]
+struct McpServerEntry {
+    /// Server name (the prefix before `__`).
+    server: String,
+    /// How many of its tools are registered.
+    tool_count: usize,
+    /// `true` when *every* one of its tools is currently disabled.
+    disabled: bool,
+}
+
+/// Floating `/mcp` panel state (Phase RR) — lists connected MCP servers
+/// and toggles all of a server's tools at once. Mirrors [`ToolsPanel`].
+#[derive(Debug, Default)]
+struct McpPanel {
+    open: bool,
+    entries: Vec<McpServerEntry>,
+    selected: usize,
+}
+
+impl McpPanel {
+    fn close(&mut self) {
+        self.open = false;
+        self.selected = 0;
+    }
+
+    fn move_up(&mut self) {
+        if self.selected > 0 {
+            self.selected -= 1;
+        }
+    }
+
+    fn move_down(&mut self) {
+        if self.selected + 1 < self.entries.len() {
+            self.selected += 1;
+        }
     }
 }
 
@@ -616,6 +657,11 @@ fn build_palette_entries() -> Vec<PaletteEntry> {
             action: PaletteAction::Slash(SlashCommand::Tools),
         },
         PaletteEntry {
+            label: "/mcp".into(),
+            hint: "Connected MCP servers — toggle a server's tools".into(),
+            action: PaletteAction::Slash(SlashCommand::Mcp),
+        },
+        PaletteEntry {
             label: "/skills".into(),
             hint: "Open the skills panel (enable / disable skills)".into(),
             action: PaletteAction::Slash(SlashCommand::Skills),
@@ -815,6 +861,7 @@ pub async fn run(
         kg_panel: KgPanel::default(),
         tool_registry,
         tools_panel: ToolsPanel::default(),
+        mcp_panel: McpPanel::default(),
         skills: skills_catalogue,
         disabled_skills,
         skills_panel: SkillsPanel::default(),
@@ -943,6 +990,8 @@ struct TuiApp {
     tool_registry: ToolRegistry,
     /// Floating `/tools` panel state (Phase Q).
     tools_panel: ToolsPanel,
+    /// Floating `/mcp` panel state (Phase RR).
+    mcp_panel: McpPanel,
 
     /// Full skill catalogue handed to the runner (Phase X).
     skills: Vec<Skill>,
@@ -1384,6 +1433,12 @@ impl TuiApp {
         // Tools panel (Phase Q) swallows every key while open.
         if self.tools_panel.open {
             self.handle_tools_panel_key(key);
+            return;
+        }
+
+        // MCP panel (Phase RR) swallows every key while open.
+        if self.mcp_panel.open {
+            self.handle_mcp_panel_key(key);
             return;
         }
 
@@ -2043,6 +2098,9 @@ impl TuiApp {
             }
             SlashCommand::Cost => {
                 self.show_cost_breakdown();
+            }
+            SlashCommand::Mcp => {
+                self.open_mcp_panel();
             }
             SlashCommand::ThemeEdit => {
                 self.theme_editor.open = true;
@@ -2910,6 +2968,54 @@ impl TuiApp {
         self.tools_panel.open = true;
     }
 
+    /// Derive the connected MCP servers from the registry's
+    /// `<server>__<tool>` tool names and open the `/mcp` panel
+    /// (Phase RR). A server is "disabled" when every one of its tools
+    /// is disabled. Tools with no `__` (built-ins) are ignored.
+    fn open_mcp_panel(&mut self) {
+        use std::collections::BTreeMap;
+        // server → (total tools, disabled tools)
+        let mut servers: BTreeMap<String, (usize, usize)> = BTreeMap::new();
+        for name in self.tool_registry.names() {
+            if let Some((server, _tool)) = name.split_once("__") {
+                let entry = servers.entry(server.to_string()).or_insert((0, 0));
+                entry.0 += 1;
+                if self.tool_registry.is_disabled(name) {
+                    entry.1 += 1;
+                }
+            }
+        }
+        self.mcp_panel.entries = servers
+            .into_iter()
+            .map(|(server, (total, off))| McpServerEntry {
+                server,
+                tool_count: total,
+                disabled: total > 0 && off == total,
+            })
+            .collect();
+        self.mcp_panel.selected = 0;
+        self.mcp_panel.open = true;
+    }
+
+    /// Enable or disable *every* tool belonging to `server` at once
+    /// (Phase RR). Returns the new disabled state for the server.
+    fn toggle_server(&mut self, server: &str, disable: bool) {
+        let prefix = format!("{server}__");
+        let names: Vec<String> = self
+            .tool_registry
+            .names()
+            .filter(|n| n.starts_with(&prefix))
+            .map(|n| n.to_string())
+            .collect();
+        for name in names {
+            if disable {
+                self.tool_registry.disable(&name);
+            } else {
+                self.tool_registry.enable(&name);
+            }
+        }
+    }
+
     /// Read the captured last-request JSON and open the `/inspect`
     /// panel (Phase Y). Splits the JSON into themed lines: object keys
     /// stay dim, everything else uses the default fg.
@@ -3145,6 +3251,35 @@ impl TuiApp {
                     self.tools_panel.entries[self.tools_panel.selected] = updated;
                     let state_str = if new_state { "disabled" } else { "enabled" };
                     self.push_dim(&format!("  · tool {name} {state_str}"));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// `/mcp` panel keys (Phase RR): navigate, Space/Enter toggles all
+    /// of the selected server's tools at once, Esc/q closes.
+    fn handle_mcp_panel_key(&mut self, key: KeyEvent) {
+        use KeyCode::*;
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        match key.code {
+            Esc | Char('q') => self.mcp_panel.close(),
+            Char('c') | Char('d') if ctrl => {
+                self.mcp_panel.close();
+                self.quit = true;
+            }
+            Up | Char('k') => self.mcp_panel.move_up(),
+            Down | Char('j') => self.mcp_panel.move_down(),
+            Char(' ') | Enter => {
+                if let Some(entry) = self.mcp_panel.entries.get(self.mcp_panel.selected).cloned() {
+                    let now_disabled = !entry.disabled;
+                    self.toggle_server(&entry.server, now_disabled);
+                    self.mcp_panel.entries[self.mcp_panel.selected].disabled = now_disabled;
+                    let state_str = if now_disabled { "disabled" } else { "enabled" };
+                    self.push_dim(&format!(
+                        "  · MCP server {} {state_str} ({} tool(s))",
+                        entry.server, entry.tool_count
+                    ));
                 }
             }
             _ => {}
@@ -4091,6 +4226,9 @@ impl TuiApp {
         if self.tools_panel.open {
             self.render_tools_panel(f);
         }
+        if self.mcp_panel.open {
+            self.render_mcp_panel(f);
+        }
         if self.skills_panel.open {
             self.render_skills_panel(f);
         }
@@ -4445,6 +4583,83 @@ impl TuiApp {
         f.render_widget(para, popup);
     }
 
+    /// Draw the `/mcp` panel (Phase RR) — connected MCP servers with a
+    /// tool count and an `[on]`/`[off]` switch toggling all their tools.
+    fn render_mcp_panel(&self, f: &mut Frame<'_>) {
+        let area = f.area();
+        let width = (area.width as u32 * 60 / 100).clamp(40, 80) as u16;
+        let height = (area.height as u32 * 60 / 100).clamp(8, 22) as u16;
+        let x = area.x + (area.width.saturating_sub(width)) / 2;
+        let y = area.y + (area.height.saturating_sub(height)) / 2;
+        let popup = Rect::new(x, y, width, height);
+        f.render_widget(ratatui::widgets::Clear, popup);
+
+        let header_style = Style::default()
+            .fg(self.theme.assistant_prefix)
+            .add_modifier(Modifier::BOLD);
+        let dim_style = Style::default().fg(self.theme.dim);
+        let on_style = Style::default()
+            .fg(self.theme.user_prefix)
+            .add_modifier(Modifier::BOLD);
+        let off_style = Style::default().fg(Color::Red).add_modifier(Modifier::BOLD);
+        let name_style = Style::default().fg(self.theme.header_fg);
+
+        let total = self.mcp_panel.entries.len();
+        let tools: usize = self.mcp_panel.entries.iter().map(|e| e.tool_count).sum();
+        let title = format!(" /mcp · {total} server(s) · {tools} tool(s) ");
+        let footer = Line::from(Span::styled(
+            " ↑/↓ navigate · Space/Enter toggle server · Esc / q close ",
+            dim_style,
+        ));
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(self.theme.suggestion_border))
+            .title(title)
+            .title_alignment(Alignment::Left)
+            .title_bottom(footer);
+
+        let max_rows = popup.height.saturating_sub(2) as usize;
+        let scroll = self
+            .mcp_panel
+            .selected
+            .saturating_sub(max_rows.saturating_sub(1));
+        let visible_end = (scroll + max_rows).min(total);
+        let visible = if total == 0 {
+            &[][..]
+        } else {
+            &self.mcp_panel.entries[scroll..visible_end]
+        };
+
+        let lines: Vec<Line> = if visible.is_empty() {
+            vec![Line::from(Span::styled(
+                "  (no MCP servers connected — add some under [[mcp_servers]] in config)",
+                dim_style,
+            ))]
+        } else {
+            visible
+                .iter()
+                .enumerate()
+                .map(|(i, entry)| {
+                    let selected = scroll + i == self.mcp_panel.selected;
+                    let marker = if selected { "▸ " } else { "  " };
+                    let state_span = if entry.disabled {
+                        Span::styled(" [off] ", off_style)
+                    } else {
+                        Span::styled(" [on]  ", on_style)
+                    };
+                    Line::from(vec![
+                        Span::styled(marker, header_style),
+                        Span::styled(format!("{:<20}", entry.server), name_style),
+                        state_span,
+                        Span::styled(format!(" {} tool(s)", entry.tool_count), dim_style),
+                    ])
+                })
+                .collect()
+        };
+        let para = Paragraph::new(Text::from(lines)).block(block);
+        f.render_widget(para, popup);
+    }
+
     /// Draw the `/skills` panel (Phase X) — list of loaded skills with
     /// an `[on]` / `[off]` switch and their trigger keywords.
     fn render_skills_panel(&self, f: &mut Frame<'_>) {
@@ -4689,6 +4904,7 @@ const HELP_LINES: &[&str] = &[
     "  /tree                show the session genealogy tree (Phase MM)",
     "  /kg /palace          open the memory-palace visualization (Phase O)",
     "  /tools               enable / disable registered tools live (Phase Q)",
+    "  /mcp                  connected MCP servers · toggle a server's tools (RR)",
     "  /skills              enable / disable loaded skills live (Phase X)",
     "  /inspect             show the JSON of the last LLM request (Phase Y)",
     "  /fork                fork the current session into a child branch (Phase Z)",

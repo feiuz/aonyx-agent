@@ -124,6 +124,8 @@ pub enum SlashCommand {
     /// Show a detailed token + cost breakdown for the session
     /// (Phase RR). TUI-only.
     Cost,
+    /// Open the MCP servers panel (Phase RR). TUI-only.
+    Mcp,
 }
 
 impl SlashCommand {
@@ -168,6 +170,7 @@ impl SlashCommand {
             "/import-bundle" | "/import" => Some(Self::ImportBundle(rest.map(str::to_string))),
             "/rename" => Some(Self::Rename(rest.map(str::to_string))),
             "/cost" => Some(Self::Cost),
+            "/mcp" => Some(Self::Mcp),
             _ => None,
         }
     }
@@ -488,6 +491,11 @@ impl InteractiveSession {
             }
             SlashCommand::Cost => {
                 out.write_all(b"\x1b[90m/cost runs in TUI mode (aonyx --tui)\x1b[0m\n")
+                    .await?;
+                Ok(true)
+            }
+            SlashCommand::Mcp => {
+                out.write_all(b"\x1b[90m/mcp runs in TUI mode (aonyx --tui)\x1b[0m\n")
                     .await?;
                 Ok(true)
             }
