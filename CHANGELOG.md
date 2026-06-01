@@ -7,10 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] — the connected agent
 
-The post-0.2.0 arc (phases AA → PP) opens Aonyx up to the wider tool
+The post-0.2.0 arc (phases AA → RR) opens Aonyx up to the wider tool
 ecosystem and deepens the memory-palace integration. `clippy --workspace
 --all-targets --all-features -D warnings` clean on a pinned 1.96.0
-toolchain (local == CI); ~275 workspace tests.
+toolchain (local == CI); ~280 workspace tests.
 
 ### Added
 
@@ -53,6 +53,18 @@ toolchain (local == CI); ~275 workspace tests.
   destructive tool so future calls skip the prompt; persisted to config
   (**OO**). Rules also accept a `name:needle` arg-pattern form — e.g.
   `bash:cargo` auto-approves only cargo commands (**PP**).
+
+#### Robustness & cost
+- HTTP providers (Anthropic / OpenAI-compatible / Ollama) **retry**
+  transient 429 / 5xx / network errors with exponential backoff (**RR**).
+- Anthropic **prompt-caching**: the system prompt is sent as a cached
+  block, cutting input-token cost across a session's turns (**RR**).
+- `/cost` prints a detailed per-session token + USD breakdown (**RR**).
+
+#### TUI
+- `/mcp` panel lists connected MCP servers and toggles all of a server's
+  tools at once (**RR**). `/rename` retitles the current session (**RR**).
+  `@glob` refs (`@src/**/*.rs`) load every matching file (**RR**).
 
 #### Skills & theming
 - Custom skills loaded from `~/.aonyx/skills/` (DD); live theme editor
