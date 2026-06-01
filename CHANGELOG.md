@@ -270,3 +270,8 @@ adapters, an OpenAI-compatible server, plugins, and skill auto-generation.
   (so the tools stay `Send + Sync`); JSON args/results bridge
   automatically. Behind the `lua-plugins` feature. Example:
   `examples/plugins/hello.lua`.
+- **Skill auto-generation** (Phase XX) — **on by default**: when a request
+  shape (its leading action word) recurs `skill_autogen_threshold` times
+  (default 3), Aonyx writes a `SKILL.md` to `~/.aonyx/skills/` seeded with
+  the real examples seen; it loads on the next session. Deterministic — no
+  model call. Disable with `skill_autogen = false` in `config.toml`.

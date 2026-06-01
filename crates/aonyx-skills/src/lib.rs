@@ -1,8 +1,8 @@
 //! # aonyx-skills
 //!
 //! Skill subsystem: parse [`SKILL.md`](https://agentskills.io) files, match them
-//! against the current context, inject their system prompts, and (V1.2+)
-//! auto-generate new skills from recurring task shapes.
+//! against the current context, inject their system prompts, and
+//! auto-generate new skills from recurring task shapes ([`miner`]).
 //!
 //! ## SKILL.md format (agentskills.io-compatible)
 //!
@@ -35,6 +35,7 @@
 
 pub mod engine;
 pub mod loader;
+pub mod miner;
 pub mod schema;
 
 pub use engine::SkillEngine;

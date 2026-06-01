@@ -103,6 +103,13 @@ pub struct Config {
     /// the OS keyring (`discord_bot_token`), never in this file.
     #[serde(default)]
     pub discord_allowed_channels: Vec<i64>,
+    /// Auto-generate a `SKILL.md` when a request shape recurs
+    /// `skill_autogen_threshold` times (Phase XX). On by default.
+    #[serde(default = "default_skill_autogen")]
+    pub skill_autogen: bool,
+    /// Occurrences of a recurring shape before a skill is auto-generated.
+    #[serde(default = "default_skill_autogen_threshold")]
+    pub skill_autogen_threshold: usize,
 }
 
 /// Ten RGB colour fields persisted from the `/theme-edit` panel
@@ -212,6 +219,14 @@ fn default_max_iterations() -> usize {
     10
 }
 
+fn default_skill_autogen() -> bool {
+    true
+}
+
+fn default_skill_autogen_threshold() -> usize {
+    3
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -242,6 +257,8 @@ impl Default for Config {
             tool_approvals: Vec::new(),
             telegram_allowed_chats: Vec::new(),
             discord_allowed_channels: Vec::new(),
+            skill_autogen: true,
+            skill_autogen_threshold: 3,
         }
     }
 }
@@ -368,6 +385,8 @@ mod tests {
             tool_approvals: Vec::new(),
             telegram_allowed_chats: Vec::new(),
             discord_allowed_channels: Vec::new(),
+            skill_autogen: true,
+            skill_autogen_threshold: 3,
         };
         let s = toml::to_string(&original).unwrap();
         let parsed: Config = toml::from_str(&s).unwrap();

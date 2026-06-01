@@ -84,7 +84,7 @@ aonyx-core        Shared types, traits, errors
 aonyx-memory      ⭐ Memory palace: KG + diary + hybrid search (BM25 + fastembed vectors + RRF) + tree-sitter splitter + cross-linking + time-machine
 aonyx-llm         Provider router: Anthropic, OpenAI, OpenRouter, Ollama, LM Studio, Claude Code
 aonyx-tools       Built-in tools: fs, bash, git, web_fetch, web_search, memory_* + Lua plugin loader (feature-gated)
-aonyx-skills      SKILL.md engine + loader + 4 built-in skills + trigger matching
+aonyx-skills      SKILL.md engine + loader + 4 built-in skills + trigger matching + auto-generation
 aonyx-agent       The `aonyx` binary (clap CLI + ratatui TUI) AND the agent-loop library (loop, compaction, classifier, subagents, approval gate)
 aonyx-mcp         MCP client (stdio + HTTP) + MCP server (expose self)
 aonyx-adapters    Channel adapters (feature-gated): Telegram (teloxide) + Discord (serenity) bots + OpenAI-compatible HTTP server (axum)
@@ -100,7 +100,7 @@ Full design rationale in [`.bmad/architecture.md`](.bmad/architecture.md).
 See [`.bmad/prd.md`](.bmad/prd.md) for the full plan. Where we are:
 
 - **Vague 1 (MVP)** — ✅ done: CLI, memory palace (KG + hybrid search + tree-sitter + cross-linking + time-machine), 6 LLM providers, fs/bash/git/web tools, 4 built-in skills, MCP client + server.
-- **Vague 2** — in progress: full ratatui TUI ✅, subagents ✅, MCP ✅, **Telegram** ✅ + **Discord** ✅ + **OpenAI-compatible HTTP server** ✅ + **Lua plugins** ✅ (all feature-gated). Next: default skill auto-generation.
+- **Vague 2** — ✅ complete: full ratatui TUI, subagents, MCP client + server, **Telegram** + **Discord** + **OpenAI-compatible HTTP server** + **Lua plugins** (feature-gated), and **skill auto-generation** (on by default).
 - **Vague 3** — vision ✅ (Anthropic + OpenAI passthrough); browser automation, image gen, TTS, self-evolution, cloud sync — planned.
 
 ---

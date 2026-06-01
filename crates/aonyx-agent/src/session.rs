@@ -281,6 +281,14 @@ impl InteractiveSession {
                 Ok(()) => {
                     self.turns += 1;
                     self.persist_turn(trimmed).await;
+                    if let Some(id) = crate::maybe_mine(trimmed) {
+                        let _ = stdout
+                            .write_all(
+                                format!("\x1b[2m✨ auto-generated skill '{id}' from a recurring pattern (loads next session)\x1b[0m\n")
+                                    .as_bytes(),
+                            )
+                            .await;
+                    }
                 }
                 Err(e) => {
                     let msg = format!("\n\x1b[31m[error]\x1b[0m {e}\n");

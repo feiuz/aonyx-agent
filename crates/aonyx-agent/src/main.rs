@@ -590,6 +590,18 @@ fn register_plugins(registry: &mut aonyx_tools::ToolRegistry) {
 #[cfg(not(feature = "lua-plugins"))]
 fn register_plugins(_registry: &mut aonyx_tools::ToolRegistry) {}
 
+/// After a user turn, mine the request for a recurring shape and, when one
+/// recurs often enough, auto-generate a `SKILL.md` (Phase XX). Returns the
+/// new skill id, if any. Config-gated and best-effort — never fails a turn.
+fn maybe_mine(request: &str) -> Option<String> {
+    let config = Config::load_or_init().ok()?;
+    if !config.skill_autogen {
+        return None;
+    }
+    let dir = Config::config_dir().ok()?;
+    aonyx_skills::miner::observe(&dir, request, config.skill_autogen_threshold)
+}
+
 /// Build the active skill catalogue: the four built-ins plus any
 /// user-authored `SKILL.md` / `*.skill.md` files under
 /// `~/.aonyx/skills/` (Phase DD). User skills sharing a built-in `id`

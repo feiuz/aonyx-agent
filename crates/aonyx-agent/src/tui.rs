@@ -1873,6 +1873,7 @@ impl TuiApp {
                     }
                 }
             }
+            let mined = crate::maybe_mine(&display_text);
             if attachments.is_empty() {
                 self.messages.push(Message::new(Role::User, display_text));
             } else {
@@ -1880,6 +1881,11 @@ impl TuiApp {
                     Role::User,
                     display_text,
                     attachments,
+                ));
+            }
+            if let Some(id) = mined {
+                self.push_dim(&format!(
+                    "✨ auto-generated skill '{id}' from a recurring pattern (loads next session)"
                 ));
             }
             self.push_thinking_line();
