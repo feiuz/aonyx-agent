@@ -29,6 +29,7 @@ pub mod ollama;
 pub mod openai;
 pub mod openai_compat;
 pub mod openrouter;
+pub mod retry;
 pub mod router;
 
 pub use claude_code::{ClaudeCodeProvider, CLAUDE_DEFAULT_BIN};

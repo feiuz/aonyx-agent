@@ -160,16 +160,22 @@ impl LlmProvider for AnthropicProvider {
             payload["tools"] = json!(req.tools);
         }
 
-        let response = self
+        // Phase RR — retry transient 429/5xx + network errors with
+        // exponential backoff. The body is a serialized String so the
+        // builder clones cleanly across attempts.
+        let builder = self
             .client
             .post(format!("{}/v1/messages", self.base_url))
             .header("x-api-key", &self.api_key)
             .header("anthropic-version", ANTHROPIC_API_VERSION)
             .header("content-type", "application/json")
-            .body(payload.to_string())
-            .send()
-            .await
-            .map_err(|e| AonyxError::Provider(format!("anthropic send: {e}")))?;
+            .body(payload.to_string());
+        let response = crate::retry::send_with_retry(
+            builder,
+            crate::retry::RetryPolicy::default(),
+            "anthropic",
+        )
+        .await?;
 
         if !response.status().is_success() {
             let status = response.status();

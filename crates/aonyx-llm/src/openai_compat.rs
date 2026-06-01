@@ -180,11 +180,13 @@ impl LlmProvider for OpenAiCompatProvider {
             rb = rb.header(k.as_str(), v.as_str());
         }
 
-        let response = rb
-            .body(payload.to_string())
-            .send()
-            .await
-            .map_err(|e| AonyxError::Provider(format!("{} send: {e}", self.provider_name)))?;
+        // Phase RR — retry transient 429/5xx + network errors.
+        let response = crate::retry::send_with_retry(
+            rb.body(payload.to_string()),
+            crate::retry::RetryPolicy::default(),
+            self.provider_name,
+        )
+        .await?;
 
         if !response.status().is_success() {
             let status = response.status();

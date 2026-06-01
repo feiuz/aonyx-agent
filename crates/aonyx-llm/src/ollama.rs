@@ -113,14 +113,15 @@ impl LlmProvider for OllamaProvider {
         }
 
         let url = format!("{}/api/chat", self.base_url.trim_end_matches('/'));
-        let response = self
+        // Phase RR — retry transient 429/5xx + network errors.
+        let builder = self
             .client
             .post(&url)
             .header("content-type", "application/json")
-            .body(payload.to_string())
-            .send()
-            .await
-            .map_err(|e| AonyxError::Provider(format!("ollama send: {e}")))?;
+            .body(payload.to_string());
+        let response =
+            crate::retry::send_with_retry(builder, crate::retry::RetryPolicy::default(), "ollama")
+                .await?;
 
         if !response.status().is_success() {
             let status = response.status();
