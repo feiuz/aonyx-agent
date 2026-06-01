@@ -396,6 +396,9 @@ async fn start_interactive(
         }
     }
 
+    // Phase WW — fold in user Lua plugins from ~/.aonyx/plugins/.
+    register_plugins(&mut tool_registry);
+
     // Phase OO — seed the always-allow approval set from persisted config
     // so tools the user chose to always allow skip the prompt this run.
     tui::seed_tool_approvals(&config.tool_approvals);
@@ -558,8 +561,34 @@ fn build_serve_registry() -> anyhow::Result<aonyx_tools::ToolRegistry> {
     registry.register(Arc::new(aonyx_tools::memory::MemoryKgQuery::new(
         palace.kg.clone(),
     )));
+    register_plugins(&mut registry);
     Ok(registry)
 }
+
+/// Fold any user Lua plugins (`~/.aonyx/plugins/*.lua`) into `registry`
+/// (Phase WW). No-op unless built with the `lua-plugins` feature.
+#[cfg(feature = "lua-plugins")]
+fn register_plugins(registry: &mut aonyx_tools::ToolRegistry) {
+    let dir = match Config::config_dir() {
+        Ok(d) => d.join("plugins"),
+        Err(_) => return,
+    };
+    let tools = aonyx_tools::plugins::load_plugins(&dir);
+    if !tools.is_empty() {
+        eprintln!(
+            "aonyx: loaded {} Lua plugin tool(s) from {}",
+            tools.len(),
+            dir.display()
+        );
+    }
+    for tool in tools {
+        registry.register(tool);
+    }
+}
+
+/// No-op when the `lua-plugins` feature is disabled.
+#[cfg(not(feature = "lua-plugins"))]
+fn register_plugins(_registry: &mut aonyx_tools::ToolRegistry) {}
 
 /// Build the active skill catalogue: the four built-ins plus any
 /// user-authored `SKILL.md` / `*.skill.md` files under

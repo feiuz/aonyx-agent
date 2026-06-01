@@ -264,3 +264,9 @@ adapters, an OpenAI-compatible server, plugins, and skill auto-generation.
   so any OpenAI SDK can point at the local agent. Stateless (the client
   owns history, bridged through a new `AgentHandler::complete`), optional
   bearer auth. Behind the `openai-server` feature.
+- **Lua plugins** (Phase WW) — drop a `.lua` file in `~/.aonyx/plugins/`
+  to add an in-process tool via `aonyx.register_tool { name, description,
+  run = function(args) ... end }`. The Lua VM runs on a dedicated thread
+  (so the tools stay `Send + Sync`); JSON args/results bridge
+  automatically. Behind the `lua-plugins` feature. Example:
+  `examples/plugins/hello.lua`.

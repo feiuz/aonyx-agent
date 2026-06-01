@@ -71,6 +71,7 @@ default = []
 telegram = ["aonyx-adapters/telegram"]
 discord = ["aonyx-adapters/discord"]
 openai-server = ["aonyx-adapters/openai-server"]
+lua-plugins = ["aonyx-tools/lua-plugins"]
 
 [dev-dependencies]
 tokio = { workspace = true }

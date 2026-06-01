@@ -22,6 +22,8 @@ pub mod exec;
 pub mod fs;
 pub mod git;
 pub mod memory;
+#[cfg(feature = "lua-plugins")]
+pub mod plugins;
 pub mod registry;
 pub mod undo;
 pub mod web;

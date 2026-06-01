@@ -68,6 +68,9 @@ aonyx setup discord && aonyx serve discord   # …or Discord
 
 # …or expose an OpenAI-compatible HTTP API (install with --features openai-server):
 aonyx serve openai --port 8787    # POST /v1/chat/completions for any OpenAI SDK
+
+# …or extend the agent with a Lua tool (install with --features lua-plugins):
+cp examples/plugins/hello.lua ~/.aonyx/plugins/   # the agent gains a `hello` tool
 ```
 
 ---
@@ -80,7 +83,7 @@ Cargo workspace, 9 crates:
 aonyx-core        Shared types, traits, errors
 aonyx-memory      ⭐ Memory palace: KG + diary + hybrid search (BM25 + fastembed vectors + RRF) + tree-sitter splitter + cross-linking + time-machine
 aonyx-llm         Provider router: Anthropic, OpenAI, OpenRouter, Ollama, LM Studio, Claude Code
-aonyx-tools       Built-in tools: fs, bash, git, web_fetch, web_search, memory_*
+aonyx-tools       Built-in tools: fs, bash, git, web_fetch, web_search, memory_* + Lua plugin loader (feature-gated)
 aonyx-skills      SKILL.md engine + loader + 4 built-in skills + trigger matching
 aonyx-agent       The `aonyx` binary (clap CLI + ratatui TUI) AND the agent-loop library (loop, compaction, classifier, subagents, approval gate)
 aonyx-mcp         MCP client (stdio + HTTP) + MCP server (expose self)
@@ -97,7 +100,7 @@ Full design rationale in [`.bmad/architecture.md`](.bmad/architecture.md).
 See [`.bmad/prd.md`](.bmad/prd.md) for the full plan. Where we are:
 
 - **Vague 1 (MVP)** — ✅ done: CLI, memory palace (KG + hybrid search + tree-sitter + cross-linking + time-machine), 6 LLM providers, fs/bash/git/web tools, 4 built-in skills, MCP client + server.
-- **Vague 2** — in progress: full ratatui TUI ✅, subagents ✅, MCP client + server ✅, **Telegram** ✅ + **Discord** ✅ bots + **OpenAI-compatible HTTP server** ✅ (all feature-gated). Next: plugin system, default skill auto-generation.
+- **Vague 2** — in progress: full ratatui TUI ✅, subagents ✅, MCP ✅, **Telegram** ✅ + **Discord** ✅ + **OpenAI-compatible HTTP server** ✅ + **Lua plugins** ✅ (all feature-gated). Next: default skill auto-generation.
 - **Vague 3** — vision ✅ (Anthropic + OpenAI passthrough); browser automation, image gen, TTS, self-evolution, cloud sync — planned.
 
 ---

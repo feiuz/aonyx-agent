@@ -21,6 +21,12 @@ walkdir = "2"
 regex = "1"
 reqwest = { workspace = true }
 pdf-extract = "0.7"
+# Lua plugins (Phase WW) — opt-in; vendored Lua 5.4 compiled from source.
+mlua = { version = "0.10", features = ["lua54", "vendored", "serialize"], optional = true }
+
+[features]
+default = []
+lua-plugins = ["dep:mlua"]
 
 [dev-dependencies]
 tokio = { workspace = true }
