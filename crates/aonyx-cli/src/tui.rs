@@ -114,6 +114,7 @@ const SLASH_CANDIDATES: &[&str] = &[
     "/export-html",
     "/export-bundle",
     "/import-bundle",
+    "/rename",
     "/theme-edit",
     "/details",
     "/thinking",
@@ -547,6 +548,11 @@ fn build_palette_entries() -> Vec<PaletteEntry> {
             label: "/import-bundle".into(),
             hint: "Import a session from a .zip bundle's messages.json".into(),
             action: PaletteAction::Slash(SlashCommand::ImportBundle(None)),
+        },
+        PaletteEntry {
+            label: "/rename".into(),
+            hint: "Rename the current session".into(),
+            action: PaletteAction::Slash(SlashCommand::Rename(None)),
         },
         PaletteEntry {
             label: "/theme-edit".into(),
@@ -2013,6 +2019,20 @@ impl TuiApp {
                         ));
                     }
                     Err(e) => self.push_line(error_line(format!("import-bundle failed: {e}"))),
+                }
+            }
+            SlashCommand::Rename(target) => {
+                let Some(title) = target.filter(|q| !q.trim().is_empty()) else {
+                    self.push_dim("usage: /rename <new title>");
+                    return;
+                };
+                let title = title.trim().to_string();
+                match self.session_store.rename(self.session_id, &title).await {
+                    Ok(()) => {
+                        self.push_dim(&format!("session renamed → \"{title}\""));
+                        self.refresh_recent_sessions().await;
+                    }
+                    Err(e) => self.push_line(error_line(format!("rename failed: {e}"))),
                 }
             }
             SlashCommand::ThemeEdit => {
@@ -4611,6 +4631,7 @@ const HELP_LINES: &[&str] = &[
     "  /export-html [path]  dump the conversation to standalone HTML (Phase FF)",
     "  /export-bundle [p]   .zip: Markdown + HTML + messages.json + meta.json (NN/OO)",
     "  /import-bundle <z>   import a session from a .zip bundle's messages.json (PP)",
+    "  /rename <title>      rename the current session (RR)",
     "  /theme-edit          live-edit theme colours, save to config (Phase KK)",
     "  /details             toggle verbose tool output",
     "  /thinking            reasoning visibility (Phase E)",

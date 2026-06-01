@@ -119,6 +119,8 @@ pub enum SlashCommand {
     /// Import a session from a `.zip` bundle's `messages.json`
     /// (Phase PP). TUI-only.
     ImportBundle(Option<String>),
+    /// Rename the current session's title (Phase RR). TUI-only.
+    Rename(Option<String>),
 }
 
 impl SlashCommand {
@@ -161,6 +163,7 @@ impl SlashCommand {
             "/tree" => Some(Self::Tree),
             "/export-bundle" | "/bundle" => Some(Self::ExportBundle(rest.map(str::to_string))),
             "/import-bundle" | "/import" => Some(Self::ImportBundle(rest.map(str::to_string))),
+            "/rename" => Some(Self::Rename(rest.map(str::to_string))),
             _ => None,
         }
     }
@@ -471,6 +474,11 @@ impl InteractiveSession {
             }
             SlashCommand::ImportBundle(_) => {
                 out.write_all(b"\x1b[90m/import-bundle runs in TUI mode (aonyx --tui)\x1b[0m\n")
+                    .await?;
+                Ok(true)
+            }
+            SlashCommand::Rename(_) => {
+                out.write_all(b"\x1b[90m/rename runs in TUI mode (aonyx --tui)\x1b[0m\n")
                     .await?;
                 Ok(true)
             }

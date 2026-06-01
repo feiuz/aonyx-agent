@@ -95,6 +95,11 @@ pub trait SessionStore: Send + Sync {
     /// Replace the messages of an existing session and bump `turns` + `updated_at`.
     async fn update(&self, id: SessionId, messages: Vec<Message>, turns: u32) -> Result<()>;
 
+    /// Set an explicit, user-chosen title for a session, overriding the
+    /// auto-derived one (Phase RR — `/rename`). Leaves messages/turns
+    /// untouched.
+    async fn rename(&self, id: SessionId, title: &str) -> Result<()>;
+
     /// Most recent sessions for `project` first.
     async fn list_by_project(&self, project: &str, limit: usize) -> Result<Vec<SessionRecord>>;
 
@@ -322,6 +327,26 @@ impl SessionStore for SqliteSessionStore {
         .map_err(|e| AonyxError::Memory(format!("update join: {e}")))?
     }
 
+    async fn rename(&self, id: SessionId, title: &str) -> Result<()> {
+        let conn = self.conn.clone();
+        let title = title.to_string();
+        tokio::task::spawn_blocking(move || -> Result<()> {
+            let lock = conn.lock().expect("sessions mutex poisoned");
+            let n = lock
+                .execute(
+                    "UPDATE sessions SET title = ?2, updated_at = ?3 WHERE id = ?1",
+                    params![id.to_string(), title, Utc::now().to_rfc3339()],
+                )
+                .map_err(|e| AonyxError::Memory(format!("rename session: {e}")))?;
+            if n == 0 {
+                return Err(AonyxError::Memory(format!("rename: no session {id}")));
+            }
+            Ok(())
+        })
+        .await
+        .map_err(|e| AonyxError::Memory(format!("rename join: {e}")))?
+    }
+
     async fn list_by_project(&self, project: &str, limit: usize) -> Result<Vec<SessionRecord>> {
         let conn = self.conn.clone();
         let project = project.to_string();
@@ -537,6 +562,20 @@ mod tests {
         let got = store.get(created.id).await.unwrap().unwrap();
         assert_eq!(got.turns, 1);
         assert!(got.title.starts_with("second user"));
+    }
+
+    #[tokio::test]
+    async fn rename_sets_explicit_title_and_survives() {
+        let store = SqliteSessionStore::open_in_memory().unwrap();
+        let created = store
+            .create("demo", vec![msg(Role::User, "auto-derived title")])
+            .await
+            .unwrap();
+        store.rename(created.id, "my refactor").await.unwrap();
+        let got = store.get(created.id).await.unwrap().unwrap();
+        assert_eq!(got.title, "my refactor");
+        // Renaming a missing id errors rather than silently no-op'ing.
+        assert!(store.rename(SessionId::new_v4(), "x").await.is_err());
     }
 
     #[tokio::test]
