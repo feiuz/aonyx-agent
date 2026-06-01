@@ -8,7 +8,6 @@ members = [
     "crates/aonyx-skills",
     "crates/aonyx-agent",
     "crates/aonyx-mcp",
-    "crates/aonyx-cli",
     "crates/aonyx-tui",
     "crates/aonyx-adapters",
 ]

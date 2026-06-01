@@ -138,28 +138,7 @@ dependencies = [
 name = "aonyx-agent"
 version = "0.3.0"
 dependencies = [
- "aonyx-core",
- "aonyx-llm",
- "aonyx-memory",
- "aonyx-skills",
- "aonyx-tools",
- "async-trait",
- "chrono",
- "futures",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "aonyx-cli"
-version = "0.3.0"
-dependencies = [
  "anyhow",
- "aonyx-agent",
  "aonyx-core",
  "aonyx-llm",
  "aonyx-mcp",
@@ -172,6 +151,7 @@ dependencies = [
  "clap",
  "crossterm 0.28.1",
  "dirs",
+ "futures",
  "glob",
  "image",
  "notify-rust",
@@ -190,6 +170,7 @@ dependencies = [
  "tracing-subscriber",
  "tui-markdown",
  "tui-textarea",
+ "uuid",
  "walkdir",
  "zip",
 ]

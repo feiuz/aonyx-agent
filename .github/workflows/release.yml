@@ -52,8 +52,8 @@ jobs:
         with:
           key: ${{ matrix.target }}
 
-      - name: Build aonyx-cli
-        run: cargo build --release --locked -p aonyx-cli --target ${{ matrix.target }}
+      - name: Build aonyx
+        run: cargo build --release --locked -p aonyx-agent --target ${{ matrix.target }}
 
       - name: Resolve tag name
         id: tag
