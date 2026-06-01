@@ -26,6 +26,7 @@ aonyx-memory = { workspace = true }
 aonyx-skills = { workspace = true }
 aonyx-tools = { workspace = true }
 aonyx-mcp = { workspace = true }
+aonyx-adapters = { workspace = true }
 # Shared
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -63,6 +64,13 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 # `block_on` never nests inside our `#[tokio::main]` runtime.
 keyring = { version = "3", default-features = false, features = ["apple-native", "windows-native", "async-secret-service", "crypto-rust", "async-io"] }
 dialoguer = { version = "0.11", features = ["password"] }
+
+[features]
+default = []
+# Channel adapters (Phase TT-VV) — opt-in; pull heavy SDKs only when enabled.
+telegram = ["aonyx-adapters/telegram"]
+discord = ["aonyx-adapters/discord"]
+openai-server = ["aonyx-adapters/openai-server"]
 
 [dev-dependencies]
 tokio = { workspace = true }

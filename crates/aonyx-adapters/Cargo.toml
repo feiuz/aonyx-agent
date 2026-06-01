@@ -9,11 +9,19 @@ repository.workspace = true
 description = "Aonyx Agent — channel adapters (Telegram, Discord, OpenAI-compat HTTP) — Vague 2"
 
 [dependencies]
+# Depend ONLY on aonyx-core (types + Result). The agent loop is injected
+# by the binary via the `AgentHandler` trait, so there is no dependency
+# cycle with `aonyx-agent`.
 aonyx-core = { workspace = true }
-aonyx-agent = { workspace = true }
 async-trait = { workspace = true }
 tracing = { workspace = true }
-serde = { workspace = true }
-serde_json = { workspace = true }
 
-# `teloxide`, `serenity`, `axum` land in Vague 2.
+# Heavy platform SDKs are opt-in so the default `aonyx` binary stays lean.
+# Telegram (Phase TT):
+teloxide = { version = "0.13", default-features = false, features = ["rustls", "ctrlc_handler"], optional = true }
+
+[features]
+default = []
+telegram = ["dep:teloxide"]
+discord = []        # Phase UU
+openai-server = []  # Phase VV

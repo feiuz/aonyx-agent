@@ -93,6 +93,11 @@ pub struct Config {
     /// overlay (Phase OO). Destructive calls to these skip the prompt.
     #[serde(default)]
     pub tool_approvals: Vec<String>,
+    /// Telegram chat ids allowed to talk to `aonyx serve telegram`
+    /// (Phase TT). Empty = open to all chats. The bot token lives in the
+    /// OS keyring (`telegram_bot_token`), never in this file.
+    #[serde(default)]
+    pub telegram_allowed_chats: Vec<i64>,
 }
 
 /// Ten RGB colour fields persisted from the `/theme-edit` panel
@@ -230,6 +235,7 @@ impl Default for Config {
             mcp_servers: Vec::new(),
             custom_theme: None,
             tool_approvals: Vec::new(),
+            telegram_allowed_chats: Vec::new(),
         }
     }
 }
@@ -354,6 +360,7 @@ mod tests {
             }],
             custom_theme: None,
             tool_approvals: Vec::new(),
+            telegram_allowed_chats: Vec::new(),
         };
         let s = toml::to_string(&original).unwrap();
         let parsed: Config = toml::from_str(&s).unwrap();

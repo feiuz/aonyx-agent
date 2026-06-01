@@ -9,6 +9,7 @@
 //! aonyx memory <subcmd>  stats / hybrid-search the palace
 //! aonyx skills <subcmd>  list the active skill catalogue
 //! aonyx mcp <subcmd>     run the MCP server (stdio or HTTP)
+//! aonyx serve <channel>  run a chat adapter (telegram) bridged to the agent
 //! ```
 
 #![forbid(unsafe_code)]
@@ -31,6 +32,7 @@ mod config;
 mod images;
 mod pricing;
 mod secrets;
+mod serve;
 mod session;
 mod setup;
 mod theme;
@@ -93,6 +95,11 @@ enum Command {
         #[command(subcommand)]
         action: Option<SetupAction>,
     },
+    /// Run a chat adapter bridged to the agent (Telegram, …).
+    Serve {
+        #[command(subcommand)]
+        channel: ServeChannel,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -135,6 +142,14 @@ enum McpAction {
 enum SetupAction {
     /// Configure the LLM provider — the default when no subcommand is given.
     Provider,
+    /// Configure the Telegram bot (token in the keyring + allowed chats).
+    Telegram,
+}
+
+#[derive(Debug, Subcommand)]
+enum ServeChannel {
+    /// Run the Telegram bot (needs the `telegram` build feature).
+    Telegram,
 }
 
 #[tokio::main]
@@ -166,6 +181,10 @@ async fn main() -> anyhow::Result<()> {
         },
         Some(Command::Setup { action }) => match action {
             None | Some(SetupAction::Provider) => setup::run_provider_wizard().await,
+            Some(SetupAction::Telegram) => setup::run_telegram_wizard().await,
+        },
+        Some(Command::Serve { channel }) => match channel {
+            ServeChannel::Telegram => serve::telegram().await,
         },
         Some(Command::Mcp { action }) => match action {
             McpAction::Serve { port, token } => {

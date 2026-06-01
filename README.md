@@ -59,6 +59,11 @@ aonyx resume
 # Inspect your memory palace
 aonyx memory stats
 aonyx memory search "decisions about auth"
+
+# Run it as a Telegram bot (install once with the telegram feature):
+#   cargo install aonyx-agent --features telegram
+aonyx setup telegram              # store the bot token (keyring) + allowed chats
+aonyx serve telegram              # bridge the bot to the agent loop
 ```
 
 ---
@@ -75,7 +80,7 @@ aonyx-tools       Built-in tools: fs, bash, git, web_fetch, web_search, memory_*
 aonyx-skills      SKILL.md engine + loader + 4 built-in skills + trigger matching
 aonyx-agent       The `aonyx` binary (clap CLI + ratatui TUI) AND the agent-loop library (loop, compaction, classifier, subagents, approval gate)
 aonyx-mcp         MCP client (stdio + HTTP) + MCP server (expose self)
-aonyx-adapters    Telegram / Discord / OpenAI-compatible HTTP server
+aonyx-adapters    Channel adapters (feature-gated): Telegram bot (teloxide); Discord + OpenAI-compat HTTP server next
 aonyx-tui         Reserved placeholder (the live TUI ships inside aonyx-agent)
 ```
 
@@ -88,7 +93,7 @@ Full design rationale in [`.bmad/architecture.md`](.bmad/architecture.md).
 See [`.bmad/prd.md`](.bmad/prd.md) for the full plan. Where we are:
 
 - **Vague 1 (MVP)** — ✅ done: CLI, memory palace (KG + hybrid search + tree-sitter + cross-linking + time-machine), 6 LLM providers, fs/bash/git/web tools, 4 built-in skills, MCP client + server.
-- **Vague 2** — mostly ✅: full ratatui TUI, OpenAI-compatible HTTP server, Telegram/Discord adapter modules, subagents. Remaining: plugin system (Lua/WASM), skill auto-generation on by default.
+- **Vague 2** — in progress: full ratatui TUI ✅, subagents ✅, MCP client + server ✅, **Telegram bot** ✅ (`aonyx serve telegram`, behind the `telegram` feature). Next: Discord adapter, OpenAI-compatible HTTP server, plugin system, default skill auto-generation.
 - **Vague 3** — vision ✅ (Anthropic + OpenAI passthrough); browser automation, image gen, TTS, self-evolution, cloud sync — planned.
 
 ---

@@ -255,3 +255,72 @@ async fn test_connection(provider: &Arc<dyn LlmProvider>, model: &str) -> anyhow
         None => Ok(()),
     }
 }
+
+/// Entry point for `aonyx setup telegram` — store the bot token in the
+/// keyring and the allowed-chat list in `config.toml`. Always available
+/// (writing config is light); actually running the bot needs the
+/// `telegram` build feature.
+pub async fn run_telegram_wizard() -> anyhow::Result<()> {
+    let theme = ColorfulTheme::default();
+    println!("aonyx setup telegram — configure the Telegram bot\n");
+    let mut config = Config::load_raw()?;
+
+    let token: String = Password::with_theme(&theme)
+        .with_prompt("Bot token from @BotFather (hidden — empty to keep current / use $env)")
+        .allow_empty_password(true)
+        .interact()?;
+    if token.trim().is_empty() {
+        println!("  · no token entered — will read $TELEGRAM_BOT_TOKEN at runtime");
+    } else {
+        match secrets::set("telegram_bot_token", token.trim()) {
+            Ok(()) => println!("  ✓ token stored in the OS keyring"),
+            Err(e) => println!("  ⚠ keyring unavailable ({e}) — export TELEGRAM_BOT_TOKEN instead"),
+        }
+    }
+
+    let current = config
+        .telegram_allowed_chats
+        .iter()
+        .map(|i| i.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    let chats: String = Input::<String>::with_theme(&theme)
+        .with_prompt("Allowed chat ids, comma-separated (empty = allow everyone)")
+        .allow_empty(true)
+        .default(current)
+        .interact_text()?;
+    config.telegram_allowed_chats = parse_chat_ids(&chats);
+
+    config.save()?;
+    println!("\n✓ wrote {}", Config::config_path()?.display());
+    if config.telegram_allowed_chats.is_empty() {
+        println!("  ⚠ no allow-list — the bot will answer ANY chat. Add ids to lock it down.");
+    }
+    if cfg!(feature = "telegram") {
+        println!("  run `aonyx serve telegram` to start the bot.");
+    } else {
+        println!(
+            "  this build lacks Telegram support — reinstall with \
+             `--features telegram` to run the bot."
+        );
+    }
+    Ok(())
+}
+
+/// Parse a comma-separated list of chat ids, dropping blanks / non-numbers.
+fn parse_chat_ids(s: &str) -> Vec<i64> {
+    s.split(',')
+        .filter_map(|p| p.trim().parse::<i64>().ok())
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_chat_ids;
+
+    #[test]
+    fn parses_and_skips_junk() {
+        assert_eq!(parse_chat_ids("123, -456 ,abc,, 789"), vec![123, -456, 789]);
+        assert!(parse_chat_ids("").is_empty());
+    }
+}

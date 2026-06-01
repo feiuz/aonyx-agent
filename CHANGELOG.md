@@ -250,3 +250,8 @@ adapters, an OpenAI-compatible server, plugins, and skill auto-generation.
   longer leak into `config.toml` on save.
 - **Linux `aarch64`** prebuilt binary, built natively on a GitHub-hosted
   ARM runner.
+- **Telegram bot** (`aonyx serve telegram`, Phase TT) — a `teloxide`
+  long-poll bot bridged to the agent loop, with per-chat history, a
+  chat-id allow-list, and an `aonyx setup telegram` wizard (token →
+  keyring). Behind the opt-in `telegram` cargo feature so the default
+  binary stays lean; destructive tools stay denied for remote chats.
