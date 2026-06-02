@@ -31,7 +31,7 @@ Inspired by [Hermes Agent](https://github.com/NousResearch/hermes-agent) (Nous R
 
 **v0.4.0 — released.** Vague 1 (MVP) and Vague 2 are complete. Published on crates.io (`cargo install aonyx-agent`); prebuilt binaries — **lean** and **-full** (all chat adapters + Lua plugins compiled in) — on the [Releases](https://github.com/feiuz/aonyx-agent/releases/latest) page. `clippy --all-features -D warnings` clean on a pinned 1.96.0 toolchain; full workspace test suite green. See [`CHANGELOG.md`](CHANGELOG.md) for per-release detail and [`.bmad/prd.md`](.bmad/prd.md) for the roadmap.
 
-> API keys are stored in the OS keyring via `aonyx setup` (resolution order: `config.toml` → keyring → env var). Prebuilt binaries cover Linux x86_64 + aarch64, macOS x86_64 + arm64, and Windows x86_64. Grab the **`-full`** archive for the Telegram/Discord/OpenAI-server adapters + Lua plugins, or build them in with `cargo install aonyx-agent --features telegram,discord,openai-server,lua-plugins`.
+> API keys are stored in the OS keyring via `aonyx setup` (resolution order: `config.toml` → keyring → env var). Prebuilt binaries cover Linux x86_64 + aarch64, macOS x86_64 + arm64, and Windows x86_64. Grab the **`-full`** archive for the Telegram/Discord/OpenAI-server adapters + Lua plugins + browser automation, or build them in with `cargo install aonyx-agent --features telegram,discord,openai-server,lua-plugins,browser`.
 
 ---
 
@@ -83,7 +83,7 @@ Cargo workspace, 9 crates:
 aonyx-core        Shared types, traits, errors
 aonyx-memory      ⭐ Memory palace: KG + diary + hybrid search (BM25 + fastembed vectors + RRF) + tree-sitter splitter + cross-linking + time-machine
 aonyx-llm         Provider router: Anthropic, OpenAI, OpenRouter, Ollama, LM Studio, Claude Code
-aonyx-tools       Built-in tools: fs, bash, git, web_fetch, web_search, memory_* + Lua plugin loader (feature-gated)
+aonyx-tools       Built-in tools: fs, bash, git, web_fetch, web_search, memory_* + Lua plugin loader + browser automation (feature-gated)
 aonyx-skills      SKILL.md engine + loader + 4 built-in skills + trigger matching + auto-generation
 aonyx-agent       The `aonyx` binary (clap CLI + ratatui TUI) AND the agent-loop library (loop, compaction, classifier, subagents, approval gate)
 aonyx-mcp         MCP client (stdio + HTTP) + MCP server (expose self)
@@ -101,7 +101,7 @@ See [`.bmad/prd.md`](.bmad/prd.md) for the full plan. Where we are:
 
 - **Vague 1 (MVP)** — ✅ done: CLI, memory palace (KG + hybrid search + tree-sitter + cross-linking + time-machine), 6 LLM providers, fs/bash/git/web tools, 4 built-in skills, MCP client + server.
 - **Vague 2** — ✅ complete: full ratatui TUI, subagents, MCP client + server, **Telegram** + **Discord** + **OpenAI-compatible HTTP server** + **Lua plugins** (feature-gated), and **skill auto-generation** (on by default).
-- **Vague 3** — vision ✅ (Anthropic + OpenAI passthrough); browser automation, image gen, TTS, self-evolution, cloud sync — planned.
+- **Vague 3** — in progress: vision ✅ (Anthropic + OpenAI passthrough) + **browser automation** ✅ (`chromiumoxide` headless Chrome, feature-gated). Next: image gen, TTS, cloud sync, self-evolution.
 
 ---
 

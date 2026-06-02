@@ -23,10 +23,14 @@ reqwest = { workspace = true }
 pdf-extract = "0.7"
 # Lua plugins (Phase WW) — opt-in; vendored Lua 5.4 compiled from source.
 mlua = { version = "0.10", features = ["lua54", "vendored", "serialize"], optional = true }
+# Browser automation (Phase YY) — headless Chrome/Chromium over CDP.
+chromiumoxide = { version = "0.7", default-features = false, features = ["tokio-runtime"], optional = true }
+futures = { workspace = true, optional = true }
 
 [features]
 default = []
 lua-plugins = ["dep:mlua"]
+browser = ["dep:chromiumoxide", "dep:futures"]
 
 [dev-dependencies]
 tokio = { workspace = true }

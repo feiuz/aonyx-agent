@@ -7,7 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-_(nothing yet)_
+### Added
+- **Browser automation** (Phase YY, Vague 3) — a headless Chrome / Chromium
+  toolset over CDP (`chromiumoxide`): `browser_navigate`, `browser_read`,
+  `browser_click`, `browser_screenshot`, all sharing one lazily-launched
+  browser session. Behind the `browser` cargo feature (included in the
+  `-full` release binaries); needs a Chrome/Chromium binary at runtime.
 
 ## [0.4.0] — 2026-06-02 — integrations & onboarding
 

@@ -398,6 +398,8 @@ async fn start_interactive(
 
     // Phase WW — fold in user Lua plugins from ~/.aonyx/plugins/.
     register_plugins(&mut tool_registry);
+    // Phase YY — browser-automation tools (feature-gated).
+    register_browser_tools(&mut tool_registry);
 
     // Phase OO — seed the always-allow approval set from persisted config
     // so tools the user chose to always allow skip the prompt this run.
@@ -562,6 +564,7 @@ fn build_serve_registry() -> anyhow::Result<aonyx_tools::ToolRegistry> {
         palace.kg.clone(),
     )));
     register_plugins(&mut registry);
+    register_browser_tools(&mut registry);
     Ok(registry)
 }
 
@@ -589,6 +592,19 @@ fn register_plugins(registry: &mut aonyx_tools::ToolRegistry) {
 /// No-op when the `lua-plugins` feature is disabled.
 #[cfg(not(feature = "lua-plugins"))]
 fn register_plugins(_registry: &mut aonyx_tools::ToolRegistry) {}
+
+/// Fold the browser-automation toolset (Phase YY) into `registry`. No-op
+/// unless built with the `browser` feature.
+#[cfg(feature = "browser")]
+fn register_browser_tools(registry: &mut aonyx_tools::ToolRegistry) {
+    for tool in aonyx_tools::browser::browser_tools() {
+        registry.register(tool);
+    }
+}
+
+/// No-op when the `browser` feature is disabled.
+#[cfg(not(feature = "browser"))]
+fn register_browser_tools(_registry: &mut aonyx_tools::ToolRegistry) {}
 
 /// After a user turn, mine the request for a recurring shape and, when one
 /// recurs often enough, auto-generate a `SKILL.md` (Phase XX). Returns the

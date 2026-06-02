@@ -18,6 +18,8 @@
 #![warn(missing_docs, rust_2018_idioms)]
 
 pub mod bash;
+#[cfg(feature = "browser")]
+pub mod browser;
 pub mod exec;
 pub mod fs;
 pub mod git;
