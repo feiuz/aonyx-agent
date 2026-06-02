@@ -59,8 +59,19 @@ jobs:
         with:
           key: ${{ matrix.target }}
 
-      - name: Build aonyx
-        run: cargo build --release --locked -p aonyx-agent --target ${{ matrix.target }}
+      - name: Build aonyx (lean + full)
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p staging
+          # Lean default binary (small; matches `cargo install aonyx-agent`).
+          cargo build --release --locked -p aonyx-agent --target ${{ matrix.target }}
+          cp "target/${{ matrix.target }}/release/aonyx${{ matrix.ext }}" "staging/aonyx-lean${{ matrix.ext }}"
+          # Full binary: every channel adapter + Lua plugins compiled in.
+          cargo build --release --locked -p aonyx-agent \
+            --features telegram,discord,openai-server,lua-plugins \
+            --target ${{ matrix.target }}
+          cp "target/${{ matrix.target }}/release/aonyx${{ matrix.ext }}" "staging/aonyx-full${{ matrix.ext }}"
 
       - name: Resolve tag name
         id: tag
@@ -76,23 +87,33 @@ jobs:
         if: matrix.archive == 'tar.gz'
         shell: bash
         run: |
-          name="aonyx-${{ steps.tag.outputs.name }}-${{ matrix.target }}"
-          mkdir -p "dist/$name"
-          cp "target/${{ matrix.target }}/release/aonyx${{ matrix.ext }}" "dist/$name/"
-          cp LICENSE README.md "dist/$name/"
-          tar -czf "dist/$name.tar.gz" -C dist "$name"
-          rm -rf "dist/$name"
+          set -euo pipefail
+          tag="${{ steps.tag.outputs.name }}"
+          for variant in lean full; do
+            suffix=""
+            [ "$variant" = "full" ] && suffix="-full"
+            name="aonyx-$tag-${{ matrix.target }}$suffix"
+            mkdir -p "dist/$name"
+            cp "staging/aonyx-$variant${{ matrix.ext }}" "dist/$name/aonyx${{ matrix.ext }}"
+            cp LICENSE README.md "dist/$name/"
+            tar -czf "dist/$name.tar.gz" -C dist "$name"
+            rm -rf "dist/$name"
+          done
 
       - name: Archive (Windows)
         if: matrix.archive == 'zip'
         shell: pwsh
         run: |
-          $name = "aonyx-${{ steps.tag.outputs.name }}-${{ matrix.target }}"
-          New-Item -ItemType Directory -Force -Path "dist/$name" | Out-Null
-          Copy-Item "target/${{ matrix.target }}/release/aonyx${{ matrix.ext }}" "dist/$name/"
-          Copy-Item LICENSE,README.md "dist/$name/"
-          Compress-Archive -Path "dist/$name" -DestinationPath "dist/$name.zip"
-          Remove-Item -Recurse -Force "dist/$name"
+          $tag = "${{ steps.tag.outputs.name }}"
+          foreach ($variant in @("lean", "full")) {
+            $suffix = if ($variant -eq "full") { "-full" } else { "" }
+            $name = "aonyx-$tag-${{ matrix.target }}$suffix"
+            New-Item -ItemType Directory -Force -Path "dist/$name" | Out-Null
+            Copy-Item "staging/aonyx-$variant${{ matrix.ext }}" "dist/$name/aonyx${{ matrix.ext }}"
+            Copy-Item LICENSE,README.md "dist/$name/"
+            Compress-Archive -Path "dist/$name" -DestinationPath "dist/$name.zip"
+            Remove-Item -Recurse -Force "dist/$name"
+          }
 
       - uses: actions/upload-artifact@v4
         with:

@@ -5,6 +5,56 @@ All notable changes to **Aonyx Agent** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+_(nothing yet)_
+
+## [0.4.0] — 2026-06-02 — integrations & onboarding
+
+The Vague 2 finishing arc (phases SS → XX): onboarding, real channel
+adapters, an OpenAI-compatible server, Lua plugins, and skill
+auto-generation. `clippy --all-targets --all-features -D warnings` clean on
+a pinned 1.96.0 toolchain; full workspace test suite green. Prebuilt release
+binaries now ship in **lean** and **-full** (all adapters + plugins)
+variants.
+
+### Added
+- **`aonyx setup`** — an interactive onboarding wizard (Phase SS): pick a
+  provider, enter the API key, choose a model, and verify it with a live
+  connection ping before writing `config.toml`.
+- **OS keyring** secret storage (`keyring` crate) for API keys — macOS
+  Keychain, Windows Credential Manager, Linux Secret Service. Runtime
+  resolution order: `config.toml` → keyring → environment variable. Keys
+  no longer need to live in plaintext, and an env-sourced key can no
+  longer leak into `config.toml` on save.
+- **Linux `aarch64`** prebuilt binary, built natively on a GitHub-hosted
+  ARM runner.
+- **Telegram bot** (`aonyx serve telegram`, Phase TT) — a `teloxide`
+  long-poll bot bridged to the agent loop, with per-chat history, a
+  chat-id allow-list, and an `aonyx setup telegram` wizard (token →
+  keyring). Behind the opt-in `telegram` cargo feature so the default
+  binary stays lean; destructive tools stay denied for remote chats.
+- **Discord bot** (`aonyx serve discord`, Phase UU) — a `serenity` gateway
+  bot sharing the same bridge (per-channel history, allow-list, 2000-char
+  chunking) with an `aonyx setup discord` wizard. Behind the `discord`
+  feature; needs the MESSAGE CONTENT privileged intent enabled.
+- **OpenAI-compatible HTTP server** (`aonyx serve openai --port`, Phase VV)
+  — an `axum` server exposing `POST /v1/chat/completions` + `/v1/models`
+  so any OpenAI SDK can point at the local agent. Stateless (the client
+  owns history, bridged through a new `AgentHandler::complete`), optional
+  bearer auth. Behind the `openai-server` feature.
+- **Lua plugins** (Phase WW) — drop a `.lua` file in `~/.aonyx/plugins/`
+  to add an in-process tool via `aonyx.register_tool { name, description,
+  run = function(args) ... end }`. The Lua VM runs on a dedicated thread
+  (so the tools stay `Send + Sync`); JSON args/results bridge
+  automatically. Behind the `lua-plugins` feature. Example:
+  `examples/plugins/hello.lua`.
+- **Skill auto-generation** (Phase XX) — **on by default**: when a request
+  shape (its leading action word) recurs `skill_autogen_threshold` times
+  (default 3), Aonyx writes a `SKILL.md` to `~/.aonyx/skills/` seeded with
+  the real examples seen; it loads on the next session. Deterministic — no
+  model call. Disable with `skill_autogen = false` in `config.toml`.
+
 ## [0.3.0] — 2026-06-01 — the connected agent
 
 The post-0.2.0 arc (phases AA → RR) opens Aonyx up to the wider tool
@@ -233,45 +283,3 @@ diary, BM25 full-text search) and four built-in skills.
 - Telegram / Discord adapters (`aonyx-adapters` is scaffolded but inert).
 - OpenAI-compatible HTTP server.
 - `tools` blocks in OpenAI / Ollama provider payloads (text-only V1).
-
-## [Unreleased]
-
-The Vague 2 finishing arc (phases SS → XX): onboarding, real channel
-adapters, an OpenAI-compatible server, plugins, and skill auto-generation.
-
-### Added
-- **`aonyx setup`** — an interactive onboarding wizard (Phase SS): pick a
-  provider, enter the API key, choose a model, and verify it with a live
-  connection ping before writing `config.toml`.
-- **OS keyring** secret storage (`keyring` crate) for API keys — macOS
-  Keychain, Windows Credential Manager, Linux Secret Service. Runtime
-  resolution order: `config.toml` → keyring → environment variable. Keys
-  no longer need to live in plaintext, and an env-sourced key can no
-  longer leak into `config.toml` on save.
-- **Linux `aarch64`** prebuilt binary, built natively on a GitHub-hosted
-  ARM runner.
-- **Telegram bot** (`aonyx serve telegram`, Phase TT) — a `teloxide`
-  long-poll bot bridged to the agent loop, with per-chat history, a
-  chat-id allow-list, and an `aonyx setup telegram` wizard (token →
-  keyring). Behind the opt-in `telegram` cargo feature so the default
-  binary stays lean; destructive tools stay denied for remote chats.
-- **Discord bot** (`aonyx serve discord`, Phase UU) — a `serenity` gateway
-  bot sharing the same bridge (per-channel history, allow-list, 2000-char
-  chunking) with an `aonyx setup discord` wizard. Behind the `discord`
-  feature; needs the MESSAGE CONTENT privileged intent enabled.
-- **OpenAI-compatible HTTP server** (`aonyx serve openai --port`, Phase VV)
-  — an `axum` server exposing `POST /v1/chat/completions` + `/v1/models`
-  so any OpenAI SDK can point at the local agent. Stateless (the client
-  owns history, bridged through a new `AgentHandler::complete`), optional
-  bearer auth. Behind the `openai-server` feature.
-- **Lua plugins** (Phase WW) — drop a `.lua` file in `~/.aonyx/plugins/`
-  to add an in-process tool via `aonyx.register_tool { name, description,
-  run = function(args) ... end }`. The Lua VM runs on a dedicated thread
-  (so the tools stay `Send + Sync`); JSON args/results bridge
-  automatically. Behind the `lua-plugins` feature. Example:
-  `examples/plugins/hello.lua`.
-- **Skill auto-generation** (Phase XX) — **on by default**: when a request
-  shape (its leading action word) recurs `skill_autogen_threshold` times
-  (default 3), Aonyx writes a `SKILL.md` to `~/.aonyx/skills/` seeded with
-  the real examples seen; it loads on the next session. Deterministic — no
-  model call. Disable with `skill_autogen = false` in `config.toml`.

@@ -13,7 +13,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
 rust-version = "1.80"
 license = "MIT"
@@ -58,15 +58,15 @@ chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 
 # Local workspace crates
-aonyx-core = { path = "crates/aonyx-core", version = "0.3.0" }
-aonyx-memory = { path = "crates/aonyx-memory", version = "0.3.0" }
-aonyx-llm = { path = "crates/aonyx-llm", version = "0.3.0" }
-aonyx-tools = { path = "crates/aonyx-tools", version = "0.3.0" }
-aonyx-skills = { path = "crates/aonyx-skills", version = "0.3.0" }
-aonyx-agent = { path = "crates/aonyx-agent", version = "0.3.0" }
-aonyx-mcp = { path = "crates/aonyx-mcp", version = "0.3.0" }
-aonyx-tui = { path = "crates/aonyx-tui", version = "0.3.0" }
-aonyx-adapters = { path = "crates/aonyx-adapters", version = "0.3.0" }
+aonyx-core = { path = "crates/aonyx-core", version = "0.4.0" }
+aonyx-memory = { path = "crates/aonyx-memory", version = "0.4.0" }
+aonyx-llm = { path = "crates/aonyx-llm", version = "0.4.0" }
+aonyx-tools = { path = "crates/aonyx-tools", version = "0.4.0" }
+aonyx-skills = { path = "crates/aonyx-skills", version = "0.4.0" }
+aonyx-agent = { path = "crates/aonyx-agent", version = "0.4.0" }
+aonyx-mcp = { path = "crates/aonyx-mcp", version = "0.4.0" }
+aonyx-tui = { path = "crates/aonyx-tui", version = "0.4.0" }
+aonyx-adapters = { path = "crates/aonyx-adapters", version = "0.4.0" }
 
 [profile.release]
 opt-level = 3
