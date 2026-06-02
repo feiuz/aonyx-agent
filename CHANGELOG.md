@@ -7,12 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+_(nothing yet)_
+
+## [0.5.0] — 2026-06-02 — multimodal & web (Vague 3)
+
+Vague 3 takes off: drive a real headless browser, generate images, and
+speak. `clippy --all-targets --all-features -D warnings` clean on the
+pinned 1.96.0 toolchain; full workspace test suite green. The `-full`
+release binaries now also bundle browser automation.
+
 ### Added
 - **Browser automation** (Phase YY, Vague 3) — a headless Chrome / Chromium
   toolset over CDP (`chromiumoxide`): `browser_navigate`, `browser_read`,
   `browser_click`, `browser_screenshot`, all sharing one lazily-launched
   browser session. Behind the `browser` cargo feature (included in the
   `-full` release binaries); needs a Chrome/Chromium binary at runtime.
+- **Image generation & TTS** (Phase ZZ, Vague 3) — `image_gen` (OpenAI
+  images API → PNG) and `tts` (OpenAI audio/speech → MP3). Lightweight and
+  always available; the OpenAI key is injected (config → keyring → env), so
+  they work with a keyring-stored key. Clear error when no key is set.
 
 ## [0.4.0] — 2026-06-02 — integrations & onboarding
 

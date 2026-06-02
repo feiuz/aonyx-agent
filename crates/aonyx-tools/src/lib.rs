@@ -23,6 +23,7 @@ pub mod browser;
 pub mod exec;
 pub mod fs;
 pub mod git;
+pub mod media;
 pub mod memory;
 #[cfg(feature = "lua-plugins")]
 pub mod plugins;

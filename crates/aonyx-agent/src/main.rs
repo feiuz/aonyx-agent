@@ -400,6 +400,16 @@ async fn start_interactive(
     register_plugins(&mut tool_registry);
     // Phase YY — browser-automation tools (feature-gated).
     register_browser_tools(&mut tool_registry);
+    // Phase ZZ — multimodal tools (image_gen, tts) with the resolved key.
+    let media_key = config
+        .openai_api_key
+        .clone()
+        .or_else(|| secrets::get("openai_api_key"));
+    register_media_tools(
+        &mut tool_registry,
+        media_key,
+        config.openai_base_url.clone(),
+    );
 
     // Phase OO — seed the always-allow approval set from persisted config
     // so tools the user chose to always allow skip the prompt this run.
@@ -565,6 +575,8 @@ fn build_serve_registry() -> anyhow::Result<aonyx_tools::ToolRegistry> {
     )));
     register_plugins(&mut registry);
     register_browser_tools(&mut registry);
+    let media_key = secrets::get("openai_api_key").or_else(|| std::env::var("OPENAI_API_KEY").ok());
+    register_media_tools(&mut registry, media_key, None);
     Ok(registry)
 }
 
@@ -605,6 +617,21 @@ fn register_browser_tools(registry: &mut aonyx_tools::ToolRegistry) {
 /// No-op when the `browser` feature is disabled.
 #[cfg(not(feature = "browser"))]
 fn register_browser_tools(_registry: &mut aonyx_tools::ToolRegistry) {}
+
+/// Register the multimodal tools (`image_gen`, `tts`, Phase ZZ) with the
+/// resolved OpenAI key + base URL. Always available; they return a clear
+/// error when no key is configured.
+fn register_media_tools(
+    registry: &mut aonyx_tools::ToolRegistry,
+    openai_key: Option<String>,
+    base_url: Option<String>,
+) {
+    registry.register(Arc::new(aonyx_tools::media::ImageGen::new(
+        openai_key.clone(),
+        base_url.clone(),
+    )));
+    registry.register(Arc::new(aonyx_tools::media::Tts::new(openai_key, base_url)));
+}
 
 /// After a user turn, mine the request for a recurring shape and, when one
 /// recurs often enough, auto-generate a `SKILL.md` (Phase XX). Returns the

@@ -135,7 +135,7 @@ checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
 
 [[package]]
 name = "aonyx-adapters"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "aonyx-core",
  "async-trait",
@@ -150,7 +150,7 @@ dependencies = [
 
 [[package]]
 name = "aonyx-agent"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "aonyx-adapters",
@@ -194,7 +194,7 @@ dependencies = [
 
 [[package]]
 name = "aonyx-core"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -207,7 +207,7 @@ dependencies = [
 
 [[package]]
 name = "aonyx-llm"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "aonyx-core",
  "async-stream",
@@ -223,7 +223,7 @@ dependencies = [
 
 [[package]]
 name = "aonyx-mcp"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "aonyx-core",
  "aonyx-memory",
@@ -238,7 +238,7 @@ dependencies = [
 
 [[package]]
 name = "aonyx-memory"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "aonyx-core",
  "async-trait",
@@ -255,7 +255,7 @@ dependencies = [
 
 [[package]]
 name = "aonyx-skills"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "aonyx-core",
  "async-trait",
@@ -270,11 +270,12 @@ dependencies = [
 
 [[package]]
 name = "aonyx-tools"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "aonyx-core",
  "aonyx-memory",
  "async-trait",
+ "base64 0.22.1",
  "chromiumoxide",
  "futures",
  "glob",
@@ -293,7 +294,7 @@ dependencies = [
 
 [[package]]
 name = "aonyx-tui"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "aonyx-core",
  "tracing",
