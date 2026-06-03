@@ -37,24 +37,43 @@
       <button id="saveBtn" type="button">Connect</button>
     </section>
 
-    <main id="log" class="log">
-      <div class="empty" id="empty">
-        <p class="empty-title">Aonyx Agent</p>
-        <p class="empty-sub">
-          Point me at a running <code>aonyx serve api</code> in Settings, then
-          ask away — I'll call my tools (built-in, MCP, plugin) to answer.
-        </p>
-      </div>
-    </main>
+    <div class="workspace">
+      <aside class="sidebar">
+        <div class="side-head">
+          <span>Sessions</span>
+          <button id="newBtn" class="ghost sm" type="button">New</button>
+        </div>
+        <ul id="sessions" class="sessions"></ul>
 
-    <footer class="composer">
-      <textarea
-        id="input"
-        rows="1"
-        placeholder="Message Aonyx…  (Enter to send · Shift+Enter for a newline)"
-      ></textarea>
-      <button id="send" type="button">Send</button>
-    </footer>
+        <div class="side-head"><span>Memory palace</span></div>
+        <div class="search">
+          <input id="memq" type="text" spellcheck="false" placeholder="search the palace…  ⏎" />
+        </div>
+        <ul id="hits" class="hits"></ul>
+      </aside>
+
+      <section class="chatcol">
+        <main id="log" class="log">
+          <div class="empty" id="empty">
+            <p class="empty-title">Aonyx Agent</p>
+            <p class="empty-sub">
+              Point me at a running <code>aonyx serve api</code> in Settings,
+              then ask away — I'll call my tools (built-in, MCP, plugin) to
+              answer, and stream the reply.
+            </p>
+          </div>
+        </main>
+
+        <footer class="composer">
+          <textarea
+            id="input"
+            rows="1"
+            placeholder="Message Aonyx…  (Enter to send · Shift+Enter for a newline)"
+          ></textarea>
+          <button id="send" type="button">Send</button>
+        </footer>
+      </section>
+    </div>
 
     <script src="app.js"></script>
   </body>

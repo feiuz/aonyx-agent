@@ -28,6 +28,11 @@ async fn send(
         rb = rb.json(&b);
     }
     let resp = rb.send().await.map_err(|e| format!("request failed: {e}"))?;
+    finish(resp).await
+}
+
+/// Decode an API response into JSON (or a descriptive error).
+async fn finish(resp: reqwest::Response) -> Result<Value, String> {
     let status = resp.status();
     let text = resp.text().await.unwrap_or_default();
     if !status.is_success() {
@@ -121,6 +126,54 @@ async fn api_stream(
     Ok(())
 }
 
+/// `GET /v1/sessions` — list recent sessions for a project.
+#[tauri::command]
+async fn api_list_sessions(
+    base: String,
+    token: String,
+    project: Option<String>,
+) -> Result<Value, String> {
+    let client = reqwest::Client::new();
+    let mut rb = client.get(join(&base, "/v1/sessions"));
+    if let Some(p) = project.filter(|p| !p.is_empty()) {
+        rb = rb.query(&[("project", p)]);
+    }
+    if !token.is_empty() {
+        rb = rb.bearer_auth(token);
+    }
+    finish(rb.send().await.map_err(|e| format!("request failed: {e}"))?).await
+}
+
+/// `GET /v1/sessions/{id}` — full record including the message log.
+#[tauri::command]
+async fn api_get_session(base: String, token: String, session: String) -> Result<Value, String> {
+    send(
+        reqwest::Method::GET,
+        join(&base, &format!("/v1/sessions/{session}")),
+        &token,
+        None,
+    )
+    .await
+}
+
+/// `GET /v1/memory/search` — hybrid memory-palace search.
+#[tauri::command]
+async fn api_memory_search(
+    base: String,
+    token: String,
+    q: String,
+    k: Option<usize>,
+) -> Result<Value, String> {
+    let client = reqwest::Client::new();
+    let mut rb = client
+        .get(join(&base, "/v1/memory/search"))
+        .query(&[("q", q.as_str()), ("k", &k.unwrap_or(8).to_string())]);
+    if !token.is_empty() {
+        rb = rb.bearer_auth(token);
+    }
+    finish(rb.send().await.map_err(|e| format!("request failed: {e}"))?).await
+}
+
 /// Run the desktop application.
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -129,7 +182,10 @@ pub fn run() {
             api_info,
             api_create_session,
             api_send,
-            api_stream
+            api_stream,
+            api_list_sessions,
+            api_get_session,
+            api_memory_search
         ])
         .run(tauri::generate_context!())
         .expect("error while running the Aonyx desktop app");

@@ -1,5 +1,6 @@
 // Aonyx Desktop — talks to `aonyx serve api` through Rust-side Tauri
-// commands (no CORS, sandboxed). Blocking turns for V4.6; streaming in V4.7.
+// commands (no CORS, sandboxed webview). V4.6 streaming chat + V4.7 sessions
+// sidebar and memory-palace search.
 
 const tauri = window.__TAURI__;
 const invoke = tauri && tauri.core && tauri.core.invoke;
@@ -10,6 +11,8 @@ const input = $("input");
 const sendBtn = $("send");
 const dot = $("dot");
 const statusText = $("statusText");
+const sessionsEl = $("sessions");
+const hitsEl = $("hits");
 
 const store = {
   get url() {
@@ -46,32 +49,43 @@ function clearEmpty() {
   if (e) e.remove();
 }
 
+function resetLog() {
+  log.innerHTML = "";
+}
+
+function args(extra) {
+  return Object.assign({ base: store.url, token: store.token }, extra);
+}
+
+// Render a finished message (used for loaded transcripts).
 function addMsg(role, text, opts = {}) {
   clearEmpty();
   const wrap = document.createElement("div");
   wrap.className = "msg " + role;
-
   const r = document.createElement("div");
   r.className = "role";
   r.textContent = role === "user" ? "you" : "aonyx";
   wrap.appendChild(r);
-
   const b = document.createElement("div");
-  b.className = "bubble" + (opts.error ? " error" : "") + (opts.thinking ? " thinking" : "");
+  b.className = "bubble" + (opts.error ? " error" : "");
   b.innerHTML = escapeHtml(text);
   wrap.appendChild(b);
-
   if (opts.tools && opts.tools.length) {
     const t = document.createElement("div");
     t.className = "tools";
     t.textContent = "called: " + opts.tools.join(", ");
     wrap.appendChild(t);
   }
-
   log.appendChild(wrap);
   log.scrollTop = log.scrollHeight;
   return b;
 }
+
+function toolNamesOf(msg) {
+  return (msg.tool_calls || []).map((tc) => tc && tc.name).filter(Boolean);
+}
+
+// ---- connection + sessions ----
 
 async function connect() {
   if (!invoke) {
@@ -80,21 +94,125 @@ async function connect() {
   }
   setStatus("", "connecting…");
   try {
-    const info = await invoke("api_info", { base: store.url, token: store.token });
+    const info = await invoke("api_info", args());
     setStatus("ok", `${info.provider} · ${info.model}`);
-    // fresh session for the (possibly new) endpoint
-    const rec = await invoke("api_create_session", {
-      base: store.url,
-      token: store.token,
-      project: null,
-    });
-    sessionId = rec.id;
+    await loadSessions();
     return true;
   } catch (e) {
     setStatus("err", String(e));
     return false;
   }
 }
+
+async function loadSessions() {
+  if (!invoke) return;
+  try {
+    const list = await invoke("api_list_sessions", args({ project: null }));
+    renderSessions(Array.isArray(list) ? list : []);
+  } catch {
+    sessionsEl.innerHTML = '<li class="muted">— unavailable —</li>';
+  }
+}
+
+function renderSessions(list) {
+  sessionsEl.innerHTML = "";
+  if (!list.length) {
+    sessionsEl.innerHTML = '<li class="muted">no sessions yet</li>';
+    return;
+  }
+  for (const s of list) {
+    const li = document.createElement("li");
+    if (s.id === sessionId) li.className = "active";
+    const title = document.createElement("span");
+    title.textContent = s.title || "(untitled)";
+    const meta = document.createElement("span");
+    meta.className = "meta";
+    meta.textContent = `${s.turns} turn${s.turns === 1 ? "" : "s"}`;
+    li.append(title, meta);
+    li.addEventListener("click", () => switchSession(s.id));
+    sessionsEl.appendChild(li);
+  }
+}
+
+async function switchSession(id) {
+  if (!invoke || busy) return;
+  try {
+    const rec = await invoke("api_get_session", args({ session: id }));
+    sessionId = id;
+    resetLog();
+    for (const m of rec.messages || []) {
+      if (m.role === "user" && m.content) addMsg("user", m.content);
+      else if (m.role === "assistant" && (m.content || toolNamesOf(m).length))
+        addMsg("assistant", m.content || "", { tools: toolNamesOf(m) });
+    }
+    if (!log.children.length) {
+      log.innerHTML = '<div class="empty"><p class="muted">empty session — say hello</p></div>';
+    }
+    [...sessionsEl.children].forEach((li) => li.classList.remove("active"));
+    refreshActive();
+  } catch (e) {
+    setStatus("err", String(e));
+  }
+}
+
+function refreshActive() {
+  // re-mark the active row by reloading the list (cheap)
+  loadSessions();
+}
+
+async function ensureSession() {
+  if (sessionId) return sessionId;
+  const rec = await invoke("api_create_session", args({ project: null }));
+  sessionId = rec.id;
+  loadSessions();
+  return sessionId;
+}
+
+async function newSession() {
+  if (!invoke) return;
+  try {
+    const rec = await invoke("api_create_session", args({ project: null }));
+    sessionId = rec.id;
+    resetLog();
+    log.innerHTML = '<div class="empty"><p class="muted">new session — say hello</p></div>';
+    loadSessions();
+  } catch (e) {
+    setStatus("err", String(e));
+  }
+}
+
+// ---- memory search ----
+
+async function searchMemory(q) {
+  if (!invoke || !q.trim()) return;
+  hitsEl.innerHTML = '<li class="muted">searching…</li>';
+  try {
+    const hits = await invoke("api_memory_search", args({ q, k: 8 }));
+    renderHits(Array.isArray(hits) ? hits : []);
+  } catch (e) {
+    hitsEl.innerHTML = `<li class="muted">${escapeHtml(String(e))}</li>`;
+  }
+}
+
+function renderHits(hits) {
+  hitsEl.innerHTML = "";
+  if (!hits.length) {
+    hitsEl.innerHTML = '<li class="muted">no matches</li>';
+    return;
+  }
+  for (const h of hits) {
+    const li = document.createElement("li");
+    const score = document.createElement("span");
+    score.className = "score";
+    score.textContent = (h.score || 0).toFixed(2);
+    const txt = document.createElement("span");
+    txt.textContent = (h.content || "").slice(0, 240);
+    li.append(score, txt);
+    hitsEl.appendChild(li);
+  }
+}
+
+// ---- send (streaming) ----
 
 async function send() {
   const text = input.value.trim();
@@ -103,10 +221,10 @@ async function send() {
     addMsg("assistant", "This build is not running inside Tauri.", { error: true });
     return;
   }
-  if (!sessionId && !(await connect())) {
-    addMsg("assistant", "Not connected — check the API URL/token in Settings.", {
-      error: true,
-    });
+  try {
+    if (!(await ensureSessionOrConnect())) return;
+  } catch (e) {
+    addMsg("assistant", String(e), { error: true });
     return;
   }
 
@@ -116,7 +234,6 @@ async function send() {
   busy = true;
   sendBtn.disabled = true;
 
-  // Assistant bubble we stream tokens into.
   clearEmpty();
   const wrap = document.createElement("div");
   wrap.className = "msg assistant";
@@ -178,18 +295,15 @@ async function send() {
   };
 
   try {
-    await invoke("api_stream", {
-      base: store.url,
-      token: store.token,
-      session: sessionId,
-      content: text,
-      onEvent: channel,
-    });
+    await invoke(
+      "api_stream",
+      args({ session: sessionId, content: text, onEvent: channel }),
+    );
     if (bubble.classList.contains("thinking")) {
-      // Stream ended with no delta/done (e.g. empty reply).
       bubble.classList.remove("thinking");
       bubble.textContent = acc || "(no reply)";
     }
+    loadSessions(); // refresh titles / turn counts
   } catch (e) {
     bubble.classList.remove("thinking");
     bubble.classList.add("error");
@@ -200,6 +314,15 @@ async function send() {
     sendBtn.disabled = false;
     input.focus();
   }
+}
+
+async function ensureSessionOrConnect() {
+  if (sessionId) return true;
+  if (statusText.textContent.startsWith("connect") || dot.classList.contains("err")) {
+    if (!(await connect())) return false;
+  }
+  await ensureSession();
+  return !!sessionId;
 }
 
 function autoGrow() {
@@ -220,6 +343,13 @@ $("saveBtn").addEventListener("click", async () => {
   sessionId = null;
   await connect();
 });
+$("newBtn").addEventListener("click", newSession);
+$("memq").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") {
+    e.preventDefault();
+    searchMemory(e.target.value);
+  }
+});
 sendBtn.addEventListener("click", send);
 input.addEventListener("input", autoGrow);
 input.addEventListener("keydown", (e) => {
@@ -229,5 +359,4 @@ input.addEventListener("keydown", (e) => {
   }
 });
 
-// initial connection attempt against the saved/default endpoint
 connect();
