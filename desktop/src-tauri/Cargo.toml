@@ -1,0 +1,23 @@
+[package]
+name = "aonyx-desktop"
+version = "0.8.0"
+edition = "2021"
+description = "Aonyx Agent — desktop app (Tauri 2)"
+license = "MIT"
+
+# Standalone workspace so the main aonyx Cargo workspace (and its CI) stay
+# lean and unaffected by the Tauri/webview dependency tree.
+[workspace]
+
+[lib]
+name = "aonyx_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }

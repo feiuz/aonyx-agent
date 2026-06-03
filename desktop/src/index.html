@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Aonyx Agent</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Saira:wght@400;500;600;700&family=Saira+Condensed:wght@600;700&display=swap"
+    />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <img src="logo.png" alt="" class="brand-logo" width="26" height="26" />
+        <span class="brand-name">Aonyx&nbsp;Agent</span>
+      </div>
+      <div class="status" id="status" title="connection">
+        <span class="dot" id="dot"></span>
+        <span id="statusText">disconnected</span>
+      </div>
+      <button id="settingsBtn" class="ghost" type="button">Settings</button>
+    </header>
+
+    <section id="settings" class="settings hidden">
+      <label
+        >API URL
+        <input id="apiUrl" type="text" spellcheck="false" placeholder="http://127.0.0.1:8788" />
+      </label>
+      <label
+        >Token
+        <input id="token" type="password" spellcheck="false" placeholder="(optional — bearer)" />
+      </label>
+      <button id="saveBtn" type="button">Connect</button>
+    </section>
+
+    <main id="log" class="log">
+      <div class="empty" id="empty">
+        <p class="empty-title">Aonyx Agent</p>
+        <p class="empty-sub">
+          Point me at a running <code>aonyx serve api</code> in Settings, then
+          ask away — I'll call my tools (built-in, MCP, plugin) to answer.
+        </p>
+      </div>
+    </main>
+
+    <footer class="composer">
+      <textarea
+        id="input"
+        rows="1"
+        placeholder="Message Aonyx…  (Enter to send · Shift+Enter for a newline)"
+      ></textarea>
+      <button id="send" type="button">Send</button>
+    </footer>
+
+    <script src="app.js"></script>
+  </body>
+</html>
