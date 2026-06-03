@@ -1,6 +1,6 @@
 [package]
 name = "aonyx-desktop"
-version = "0.8.0"
+version = "0.9.0"
 edition = "2021"
 description = "Aonyx Agent — desktop app (Tauri 2)"
 license = "MIT"

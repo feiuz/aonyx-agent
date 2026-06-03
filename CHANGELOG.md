@@ -9,6 +9,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 _(nothing yet)_
 
+## [0.9.0] — 2026-06-03 — Vague 4 complete: the desktop app
+
+Ships **Aonyx Desktop** (Tauri 2), closing Vague 4 (automation API + desktop
+app). The agent crates are unchanged since 0.8.1; the workspace version is
+aligned to 0.9.0 to mark the milestone.
+
+### Added
+- **Desktop app** (`desktop/`, Tauri 2) — a native GUI over `aonyx serve api`,
+  reusing the site's design:
+  - **Streaming markdown chat** with live tool activity (`called: …`).
+  - **Sessions** sidebar (switch to load a transcript, New to start one).
+  - **Memory-palace search** (hybrid hits with scores).
+  - **Embedded local agent** — the app launches `aonyx serve api` itself on a
+    free loopback port (no separate server to start), and falls back to a
+    configurable remote URL + bearer token. The frontend talks to the API
+    through Rust-side commands, so there is no CORS and no bundled npm.
+  - Windows installer (`.msi` + NSIS `.exe`) built by
+    [`.github/workflows/desktop.yml`](.github/workflows/desktop.yml).
+
+### Notes
+- The embedded mode needs `aonyx` (built with `--features api`) on the PATH;
+  otherwise point the app at any running `aonyx serve api` in Settings.
+
 ## [0.8.1] — 2026-06-03 — tool-calling reach + safety
 
 Makes v0.8.0's tool calling actually usable for **served** deployments

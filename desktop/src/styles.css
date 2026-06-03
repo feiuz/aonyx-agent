@@ -156,6 +156,29 @@ button.ghost:hover {
 .settings.hidden {
   display: none;
 }
+.settings label.check {
+  flex: 1 1 100%;
+  flex-direction: row;
+  align-items: center;
+  gap: 0.45rem;
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 0.85rem;
+  color: var(--fg);
+  cursor: pointer;
+}
+.settings label.check input {
+  width: auto;
+  flex: 0;
+}
+.settings label.check code {
+  font-family: var(--font-mono);
+  color: var(--dim);
+}
+.settings .remote-only.disabled {
+  opacity: 0.45;
+  pointer-events: none;
+}
 .settings label {
   display: flex;
   flex-direction: column;

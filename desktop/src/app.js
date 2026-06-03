@@ -27,10 +27,20 @@ const store = {
   set token(v) {
     localStorage.setItem("aonyx.token", v);
   },
+  // Embedded local agent on by default; the app launches `aonyx serve api`.
+  get local() {
+    return localStorage.getItem("aonyx.local") !== "0";
+  },
+  set local(v) {
+    localStorage.setItem("aonyx.local", v ? "1" : "0");
+  },
 };
 
 let sessionId = null;
 let busy = false;
+// The active endpoint (set by connect(): the local sidecar, or the remote URL).
+let endpoint = { url: "http://127.0.0.1:8788", token: "" };
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function setStatus(state, text) {
   dot.className = "dot" + (state ? " " + state : "");
@@ -131,7 +141,7 @@ function resetLog() {
 }
 
 function args(extra) {
-  return Object.assign({ base: store.url, token: store.token }, extra);
+  return Object.assign({ base: endpoint.url, token: endpoint.token }, extra);
 }
 
 // Render a finished message (used for loaded transcripts).
@@ -164,14 +174,30 @@ function toolNamesOf(msg) {
 
 // ---- connection + sessions ----
 
+// Probe /v1/info, retrying while a freshly-spawned local agent binds.
+async function probeInfo(tries) {
+  for (let i = 0; i < tries; i++) {
+    try {
+      return await invoke("api_info", args());
+    } catch (e) {
+      if (i === tries - 1) throw e;
+      await sleep(350);
+    }
+  }
+}
+
 async function connect() {
   if (!invoke) {
     setStatus("err", "not running in Tauri");
     return false;
   }
-  setStatus("", "connecting…");
+  sessionId = null;
+  setStatus("", store.local ? "starting local agent…" : "connecting…");
   try {
-    const info = await invoke("api_info", args());
+    endpoint = store.local
+      ? { url: await invoke("start_local"), token: "" }
+      : { url: store.url, token: store.token };
+    const info = await probeInfo(store.local ? 14 : 2);
     setStatus("ok", `${info.provider} · ${info.model}`);
     await loadSessions();
     return true;
@@ -398,7 +424,7 @@ async function send() {
 
 async function ensureSessionOrConnect() {
   if (sessionId) return true;
-  if (statusText.textContent.startsWith("connect") || dot.classList.contains("err")) {
+  if (!dot.classList.contains("ok")) {
     if (!(await connect())) return false;
   }
   await ensureSession();
@@ -411,17 +437,31 @@ function autoGrow() {
 }
 
 // ---- wiring ----
+function reflectLocal() {
+  const on = $("localMode").checked;
+  $("apiUrl").disabled = on;
+  $("token").disabled = on;
+}
+
 $("settingsBtn").addEventListener("click", () => {
   $("settings").classList.toggle("hidden");
+  $("localMode").checked = store.local;
   $("apiUrl").value = store.url;
   $("token").value = store.token;
+  reflectLocal();
 });
+$("localMode").addEventListener("change", reflectLocal);
 $("saveBtn").addEventListener("click", async () => {
+  store.local = $("localMode").checked;
   store.url = $("apiUrl").value.trim() || "http://127.0.0.1:8788";
   store.token = $("token").value;
   $("settings").classList.add("hidden");
-  sessionId = null;
   await connect();
+});
+window.addEventListener("beforeunload", () => {
+  try {
+    if (store.local && invoke) invoke("stop_local");
+  } catch {}
 });
 $("newBtn").addEventListener("click", newSession);
 $("memq").addEventListener("keydown", (e) => {

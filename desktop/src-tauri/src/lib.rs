@@ -174,10 +174,70 @@ async fn api_memory_search(
     finish(rb.send().await.map_err(|e| format!("request failed: {e}"))?).await
 }
 
+/// Holds the managed local `aonyx serve api` child, if one is running.
+#[derive(Default)]
+struct LocalAgent(std::sync::Mutex<Option<std::process::Child>>);
+
+/// Pick a free loopback TCP port (best-effort; falls back to 8788).
+fn free_port() -> u16 {
+    std::net::TcpListener::bind("127.0.0.1:0")
+        .ok()
+        .and_then(|l| l.local_addr().ok())
+        .map(|a| a.port())
+        .unwrap_or(8788)
+}
+
+/// Launch a local `aonyx serve api` on a free loopback port and return its
+/// base URL. The desktop's "embedded" mode: no separate server to start.
+/// Requires `aonyx` (built with `--features api`) on the PATH.
+#[tauri::command]
+fn start_local(state: tauri::State<'_, LocalAgent>) -> Result<String, String> {
+    let mut guard = state.0.lock().map_err(|_| "state lock poisoned".to_string())?;
+    if let Some(mut child) = guard.take() {
+        let _ = child.kill();
+    }
+    let port = free_port();
+    let mut cmd = std::process::Command::new("aonyx");
+    cmd.args([
+        "serve",
+        "api",
+        "--port",
+        &port.to_string(),
+        "--bind",
+        "127.0.0.1",
+    ]);
+    // Don't pop a console window for the child on Windows.
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    let child = cmd.spawn().map_err(|e| {
+        format!(
+            "could not launch `aonyx serve api` — is `aonyx` on your PATH \
+             (built with `--features api`)? {e}"
+        )
+    })?;
+    *guard = Some(child);
+    Ok(format!("http://127.0.0.1:{port}"))
+}
+
+/// Stop the managed local agent, if any.
+#[tauri::command]
+fn stop_local(state: tauri::State<'_, LocalAgent>) {
+    if let Ok(mut guard) = state.0.lock() {
+        if let Some(mut child) = guard.take() {
+            let _ = child.kill();
+        }
+    }
+}
+
 /// Run the desktop application.
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    use tauri::Manager;
     tauri::Builder::default()
+        .manage(LocalAgent::default())
         .invoke_handler(tauri::generate_handler![
             api_info,
             api_create_session,
@@ -185,8 +245,23 @@ pub fn run() {
             api_stream,
             api_list_sessions,
             api_get_session,
-            api_memory_search
+            api_memory_search,
+            start_local,
+            stop_local
         ])
+        .on_window_event(|window, event| {
+            // Kill the managed local agent when the window closes so it never
+            // orphans.
+            if matches!(event, tauri::WindowEvent::Destroyed) {
+                if let Some(state) = window.try_state::<LocalAgent>() {
+                    if let Ok(mut guard) = state.0.lock() {
+                        if let Some(mut child) = guard.take() {
+                            let _ = child.kill();
+                        }
+                    }
+                }
+            }
+        })
         .run(tauri::generate_context!())
         .expect("error while running the Aonyx desktop app");
 }
