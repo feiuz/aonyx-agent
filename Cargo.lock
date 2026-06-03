@@ -210,12 +210,16 @@ name = "aonyx-api"
 version = "0.6.0"
 dependencies = [
  "aonyx-core",
+ "aonyx-memory",
+ "async-trait",
  "axum",
+ "chrono",
  "serde",
  "serde_json",
  "thiserror 1.0.69",
  "tokio",
  "tower",
+ "uuid",
 ]
 
 [[package]]

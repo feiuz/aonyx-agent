@@ -1,12 +1,16 @@
 //! Shared application state and its value types.
 //!
 //! [`ApiState`] is cloned into every handler by axum, so its fields are
-//! cheap-to-clone `Arc`s. More fields (palace, session store, tool
-//! registry, the injected turn-runner) are added in later V4 phases.
+//! cheap-to-clone `Arc`s. The session store and the turn-runner are trait
+//! objects so the binary injects its real implementations while tests use
+//! an in-memory store + a stub agent.
 
 use std::sync::Arc;
 
+use aonyx_memory::SessionStore;
 use serde::Serialize;
+
+use crate::agent::ApiAgent;
 
 /// Authentication + authorization policy for the API.
 #[derive(Debug, Clone)]
@@ -58,7 +62,11 @@ pub struct ServerInfo {
 
 impl ServerInfo {
     /// Build server info for the active provider/model and capability set.
-    pub fn new(provider: impl Into<String>, model: impl Into<String>, features: Vec<String>) -> Self {
+    pub fn new(
+        provider: impl Into<String>,
+        model: impl Into<String>,
+        features: Vec<String>,
+    ) -> Self {
         Self {
             name: "aonyx-agent",
             version: env!("CARGO_PKG_VERSION"),
@@ -76,14 +84,36 @@ pub struct ApiState {
     pub auth: Arc<AuthConfig>,
     /// Static server/capability info for `GET /v1/info`.
     pub info: Arc<ServerInfo>,
+    /// Persistent session store (typically `~/.aonyx/sessions.db`).
+    pub sessions: Arc<dyn SessionStore>,
+    /// The injected agent loop used to run a turn.
+    pub agent: Arc<dyn ApiAgent>,
+    /// Project slug used when a request does not specify one.
+    pub default_project: Arc<String>,
 }
 
 impl ApiState {
     /// Assemble the state from its parts.
-    pub fn new(auth: AuthConfig, info: ServerInfo) -> Self {
+    pub fn new(
+        auth: AuthConfig,
+        info: ServerInfo,
+        sessions: Arc<dyn SessionStore>,
+        agent: Arc<dyn ApiAgent>,
+        default_project: impl Into<String>,
+    ) -> Self {
         Self {
             auth: Arc::new(auth),
             info: Arc::new(info),
+            sessions,
+            agent,
+            default_project: Arc::new(default_project.into()),
         }
+    }
+
+    /// The given project, or the server default when `None`/empty.
+    pub(crate) fn project_or_default(&self, project: Option<String>) -> String {
+        project
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| self.default_project.as_ref().clone())
     }
 }

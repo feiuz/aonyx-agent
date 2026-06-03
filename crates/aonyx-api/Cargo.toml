@@ -14,10 +14,14 @@ description = "Aonyx Agent — REST + WebSocket automation API over the agent co
 # phases; the API never depends on `aonyx-agent` so the binary can pull in
 # this crate behind its `api` feature without a dependency cycle.
 aonyx-core = { workspace = true }
+aonyx-memory = { workspace = true }
+async-trait = { workspace = true }
 axum = { version = "0.7", features = ["ws"] }
+chrono = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+uuid = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }

@@ -23,10 +23,13 @@
 #![warn(missing_docs, rust_2018_idioms)]
 
 pub mod error;
+mod agent;
 mod auth;
 mod routes;
+mod sessions;
 mod state;
 
+pub use agent::ApiAgent;
 pub use error::{ApiError, ApiResult};
 pub use routes::build_router;
 pub use state::{ApiState, AuthConfig, ServerInfo};

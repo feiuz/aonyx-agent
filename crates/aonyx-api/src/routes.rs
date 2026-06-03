@@ -2,23 +2,27 @@
 
 use axum::extract::State;
 use axum::response::IntoResponse;
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde_json::json;
 
 use crate::auth::require_auth;
+use crate::sessions::{create_session, delete_session, get_session, list_sessions, send_message};
 use crate::state::{ApiState, ServerInfo};
 
 /// Build the complete API router for the given [`ApiState`].
 ///
 /// `/v1/health` is public; every other route sits behind the bearer-token
 /// middleware (a no-op when no token is configured). Later V4 phases merge
-/// more route groups here (sessions, memory, tools, skills, config).
+/// more route groups here (memory, tools, skills, config, streaming).
 pub fn build_router(state: ApiState) -> Router {
     let public = Router::new().route("/v1/health", get(health));
 
     let protected = Router::new()
         .route("/v1/info", get(info))
+        .route("/v1/sessions", get(list_sessions).post(create_session))
+        .route("/v1/sessions/:id", get(get_session).delete(delete_session))
+        .route("/v1/sessions/:id/messages", post(send_message))
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             require_auth,
@@ -40,58 +44,240 @@ async fn info(State(state): State<ApiState>) -> Json<ServerInfo> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::ApiAgent;
     use crate::state::{AuthConfig, ServerInfo};
+    use aonyx_core::{Message, Role};
+    use aonyx_memory::SqliteSessionStore;
+    use async_trait::async_trait;
     use axum::body::Body;
-    use axum::http::{Request, StatusCode};
+    use axum::http::{header, Request, StatusCode};
+    use std::sync::Arc;
     use tower::ServiceExt; // for `oneshot`
+
+    /// Stub agent: echoes the last user message back as an assistant reply.
+    struct EchoAgent;
+
+    #[async_trait]
+    impl ApiAgent for EchoAgent {
+        async fn run_turn(&self, mut history: Vec<Message>) -> aonyx_core::Result<Vec<Message>> {
+            let last_user = history
+                .iter()
+                .rev()
+                .find(|m| matches!(m.role, Role::User))
+                .map(|m| m.content.clone())
+                .unwrap_or_default();
+            history.push(Message::new(Role::Assistant, format!("echo: {last_user}")));
+            Ok(history)
+        }
+    }
 
     fn state(token: Option<&str>) -> ApiState {
         ApiState::new(
             AuthConfig::new(token.map(str::to_string), false),
             ServerInfo::new("anthropic", "claude-test", vec!["api".into()]),
+            Arc::new(SqliteSessionStore::open_in_memory().unwrap()),
+            Arc::new(EchoAgent),
+            "demo",
         )
     }
 
-    fn req(uri: &str, bearer: Option<&str>) -> Request<Body> {
+    fn get_req(uri: &str, bearer: Option<&str>) -> Request<Body> {
         let mut b = Request::builder().uri(uri);
         if let Some(t) = bearer {
-            b = b.header(axum::http::header::AUTHORIZATION, format!("Bearer {t}"));
+            b = b.header(header::AUTHORIZATION, format!("Bearer {t}"));
         }
         b.body(Body::empty()).unwrap()
     }
 
+    fn post_req(uri: &str, body: serde_json::Value) -> Request<Body> {
+        Request::builder()
+            .method("POST")
+            .uri(uri)
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap()
+    }
+
+    fn delete_req(uri: &str) -> Request<Body> {
+        Request::builder()
+            .method("DELETE")
+            .uri(uri)
+            .body(Body::empty())
+            .unwrap()
+    }
+
+    async fn body_json(res: axum::response::Response) -> serde_json::Value {
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    // ---- auth ----------------------------------------------------------
+
     #[tokio::test]
     async fn health_is_open_even_with_a_token_set() {
         let app = build_router(state(Some("secret")));
-        let res = app.oneshot(req("/v1/health", None)).await.unwrap();
+        let res = app.oneshot(get_req("/v1/health", None)).await.unwrap();
         assert_eq!(res.status(), StatusCode::OK);
     }
 
     #[tokio::test]
     async fn info_rejects_without_token() {
         let app = build_router(state(Some("secret")));
-        let res = app.oneshot(req("/v1/info", None)).await.unwrap();
+        let res = app.oneshot(get_req("/v1/info", None)).await.unwrap();
         assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]
     async fn info_rejects_wrong_token() {
         let app = build_router(state(Some("secret")));
-        let res = app.oneshot(req("/v1/info", Some("nope"))).await.unwrap();
+        let res = app
+            .oneshot(get_req("/v1/info", Some("nope")))
+            .await
+            .unwrap();
         assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]
     async fn info_accepts_right_token() {
         let app = build_router(state(Some("secret")));
-        let res = app.oneshot(req("/v1/info", Some("secret"))).await.unwrap();
+        let res = app
+            .oneshot(get_req("/v1/info", Some("secret")))
+            .await
+            .unwrap();
         assert_eq!(res.status(), StatusCode::OK);
     }
 
     #[tokio::test]
     async fn info_open_when_no_token_configured() {
         let app = build_router(state(None));
-        let res = app.oneshot(req("/v1/info", None)).await.unwrap();
+        let res = app.oneshot(get_req("/v1/info", None)).await.unwrap();
         assert_eq!(res.status(), StatusCode::OK);
+    }
+
+    // ---- sessions + turns ---------------------------------------------
+
+    #[tokio::test]
+    async fn create_then_send_then_get_round_trips() {
+        let app = build_router(state(None));
+
+        // create
+        let res = app
+            .clone()
+            .oneshot(post_req("/v1/sessions", json!({ "project": "demo" })))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::CREATED);
+        let created = body_json(res).await;
+        let id = created["id"].as_str().unwrap().to_string();
+        assert_eq!(created["turns"], 0);
+
+        // send a turn
+        let res = app
+            .clone()
+            .oneshot(post_req(
+                &format!("/v1/sessions/{id}/messages"),
+                json!({ "content": "hello" }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let turn = body_json(res).await;
+        assert_eq!(turn["reply"], "echo: hello");
+        assert_eq!(turn["session"]["turns"], 1);
+
+        // get reflects the persisted history (user + assistant)
+        let res = app
+            .clone()
+            .oneshot(get_req(&format!("/v1/sessions/{id}"), None))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let got = body_json(res).await;
+        assert_eq!(got["messages"].as_array().unwrap().len(), 2);
+        assert_eq!(got["title"], "hello");
+    }
+
+    #[tokio::test]
+    async fn list_shows_created_session() {
+        let app = build_router(state(None));
+        app.clone()
+            .oneshot(post_req("/v1/sessions", json!({ "project": "demo" })))
+            .await
+            .unwrap();
+        let res = app
+            .oneshot(get_req("/v1/sessions?project=demo", None))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let list = body_json(res).await;
+        assert_eq!(list.as_array().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn get_missing_session_is_404() {
+        let app = build_router(state(None));
+        let res = app
+            .oneshot(get_req(
+                "/v1/sessions/00000000-0000-0000-0000-000000000000",
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn delete_removes_session() {
+        let app = build_router(state(None));
+        let res = app
+            .clone()
+            .oneshot(post_req("/v1/sessions", json!({})))
+            .await
+            .unwrap();
+        let id = body_json(res).await["id"].as_str().unwrap().to_string();
+
+        let res = app
+            .clone()
+            .oneshot(delete_req(&format!("/v1/sessions/{id}")))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::NO_CONTENT);
+
+        let res = app
+            .oneshot(get_req(&format!("/v1/sessions/{id}"), None))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn empty_message_is_400() {
+        let app = build_router(state(None));
+        let res = app
+            .clone()
+            .oneshot(post_req("/v1/sessions", json!({})))
+            .await
+            .unwrap();
+        let id = body_json(res).await["id"].as_str().unwrap().to_string();
+        let res = app
+            .oneshot(post_req(
+                &format!("/v1/sessions/{id}/messages"),
+                json!({ "content": "   " }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn sessions_require_auth_when_token_set() {
+        let app = build_router(state(Some("secret")));
+        let res = app
+            .oneshot(post_req("/v1/sessions", json!({})))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
     }
 }
