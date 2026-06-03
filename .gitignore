@@ -43,3 +43,11 @@ dist/
 _scan.txt
 _eb.txt
 _pp.txt
+
+# Site — versioned separately on the infra GitLab, NOT in this public agent repo.
+# (It carries infra deploy configs; keep it out of the OSS repo.)
+/site/
+
+# Desktop auto-updater signing key (PRIVATE — goes in CI secrets, never commit)
+desktop/.tauri-signing.key
+desktop/.tauri-signing.key.pub
