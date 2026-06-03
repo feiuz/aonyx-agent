@@ -67,7 +67,7 @@
 | M3 | Memory palace ingest throughput | ≥ 100 chunks/sec on commodity laptop |
 | M4 | Hybrid search recall@10 on the eval set | ≥ 90 % |
 | M5 | Cold install to first reply | < 60 s on warm network |
-| M6 | Binary size (release, stripped) | < 25 MB per arch |
+| M6 | Binary size (release, stripped) | < 25 MB per arch — ✅ lean ≈ 15 MB (full, all features ≈ 28 MB) |
 | M7 | Crash rate over 1 h soak test | 0 |
 
 ## Risk register

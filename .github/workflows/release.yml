@@ -20,15 +20,20 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # Build Linux on Ubuntu 22.04 (glibc 2.35), NOT ubuntu-latest
+          # (24.04 = glibc 2.39): a binary built against an older glibc is
+          # forward-compatible, so it also runs on newer hosts AND on older
+          # ones like Debian 12 (glibc 2.36). For systems below 2.35, use
+          # `cargo install aonyx-agent`.
           - target: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
+            os: ubuntu-22.04
             ext: ""
             archive: tar.gz
-          # Native ARM Linux build on a GitHub-hosted arm64 runner — avoids
-          # cross-compiling the native deps (sqlite `bundled`, the ONNX
-          # runtime behind fastembed), which is brittle from x86_64.
+          # Native ARM Linux build on a GitHub-hosted arm64 runner (avoids
+          # cross-compiling sqlite `bundled` + the ONNX runtime behind
+          # fastembed). 22.04 → glibc 2.35 floor, same as the x86_64 job.
           - target: aarch64-unknown-linux-gnu
-            os: ubuntu-24.04-arm
+            os: ubuntu-22.04-arm
             ext: ""
             archive: tar.gz
           # Build the Intel macOS binary by cross-compiling on the ARM
