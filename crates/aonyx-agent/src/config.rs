@@ -121,6 +121,18 @@ pub struct Config {
     /// Endpoint URL for the `http` sandbox backend (Modal / Daytona / shim).
     #[serde(default)]
     pub sandbox_url: Option<String>,
+    /// Restrict the tool catalogue offered to the model. When non-empty,
+    /// **only** tools whose name matches one of these patterns stay enabled;
+    /// everything else is disabled. A trailing `*` is a prefix wildcard, so
+    /// `"aonyx-rag__*"` keeps just that MCP server's tools (MCP tools are
+    /// named `<server>__<tool>`). Applies to `aonyx serve …` and the TUI.
+    #[serde(default)]
+    pub tools_allow: Vec<String>,
+    /// Tool names/patterns to disable (same `*` wildcard), applied after
+    /// `tools_allow`. Use it to strip dangerous built-ins (`"bash"`,
+    /// `"fs_write"`, `"fs_edit"`, …) from an exposed bot/API deployment.
+    #[serde(default)]
+    pub tools_deny: Vec<String>,
 }
 
 /// Ten RGB colour fields persisted from the `/theme-edit` panel
@@ -273,6 +285,8 @@ impl Default for Config {
             sandbox_backend: None,
             sandbox_image: None,
             sandbox_url: None,
+            tools_allow: Vec::new(),
+            tools_deny: Vec::new(),
         }
     }
 }
@@ -404,6 +418,8 @@ mod tests {
             sandbox_backend: None,
             sandbox_image: None,
             sandbox_url: None,
+            tools_allow: Vec::new(),
+            tools_deny: Vec::new(),
         };
         let s = toml::to_string(&original).unwrap();
         let parsed: Config = toml::from_str(&s).unwrap();

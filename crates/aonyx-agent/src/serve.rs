@@ -164,7 +164,7 @@ mod api_imp {
         let names: Vec<String> = registry.names().map(|s| s.to_string()).collect();
         names
             .into_iter()
-            .filter_map(|name| registry.get_raw(&name))
+            .filter_map(|name| registry.get(&name))
             .map(|h| {
                 let schema = h.schema();
                 let description = schema
@@ -224,7 +224,7 @@ mod api_imp {
         // Build the live components (provider + tools + skills) exactly like
         // the chat adapters do.
         let provider = crate::build_provider(&config)?;
-        let registry = crate::build_serve_registry()?;
+        let registry = crate::build_serve_registry().await?;
         let skills = crate::load_all_skills();
 
         // Snapshot metadata BEFORE the registry/skills move into the runner.
@@ -407,9 +407,9 @@ mod imp {
 
     /// Build the shared agent handler (provider + tools + memory palace +
     /// skills) from the current config and working directory.
-    fn build_handler(config: &Config) -> anyhow::Result<Arc<RunnerHandler>> {
+    async fn build_handler(config: &Config) -> anyhow::Result<Arc<RunnerHandler>> {
         let provider = crate::build_provider(config)?;
-        let registry = crate::build_serve_registry()?;
+        let registry = crate::build_serve_registry().await?;
         let project = crate::project_slug(&std::env::current_dir()?);
         let runner = AgentRunner::new(provider, registry, config.model.clone())
             .with_max_iterations(config.max_iterations)
@@ -445,7 +445,7 @@ mod imp {
                 )
             },
         )?;
-        let handler = build_handler(&config)?;
+        let handler = build_handler(&config).await?;
         let allowed = config.telegram_allowed_chats.clone();
         announce("Telegram", allowed.len(), "aonyx setup telegram");
         TelegramAdapter::new(token, allowed, handler)
@@ -464,7 +464,7 @@ mod imp {
                     "no Discord bot token — run `aonyx setup discord`, or export DISCORD_BOT_TOKEN"
                 )
             })?;
-        let handler = build_handler(&config)?;
+        let handler = build_handler(&config).await?;
         let allowed = config.discord_allowed_channels.clone();
         announce("Discord", allowed.len(), "aonyx setup discord");
         DiscordAdapter::new(token, allowed, handler)
@@ -477,7 +477,7 @@ mod imp {
     pub async fn openai(port: u16, token: Option<String>) -> anyhow::Result<()> {
         use aonyx_adapters::openai_server::OpenAiServer;
         let config = Config::load_or_init()?;
-        let handler = build_handler(&config)?;
+        let handler = build_handler(&config).await?;
         let token = token.or_else(|| std::env::var("AONYX_OPENAI_TOKEN").ok());
         let addr = format!("127.0.0.1:{port}");
         if token.is_some() {

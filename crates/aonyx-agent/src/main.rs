@@ -248,7 +248,7 @@ async fn main() -> anyhow::Result<()> {
                 // palace-backed `memory_*` tools (scoped to the current
                 // directory's palace) so remote clients (Claude Code,
                 // Cursor, …) can read and write *this project's* memory.
-                let registry = build_serve_registry()?;
+                let registry = build_serve_registry().await?;
                 match port {
                     // Phase OO — Streamable HTTP transport on a TCP port.
                     Some(p) => {
@@ -402,39 +402,7 @@ async fn start_interactive(
     // (Phase GG). A server that fails to start just logs and is
     // skipped — it must never block the session.
     let mut tool_registry = aonyx_tools::ToolRegistry::default_set();
-    for srv in &config.mcp_servers {
-        // `url` selects the HTTP transport (Phase II); otherwise fall
-        // back to stdio via `command` (Phase GG).
-        let outcome = if let Some(url) = &srv.url {
-            aonyx_mcp::client::connect_http_and_register(
-                &mut tool_registry,
-                &srv.name,
-                url,
-                srv.bearer_token.clone(),
-            )
-            .await
-        } else if let Some(command) = &srv.command {
-            aonyx_mcp::client::connect_and_register(
-                &mut tool_registry,
-                &srv.name,
-                command,
-                &srv.args,
-            )
-            .await
-        } else {
-            Err(aonyx_core::AonyxError::Mcp(format!(
-                "server '{}' has neither `command` nor `url`",
-                srv.name
-            )))
-        };
-        match outcome {
-            Ok(n) => eprintln!(
-                "aonyx: MCP '{}' connected — {n} tool(s) registered",
-                srv.name
-            ),
-            Err(e) => eprintln!("aonyx: MCP '{}' failed: {e}", srv.name),
-        }
-    }
+    connect_configured_mcp(&mut tool_registry, &config).await;
 
     // Phase WW — fold in user Lua plugins from ~/.aonyx/plugins/.
     register_plugins(&mut tool_registry);
@@ -452,6 +420,10 @@ async fn start_interactive(
     );
     // Phase CCC — sandbox exec tool, only if a backend is configured.
     register_sandbox_tool(&mut tool_registry, &config);
+
+    // Restrict the toolset (whitelist/denylist) before the model ever sees
+    // it — also applies to the TUI, not just the exposed serve paths.
+    apply_tool_policy(&tool_registry, &config.tools_allow, &config.tools_deny);
 
     // Phase OO — seed the always-allow approval set from persisted config
     // so tools the user chose to always allow skip the prompt this run.
@@ -598,11 +570,12 @@ fn project_slug(root: &std::path::Path) -> String {
 /// (fs / bash / git / web) and folds in the three palace-backed
 /// `memory_*` tools, scoped to the **current directory**'s palace — so a
 /// remote MCP client operates on the same memory the local TUI does.
-fn build_serve_registry() -> anyhow::Result<aonyx_tools::ToolRegistry> {
+async fn build_serve_registry() -> anyhow::Result<aonyx_tools::ToolRegistry> {
     let project_root = std::env::current_dir()?;
     let palace_dir = Palace::default_project_dir(&project_root);
     let palace = Palace::open(&palace_dir)?;
     let slug = project_slug(&project_root);
+    let config = Config::load_or_init().unwrap_or_default();
 
     let mut registry = aonyx_tools::ToolRegistry::default_set();
     registry.register(Arc::new(aonyx_tools::memory::MemorySearch::new(
@@ -618,11 +591,73 @@ fn build_serve_registry() -> anyhow::Result<aonyx_tools::ToolRegistry> {
     register_plugins(&mut registry);
     register_browser_tools(&mut registry);
     let media_key = secrets::get("openai_api_key").or_else(|| std::env::var("OPENAI_API_KEY").ok());
-    register_media_tools(&mut registry, media_key, None);
-    if let Ok(cfg) = Config::load_or_init() {
-        register_sandbox_tool(&mut registry, &cfg);
-    }
+    register_media_tools(&mut registry, media_key, config.openai_base_url.clone());
+    register_sandbox_tool(&mut registry, &config);
+
+    // Connect configured MCP servers so their tools join the catalogue.
+    // Previously only the interactive/TUI path did this, so bots and the API
+    // saw zero MCP tools — the `tools:[12 built-in, 0 MCP]` bug.
+    connect_configured_mcp(&mut registry, &config).await;
+    // Restrict the toolset (whitelist/denylist) so an exposed deployment
+    // (Telegram / Discord / API) only offers the intended tools.
+    apply_tool_policy(&registry, &config.tools_allow, &config.tools_deny);
+
     Ok(registry)
+}
+
+/// Connect every configured MCP server and register its tools into
+/// `registry`. A server that fails to start just logs and is skipped — it
+/// must never block startup. Shared by the interactive/TUI path and the
+/// `serve` adapters so both see the same MCP tools.
+async fn connect_configured_mcp(registry: &mut aonyx_tools::ToolRegistry, config: &Config) {
+    for srv in &config.mcp_servers {
+        // `url` selects the HTTP transport (Phase II); otherwise fall back to
+        // stdio via `command` (Phase GG).
+        let outcome = if let Some(url) = &srv.url {
+            aonyx_mcp::client::connect_http_and_register(
+                registry,
+                &srv.name,
+                url,
+                srv.bearer_token.clone(),
+            )
+            .await
+        } else if let Some(command) = &srv.command {
+            aonyx_mcp::client::connect_and_register(registry, &srv.name, command, &srv.args).await
+        } else {
+            Err(aonyx_core::AonyxError::Mcp(format!(
+                "server '{}' has neither `command` nor `url`",
+                srv.name
+            )))
+        };
+        match outcome {
+            Ok(n) => eprintln!("aonyx: MCP '{}' connected — {n} tool(s) registered", srv.name),
+            Err(e) => eprintln!("aonyx: MCP '{}' failed: {e}", srv.name),
+        }
+    }
+}
+
+/// `true` when `name` matches any pattern. A trailing `*` is a prefix
+/// wildcard (`"aonyx-rag__*"`); otherwise the match is exact.
+fn tool_pattern_match(name: &str, patterns: &[String]) -> bool {
+    patterns.iter().any(|p| match p.strip_suffix('*') {
+        Some(prefix) => name.starts_with(prefix),
+        None => name == p,
+    })
+}
+
+/// Apply the configured tool whitelist/denylist by disabling tools the model
+/// should never see. With a non-empty `allow`, only matching tools stay
+/// enabled; `deny` always disables (applied last). Disabled tools vanish
+/// from both the schema sent to the model and the dispatch path.
+fn apply_tool_policy(registry: &aonyx_tools::ToolRegistry, allow: &[String], deny: &[String]) {
+    let names: Vec<String> = registry.names().map(String::from).collect();
+    for name in &names {
+        let allowed = allow.is_empty() || tool_pattern_match(name, allow);
+        let denied = tool_pattern_match(name, deny);
+        if denied || !allowed {
+            registry.disable(name);
+        }
+    }
 }
 
 /// Fold any user Lua plugins (`~/.aonyx/plugins/*.lua`) into `registry`
@@ -858,4 +893,54 @@ fn prompt_passphrase(confirm: bool) -> anyhow::Result<String> {
         p = p.with_confirmation("Confirm passphrase", "passphrases don't match");
     }
     Ok(p.interact()?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tool_pattern_match_exact_and_wildcard() {
+        let pats = vec!["bash".to_string(), "aonyx-rag__*".to_string()];
+        assert!(tool_pattern_match("bash", &pats));
+        assert!(tool_pattern_match("aonyx-rag__list_projects", &pats));
+        assert!(!tool_pattern_match("fs_write", &pats));
+        assert!(!tool_pattern_match("web_search", &pats));
+    }
+
+    #[test]
+    fn allow_list_disables_everything_else() {
+        let r = aonyx_tools::ToolRegistry::default_set();
+        apply_tool_policy(&r, &["bash".to_string()], &[]);
+        assert!(r.get("bash").is_some());
+        assert!(r.get("fs_write").is_none());
+        assert!(r.get("web_search").is_none());
+    }
+
+    #[test]
+    fn allow_wildcard_keeps_only_matching_server() {
+        let r = aonyx_tools::ToolRegistry::default_set();
+        // pretend an MCP tool is present by registering nothing extra —
+        // the wildcard simply disables every built-in here.
+        apply_tool_policy(&r, &["aonyx-rag__*".to_string()], &[]);
+        assert!(r.get("bash").is_none());
+        assert!(r.get("git_status").is_none());
+    }
+
+    #[test]
+    fn deny_list_disables_named_tools() {
+        let r = aonyx_tools::ToolRegistry::default_set();
+        apply_tool_policy(&r, &[], &["bash".to_string(), "fs_write".to_string()]);
+        assert!(r.get("bash").is_none());
+        assert!(r.get("fs_write").is_none());
+        assert!(r.get("git_status").is_some());
+    }
+
+    #[test]
+    fn empty_policy_keeps_all() {
+        let r = aonyx_tools::ToolRegistry::default_set();
+        apply_tool_policy(&r, &[], &[]);
+        assert!(r.get("bash").is_some());
+        assert!(r.get("web_search").is_some());
+    }
 }

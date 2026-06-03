@@ -7,12 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-- **Native Ollama tool calling** — the built-in `ollama` provider
-  (`/api/chat`) now advertises tools, replays assistant tool calls +
-  `tool`-role results, and parses `message.tool_calls` from the JSON-lines
-  stream (arguments as an object). With this, tool calling works on **every**
-  provider except `claude-code`, which runs its own tool loop inside the
-  `claude` binary.
+_(nothing yet)_
+
+## [0.8.1] — 2026-06-03 — tool-calling reach + safety
+
+Makes v0.8.0's tool calling actually usable for **served** deployments
+(Telegram / Discord / OpenAI / API) and adds a tool whitelist/denylist.
+`clippy --all-features -D warnings` clean; workspace suite green.
+
+### Fixed
+- **MCP tools now reach `aonyx serve …`.** The serve path
+  (`build_serve_registry`) never connected the configured MCP servers, so a
+  bot/API deployment saw `tools: [built-ins, 0 MCP]` and could not call them
+  (e.g. a RAG server hallucinated instead of invoking `list_projects`). It
+  now connects them just like the interactive/TUI path (shared
+  `connect_configured_mcp`).
+
+### Added
+- **Tool whitelist / denylist** (`tools_allow` / `tools_deny` in
+  `config.toml`). Restrict the catalogue the model sees: `*` is a prefix
+  wildcard, so `tools_allow = ["aonyx-rag__*"]` exposes *only* that MCP
+  server's tools (MCP tools are named `<server>__<tool>`), and
+  `tools_deny = ["bash", "fs_write", "fs_edit"]` strips dangerous built-ins
+  from an exposed bot. Disabled tools vanish from both the model's schema and
+  the dispatch path; `GET /v1/tools` shows the effective set.
+- **Native Ollama tool calling** (`/api/chat`) — the built-in `ollama`
+  provider now advertises tools, replays assistant tool calls + `tool`-role
+  results, and parses `message.tool_calls` from the JSON-lines stream. Tool
+  calling now works on **every** provider except `claude-code` (which runs
+  its own tool loop inside the `claude` binary).
+
+### Notes
+- A native desktop app (Tauri 2 — streaming chat, sessions, memory search
+  over `aonyx serve api`) landed in-repo under `desktop/`; it ships
+  separately as **v0.9.0**.
 
 ## [0.8.0] — 2026-06-03 — real end-to-end tool calling
 
