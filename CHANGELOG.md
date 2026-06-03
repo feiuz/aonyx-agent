@@ -9,6 +9,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 _(nothing yet)_
 
+## [0.8.0] — 2026-06-03 — real end-to-end tool calling
+
+**Fixes a blocker.** The agent can now actually call tools — built-in, MCP,
+and plugin — on every supported provider. Previously the providers deferred
+tool calling: `openai_compat` never sent the `tools` field, and neither it
+nor `anthropic` parsed tool calls back from the response, so the agent could
+only emit text and would hallucinate instead of querying its tools/RAG.
+`clippy --all-features -D warnings` clean; full workspace suite green.
+
+### Fixed / Added
+- **Core** — `Message` now carries structured tool data: `tool_calls` (on an
+  assistant turn that requested tools) and `tool_call_id` (on a tool result),
+  so multi-turn tool exchanges replay correctly. Backward-compatible
+  (`#[serde(default)]` — older persisted sessions decode unchanged).
+- **Runner** — records the assistant's tool-call turn (text **and** the
+  calls) and links each result back by id; tool schemas now carry their
+  description so the model knows what each tool does.
+- **OpenAI-compatible providers** (OpenAI, OpenRouter, LM Studio, llama.cpp's
+  `llama-server`, and Ollama via its `/v1` endpoint) — send tools in OpenAI
+  `{type:"function", …}` shape, replay assistant `tool_calls` + `tool`
+  results with `tool_call_id`, and **accumulate streamed `delta.tool_calls[]`
+  fragments** into complete calls.
+- **Anthropic** — serialize assistant tool calls as `tool_use` blocks and
+  results as `tool_result` blocks; **parse streamed `tool_use`**
+  (`content_block_start` → `input_json_delta` → `content_block_stop`).
+
+### Known follow-ups
+- The **native Ollama** provider (`/api/chat`) and the **claude-code**
+  provider still route tool use through their own paths; Ollama users wanting
+  tools today should point an OpenAI-compatible provider at
+  `http://localhost:11434/v1`.
+
+### Notes
+- The Tauri desktop app (originally slated for v0.8.0) shifts to v0.9.0.
+
 ## [0.7.0] — 2026-06-03 — Vague 4 (1/2): automation API
 
 Adds a first-class **REST + WebSocket automation API** over the agent core

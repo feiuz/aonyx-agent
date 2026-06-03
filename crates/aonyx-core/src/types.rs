@@ -51,6 +51,15 @@ pub struct Message {
     /// empty so existing persisted rows deserialise unchanged.
     #[serde(default)]
     pub attachments: Vec<Attachment>,
+    /// Tool calls this (assistant) message requested. Non-empty only on an
+    /// assistant turn that asked to invoke tools. Defaults to empty so older
+    /// persisted rows decode unchanged.
+    #[serde(default)]
+    pub tool_calls: Vec<ToolCall>,
+    /// For a `Role::Tool` result message, the id of the [`ToolCall`] it
+    /// answers (links the result back to the request). `None` otherwise.
+    #[serde(default)]
+    pub tool_call_id: Option<String>,
 }
 
 impl Message {
@@ -63,6 +72,8 @@ impl Message {
             content: content.into(),
             ts: Utc::now(),
             attachments: Vec::new(),
+            tool_calls: Vec::new(),
+            tool_call_id: None,
         }
     }
 
@@ -79,6 +90,36 @@ impl Message {
             content: content.into(),
             ts: Utc::now(),
             attachments,
+            tool_calls: Vec::new(),
+            tool_call_id: None,
+        }
+    }
+
+    /// Construct an assistant message that requested one or more tool calls.
+    /// `content` is the assistant's text (often empty when the model emits
+    /// only tool calls).
+    pub fn assistant_tool_calls(content: impl Into<String>, tool_calls: Vec<ToolCall>) -> Self {
+        Self {
+            id: Uuid::new_v4(),
+            role: Role::Assistant,
+            content: content.into(),
+            ts: Utc::now(),
+            attachments: Vec::new(),
+            tool_calls,
+            tool_call_id: None,
+        }
+    }
+
+    /// Construct a `Role::Tool` result message answering the call `call_id`.
+    pub fn tool_result(call_id: impl Into<String>, content: impl Into<String>) -> Self {
+        Self {
+            id: Uuid::new_v4(),
+            role: Role::Tool,
+            content: content.into(),
+            ts: Utc::now(),
+            attachments: Vec::new(),
+            tool_calls: Vec::new(),
+            tool_call_id: Some(call_id.into()),
         }
     }
 }

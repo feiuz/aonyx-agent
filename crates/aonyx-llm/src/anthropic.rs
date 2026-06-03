@@ -1,28 +1,29 @@
 //! Anthropic Claude provider — streaming over the Messages API.
 //!
-//! Endpoint: `POST {base_url}/v1/messages` with `stream: true`. The response is
-//! `text/event-stream` (SSE); we parse `content_block_delta` (text deltas) and
-//! `message_stop` (terminator) into [`ChatChunk`]s.
-//!
-//! Other event types (`message_start`, `content_block_start`,
-//! `content_block_stop`, `message_delta`, `ping`) are intentionally ignored in
-//! V1 — they carry metadata we don't need yet.
+//! Endpoint: `POST {base_url}/v1/messages` with `stream: true`. The response
+//! is `text/event-stream` (SSE). We parse text deltas (`text_delta`),
+//! **tool calls** (`content_block_start` of type `tool_use` →
+//! `input_json_delta` fragments → `content_block_stop`), and `message_stop`
+//! (terminator) into [`ChatChunk`]s. Assistant tool-call turns and tool
+//! results are replayed as `tool_use` / `tool_result` content blocks.
 
-use aonyx_core::{AonyxError, ChatChunk, ChatRequest, ChatStream, LlmProvider, Result, Role};
+use std::collections::HashMap;
+
+use aonyx_core::{
+    Attachment, AonyxError, ChatChunk, ChatRequest, ChatStream, LlmProvider, Message, Result, Role,
+    ToolCall,
+};
 use async_stream::try_stream;
 use async_trait::async_trait;
 use futures::StreamExt;
 use reqwest::Client;
-use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde::Deserialize;
+use serde_json::{json, Value};
 
 const ANTHROPIC_BASE_URL: &str = "https://api.anthropic.com";
 const ANTHROPIC_API_VERSION: &str = "2023-06-01";
 
 /// Anthropic provider.
-///
-/// The API key is held as a `String` for V1 — we'll move to `secrecy::SecretString`
-/// once the keyring integration lands (V1.2).
 #[derive(Clone)]
 pub struct AnthropicProvider {
     client: Client,
@@ -47,46 +48,9 @@ impl AnthropicProvider {
     }
 }
 
-#[derive(Serialize)]
-struct AnthropicMessage<'a> {
-    role: &'a str,
-    content: AnthropicContent<'a>,
-}
-
-/// `content` is either a single string (legacy + cheaper on the wire)
-/// or an array of typed blocks — needed for vision (Phase S).
-#[derive(Serialize)]
-#[serde(untagged)]
-enum AnthropicContent<'a> {
-    Text(&'a str),
-    Blocks(Vec<AnthropicBlock<'a>>),
-}
-
-/// One element of a multimodal content array.
-#[derive(Serialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-enum AnthropicBlock<'a> {
-    Text { text: &'a str },
-    Image { source: AnthropicImageSource<'a> },
-}
-
-/// Anthropic vision sources are base64-encoded with a `type` discriminator.
-#[derive(Serialize)]
-struct AnthropicImageSource<'a> {
-    #[serde(rename = "type")]
-    source_type: &'static str,
-    media_type: &'a str,
-    data: &'a str,
-}
-
-/// Build the Anthropic `system` field for a (possibly empty) system
-/// prompt (Phase RR). Returns `None` for an empty prompt (the field is
-/// omitted), else a single `text` block tagged
-/// `cache_control: ephemeral` so Anthropic caches the system prompt —
-/// the largest stable prefix of a session — across turns, cutting
-/// input-token cost on every follow-up. cache_control requires the
-/// block-array form, not a bare string.
-fn build_system_field(system_text: &str) -> Option<serde_json::Value> {
+/// Build the Anthropic `system` field for a (possibly empty) system prompt.
+/// Returns `None` for an empty prompt; else a single cached `text` block.
+fn build_system_field(system_text: &str) -> Option<Value> {
     if system_text.is_empty() {
         return None;
     }
@@ -97,15 +61,61 @@ fn build_system_field(system_text: &str) -> Option<serde_json::Value> {
     }]))
 }
 
-fn map_role(role: Role) -> Option<&'static str> {
-    match role {
-        // `System` messages move to the top-level `system` field (handled by the caller).
+/// Serialize one [`Message`] into an Anthropic message object. `System`
+/// messages return `None` — they are hoisted into the top-level `system`
+/// field by the caller.
+fn build_message(m: &Message) -> Option<Value> {
+    match m.role {
         Role::System => None,
-        Role::User => Some("user"),
-        Role::Assistant => Some("assistant"),
-        // V1 routes tool results through the `user` role (textual transcript).
-        // V1.1 will emit proper `tool_use` / `tool_result` content blocks.
-        Role::Tool => Some("user"),
+        // Tool results ride back as a `tool_result` block in a user message.
+        Role::Tool => Some(json!({
+            "role": "user",
+            "content": [{
+                "type": "tool_result",
+                "tool_use_id": m.tool_call_id.clone().unwrap_or_default(),
+                "content": m.content,
+            }],
+        })),
+        // Assistant turn that requested tools: text (if any) + tool_use blocks.
+        Role::Assistant if !m.tool_calls.is_empty() => {
+            let mut blocks: Vec<Value> = Vec::new();
+            if !m.content.is_empty() {
+                blocks.push(json!({ "type": "text", "text": m.content }));
+            }
+            for tc in &m.tool_calls {
+                blocks.push(json!({
+                    "type": "tool_use",
+                    "id": tc.id,
+                    "name": tc.name,
+                    "input": tc.args,
+                }));
+            }
+            Some(json!({ "role": "assistant", "content": blocks }))
+        }
+        role => {
+            let role_str = if role == Role::Assistant {
+                "assistant"
+            } else {
+                "user"
+            };
+            if m.attachments.is_empty() {
+                Some(json!({ "role": role_str, "content": m.content }))
+            } else {
+                let mut blocks: Vec<Value> = Vec::with_capacity(m.attachments.len() + 1);
+                for att in &m.attachments {
+                    match att {
+                        Attachment::Image { media_type, data } => blocks.push(json!({
+                            "type": "image",
+                            "source": { "type": "base64", "media_type": media_type, "data": data },
+                        })),
+                    }
+                }
+                if !m.content.is_empty() {
+                    blocks.push(json!({ "type": "text", "text": m.content }));
+                }
+                Some(json!({ "role": role_str, "content": blocks }))
+            }
+        }
     }
 }
 
@@ -124,43 +134,7 @@ impl LlmProvider for AnthropicProvider {
             .collect::<Vec<_>>()
             .join("\n\n");
 
-        let messages: Vec<AnthropicMessage<'_>> = req
-            .messages
-            .iter()
-            .filter_map(|m| {
-                let role = map_role(m.role)?;
-                // Phase S — when the message carries attachments, the
-                // Anthropic API needs an array of typed content blocks
-                // instead of a plain string. Text-only messages stay on
-                // the cheaper string path.
-                let content = if m.attachments.is_empty() {
-                    AnthropicContent::Text(m.content.as_str())
-                } else {
-                    let mut blocks: Vec<AnthropicBlock<'_>> =
-                        Vec::with_capacity(m.attachments.len() + 1);
-                    for att in &m.attachments {
-                        match att {
-                            aonyx_core::Attachment::Image { media_type, data } => {
-                                blocks.push(AnthropicBlock::Image {
-                                    source: AnthropicImageSource {
-                                        source_type: "base64",
-                                        media_type,
-                                        data,
-                                    },
-                                });
-                            }
-                        }
-                    }
-                    if !m.content.is_empty() {
-                        blocks.push(AnthropicBlock::Text {
-                            text: m.content.as_str(),
-                        });
-                    }
-                    AnthropicContent::Blocks(blocks)
-                };
-                Some(AnthropicMessage { role, content })
-            })
-            .collect();
+        let messages: Vec<Value> = req.messages.iter().filter_map(build_message).collect();
 
         let mut payload = json!({
             "model": req.model,
@@ -174,13 +148,12 @@ impl LlmProvider for AnthropicProvider {
         if let Some(t) = req.temperature {
             payload["temperature"] = json!(t);
         }
+        // The runner already emits tools in Anthropic's
+        // `{name, description, input_schema}` shape — forward as-is.
         if !req.tools.is_empty() {
             payload["tools"] = json!(req.tools);
         }
 
-        // Phase RR — retry transient 429/5xx + network errors with
-        // exponential backoff. The body is a serialized String so the
-        // builder clones cleanly across attempts.
         let builder = self
             .client
             .post(format!("{}/v1/messages", self.base_url))
@@ -188,12 +161,9 @@ impl LlmProvider for AnthropicProvider {
             .header("anthropic-version", ANTHROPIC_API_VERSION)
             .header("content-type", "application/json")
             .body(payload.to_string());
-        let response = crate::retry::send_with_retry(
-            builder,
-            crate::retry::RetryPolicy::default(),
-            "anthropic",
-        )
-        .await?;
+        let response =
+            crate::retry::send_with_retry(builder, crate::retry::RetryPolicy::default(), "anthropic")
+                .await?;
 
         if !response.status().is_success() {
             let status = response.status();
@@ -204,16 +174,15 @@ impl LlmProvider for AnthropicProvider {
         let byte_stream = response.bytes_stream();
         let chunk_stream = try_stream! {
             let mut buf = String::new();
+            let mut acc = AnthropicAccumulator::default();
             let mut stream = Box::pin(byte_stream);
             while let Some(item) = stream.next().await {
                 let chunk = item.map_err(|e| AonyxError::Provider(format!("anthropic stream: {e}")))?;
                 buf.push_str(std::str::from_utf8(&chunk).unwrap_or(""));
-
-                // SSE events are separated by a blank line ("\n\n").
                 while let Some(idx) = buf.find("\n\n") {
                     let block = buf[..idx].to_string();
                     buf.drain(..(idx + 2));
-                    if let Some(parsed) = parse_sse_event(&block) {
+                    for parsed in acc.push_block(&block) {
                         yield parsed;
                     }
                 }
@@ -224,11 +193,20 @@ impl LlmProvider for AnthropicProvider {
     }
 }
 
+// ---- streaming SSE parse + tool_use accumulation -----------------------
+
 #[derive(Deserialize)]
 #[serde(tag = "type")]
-enum AnthropicEvent {
+enum Event {
+    #[serde(rename = "content_block_start")]
+    Start {
+        index: usize,
+        content_block: BlockStart,
+    },
     #[serde(rename = "content_block_delta")]
-    ContentBlockDelta { delta: AnthropicDelta },
+    Delta { index: usize, delta: DeltaKind },
+    #[serde(rename = "content_block_stop")]
+    Stop { index: usize },
     #[serde(rename = "message_stop")]
     MessageStop,
     #[serde(other)]
@@ -237,99 +215,221 @@ enum AnthropicEvent {
 
 #[derive(Deserialize)]
 #[serde(tag = "type")]
-enum AnthropicDelta {
-    #[serde(rename = "text_delta")]
-    Text { text: String },
+enum BlockStart {
+    #[serde(rename = "tool_use")]
+    ToolUse { id: String, name: String },
     #[serde(other)]
     Other,
 }
 
-/// Parse a single SSE block (one or more lines, with at least one `data:` line).
-fn parse_sse_event(block: &str) -> Option<ChatChunk> {
-    let mut data_parts = Vec::new();
-    for line in block.lines() {
-        if let Some(payload) = line.strip_prefix("data:") {
-            data_parts.push(payload.trim_start());
+#[derive(Deserialize)]
+#[serde(tag = "type")]
+enum DeltaKind {
+    #[serde(rename = "text_delta")]
+    Text { text: String },
+    #[serde(rename = "input_json_delta")]
+    InputJson { partial_json: String },
+    #[serde(other)]
+    Other,
+}
+
+struct PartialToolUse {
+    id: String,
+    name: String,
+    args: String,
+}
+
+/// Accumulates SSE blocks into [`ChatChunk`]s, buffering `tool_use` blocks
+/// (by content-block `index`) until their `content_block_stop`.
+#[derive(Default)]
+struct AnthropicAccumulator {
+    blocks: HashMap<usize, PartialToolUse>,
+}
+
+impl AnthropicAccumulator {
+    fn push_block(&mut self, block: &str) -> Vec<ChatChunk> {
+        let Some(data) = extract_data(block) else {
+            return Vec::new();
+        };
+        let event: Event = match serde_json::from_str(&data) {
+            Ok(e) => e,
+            Err(_) => return Vec::new(),
+        };
+        match event {
+            Event::Start {
+                index,
+                content_block: BlockStart::ToolUse { id, name },
+            } => {
+                self.blocks.insert(
+                    index,
+                    PartialToolUse {
+                        id,
+                        name,
+                        args: String::new(),
+                    },
+                );
+                Vec::new()
+            }
+            Event::Start { .. } => Vec::new(),
+            Event::Delta {
+                delta: DeltaKind::Text { text },
+                ..
+            } => vec![ChatChunk {
+                delta_text: text,
+                tool_call: None,
+                finished: false,
+            }],
+            Event::Delta {
+                index,
+                delta: DeltaKind::InputJson { partial_json },
+            } => {
+                if let Some(b) = self.blocks.get_mut(&index) {
+                    b.args.push_str(&partial_json);
+                }
+                Vec::new()
+            }
+            Event::Delta { .. } => Vec::new(),
+            Event::Stop { index } => match self.blocks.remove(&index) {
+                Some(b) => {
+                    let args =
+                        serde_json::from_str::<Value>(&b.args).unwrap_or_else(|_| json!({}));
+                    vec![ChatChunk {
+                        delta_text: String::new(),
+                        tool_call: Some(ToolCall {
+                            id: b.id,
+                            name: b.name,
+                            args,
+                        }),
+                        finished: false,
+                    }]
+                }
+                None => Vec::new(),
+            },
+            Event::MessageStop => vec![ChatChunk {
+                delta_text: String::new(),
+                tool_call: None,
+                finished: true,
+            }],
+            Event::Other => Vec::new(),
         }
     }
-    if data_parts.is_empty() {
-        return None;
+}
+
+/// Join the `data:` lines of an SSE block, or `None` when there are none.
+fn extract_data(block: &str) -> Option<String> {
+    let mut data = String::new();
+    let mut found = false;
+    for line in block.lines() {
+        if let Some(p) = line.strip_prefix("data:") {
+            if found {
+                data.push('\n');
+            }
+            data.push_str(p.trim_start());
+            found = true;
+        }
     }
-    let data = data_parts.join("\n");
-    let event: AnthropicEvent = serde_json::from_str(&data).ok()?;
-    match event {
-        AnthropicEvent::ContentBlockDelta {
-            delta: AnthropicDelta::Text { text },
-        } => Some(ChatChunk {
-            delta_text: text,
-            tool_call: None,
-            finished: false,
-        }),
-        AnthropicEvent::MessageStop => Some(ChatChunk {
-            delta_text: String::new(),
-            tool_call: None,
-            finished: true,
-        }),
-        _ => None,
-    }
+    found.then_some(data)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn one(block: &str) -> Vec<ChatChunk> {
+        AnthropicAccumulator::default().push_block(block)
+    }
+
     #[test]
     fn parses_text_delta_event() {
-        let block = "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Hello\"}}";
-        let got = parse_sse_event(block).expect("event parsed");
-        assert_eq!(got.delta_text, "Hello");
-        assert!(!got.finished);
-        assert!(got.tool_call.is_none());
+        let got = one("event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Hello\"}}");
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].delta_text, "Hello");
+        assert!(!got[0].finished);
+        assert!(got[0].tool_call.is_none());
     }
 
     #[test]
     fn parses_message_stop_event() {
-        let block = "event: message_stop\ndata: {\"type\":\"message_stop\"}";
-        let got = parse_sse_event(block).expect("event parsed");
-        assert!(got.delta_text.is_empty());
-        assert!(got.finished);
+        let got = one("event: message_stop\ndata: {\"type\":\"message_stop\"}");
+        assert_eq!(got.len(), 1);
+        assert!(got[0].finished);
     }
 
     #[test]
     fn ignores_message_start_event() {
-        let block = "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\"}}";
-        assert!(parse_sse_event(block).is_none());
+        let got = one("data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\"}}");
+        assert!(got.is_empty());
     }
 
     #[test]
-    fn ignores_ping_block_without_data_line() {
-        let block = "event: ping";
-        assert!(parse_sse_event(block).is_none());
+    fn ignores_block_without_data_line() {
+        assert!(one("event: ping").is_empty());
     }
 
     #[test]
-    fn ignores_non_text_delta() {
-        let block = "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"x\\\":1}\"}}";
-        assert!(parse_sse_event(block).is_none());
+    fn accumulates_tool_use_block() {
+        let mut acc = AnthropicAccumulator::default();
+        assert!(acc
+            .push_block("data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":\"list_projects\"}}")
+            .is_empty());
+        assert!(acc
+            .push_block("data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"limit\\\":\"}}")
+            .is_empty());
+        assert!(acc
+            .push_block("data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"5}\"}}")
+            .is_empty());
+        let out = acc.push_block("data: {\"type\":\"content_block_stop\",\"index\":0}");
+        assert_eq!(out.len(), 1);
+        let tc = out[0].tool_call.as_ref().expect("tool call");
+        assert_eq!(tc.id, "toolu_1");
+        assert_eq!(tc.name, "list_projects");
+        assert_eq!(tc.args, json!({ "limit": 5 }));
     }
 
     #[test]
-    fn provider_name_is_anthropic() {
-        let p = AnthropicProvider::new("test-key");
-        assert_eq!(p.name(), "anthropic");
+    fn build_tool_result_message() {
+        let v = build_message(&Message::tool_result("toolu_1", "result text")).expect("some");
+        assert_eq!(v["role"], "user");
+        assert_eq!(v["content"][0]["type"], "tool_result");
+        assert_eq!(v["content"][0]["tool_use_id"], "toolu_1");
+        assert_eq!(v["content"][0]["content"], "result text");
+    }
+
+    #[test]
+    fn build_assistant_tool_use_message() {
+        let call = ToolCall {
+            id: "toolu_1".into(),
+            name: "list_projects".into(),
+            args: json!({ "limit": 5 }),
+        };
+        let v = build_message(&Message::assistant_tool_calls("let me check", vec![call])).expect("some");
+        assert_eq!(v["role"], "assistant");
+        assert_eq!(v["content"][0]["type"], "text");
+        assert_eq!(v["content"][0]["text"], "let me check");
+        assert_eq!(v["content"][1]["type"], "tool_use");
+        assert_eq!(v["content"][1]["id"], "toolu_1");
+        assert_eq!(v["content"][1]["name"], "list_projects");
+        assert_eq!(v["content"][1]["input"], json!({ "limit": 5 }));
+    }
+
+    #[test]
+    fn system_message_is_hoisted_out() {
+        assert!(build_message(&Message::new(Role::System, "be brief")).is_none());
     }
 
     #[test]
     fn system_field_carries_cache_control() {
-        // Phase RR — non-empty system prompt → one cached text block.
         let v = build_system_field("be brief").expect("some");
         let arr = v.as_array().expect("array");
         assert_eq!(arr.len(), 1);
-        assert_eq!(arr[0]["type"], "text");
         assert_eq!(arr[0]["text"], "be brief");
         assert_eq!(arr[0]["cache_control"]["type"], "ephemeral");
-        // Empty prompt → field omitted entirely.
         assert!(build_system_field("").is_none());
+    }
+
+    #[test]
+    fn provider_name_is_anthropic() {
+        assert_eq!(AnthropicProvider::new("k").name(), "anthropic");
     }
 
     #[test]

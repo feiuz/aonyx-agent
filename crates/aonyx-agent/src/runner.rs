@@ -214,10 +214,16 @@ impl AgentRunner {
             .into_iter()
             .filter_map(|n| {
                 let h = self.tools.get(n)?;
+                let schema = h.schema();
+                let description = schema
+                    .get("description")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
                 Some(json!({
                     "name": n,
-                    "description": "",
-                    "input_schema": h.schema(),
+                    "description": description,
+                    "input_schema": schema,
                 }))
             })
             .collect()
@@ -314,11 +320,10 @@ impl AgentRunner {
 
             let (text, tool_calls) = self.consume_stream(req, &events).await?;
 
-            if !text.is_empty() {
-                messages.push(Message::new(Role::Assistant, text));
-            }
-
             if tool_calls.is_empty() {
+                if !text.is_empty() {
+                    messages.push(Message::new(Role::Assistant, text));
+                }
                 let _ = events.send(TurnEvent::AssistantMessageEnd).await;
                 let _ = events
                     .send(TurnEvent::Done {
@@ -333,6 +338,10 @@ impl AgentRunner {
                 });
             }
 
+            // The model requested tools — record the assistant turn carrying
+            // both its text and the tool calls, so the next iteration replays
+            // the request/response pair correctly to the provider.
+            messages.push(Message::assistant_tool_calls(text, tool_calls.clone()));
             let _ = events.send(TurnEvent::AssistantMessageEnd).await;
 
             for call in tool_calls {
@@ -382,7 +391,7 @@ impl AgentRunner {
                         format!("[tool error] {msg}")
                     }
                 };
-                messages.push(Message::new(Role::Tool, payload));
+                messages.push(Message::tool_result(call.id, payload));
             }
         }
 
@@ -771,10 +780,19 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(res.iterations, 2);
-        // User · Tool result · Assistant
+        // User · Assistant(tool_use) · Tool result · Assistant(final).
+        // The assistant turn that requested the tool is now recorded with
+        // its tool_calls, and the result links back via tool_call_id.
         let roles: Vec<_> = res.messages.iter().map(|m| m.role).collect();
-        assert_eq!(roles, vec![Role::User, Role::Tool, Role::Assistant]);
-        assert!(res.messages[1].content.contains("hello"));
+        assert_eq!(
+            roles,
+            vec![Role::User, Role::Assistant, Role::Tool, Role::Assistant]
+        );
+        assert_eq!(res.messages[1].tool_calls.len(), 1);
+        assert_eq!(res.messages[1].tool_calls[0].name, "fs_read");
+        assert!(res.messages[2].tool_call_id.is_some());
+        assert!(res.messages[2].content.contains("hello"));
+        assert_eq!(res.messages[3].content, "read it.");
     }
 
     #[tokio::test]
