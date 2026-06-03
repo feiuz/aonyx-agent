@@ -10,6 +10,7 @@
 //! aonyx skills <subcmd>  list the active skill catalogue
 //! aonyx mcp <subcmd>     run the MCP server (stdio or HTTP)
 //! aonyx serve <channel>  run an adapter: telegram, discord, or openai (HTTP)
+//! aonyx reflect          distil the diary into an improved system prompt
 //! ```
 
 #![forbid(unsafe_code)]
@@ -32,6 +33,7 @@ mod backup;
 mod config;
 mod images;
 mod pricing;
+mod reflect;
 mod secrets;
 mod serve;
 mod session;
@@ -100,6 +102,12 @@ enum Command {
     Serve {
         #[command(subcommand)]
         channel: ServeChannel,
+    },
+    /// Reflect on the project diary and propose an improved system prompt.
+    Reflect {
+        /// Adopt the proposal (writes config) instead of just printing it.
+        #[arg(long)]
+        apply: bool,
     },
 }
 
@@ -217,6 +225,7 @@ async fn main() -> anyhow::Result<()> {
             ServeChannel::Discord => serve::discord().await,
             ServeChannel::Openai { port, token } => serve::openai(port, token).await,
         },
+        Some(Command::Reflect { apply }) => reflect::run(apply).await,
         Some(Command::Mcp { action }) => match action {
             McpAction::Serve { port, token } => {
                 // Phase HH/NN — expose the built-in tools plus the

@@ -13,6 +13,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   from a passphrase via Argon2id) into a portable `.aonyxbak` file; `aonyx
   memory restore <file>` brings it back on any machine. Sync the file via
   any cloud (S3 / Dropbox / rsync / git) — only the passphrase opens it.
+- **Self-evolution** (Phase BBB, Vague 3) — `aonyx reflect` reads the
+  project diary, asks the model to distil recurring patterns, preferences,
+  and lessons, and proposes an improved system prompt (shown as a diff);
+  `aonyx reflect --apply` adopts it into `config.toml`. A bounded,
+  deterministic take on the DSPy/GEPA idea — the agent learns from its own
+  history.
 
 ## [0.5.0] — 2026-06-02 — multimodal & web (Vague 3)
 
