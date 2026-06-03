@@ -1,0 +1,24 @@
+[package]
+name = "aonyx-api"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Aonyx Agent — REST + WebSocket automation API over the agent core (Vague 4)"
+
+[dependencies]
+# Depend on aonyx-core for the shared error/types. Data crates (memory,
+# tools, skills) and the injected turn-runner trait arrive in later V4
+# phases; the API never depends on `aonyx-agent` so the binary can pull in
+# this crate behind its `api` feature without a dependency cycle.
+aonyx-core = { workspace = true }
+axum = { version = "0.7", features = ["ws"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+tower = { version = "0.5", features = ["util"] }

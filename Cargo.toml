@@ -10,6 +10,7 @@ members = [
     "crates/aonyx-mcp",
     "crates/aonyx-tui",
     "crates/aonyx-adapters",
+    "crates/aonyx-api",
 ]
 
 [workspace.package]
@@ -67,6 +68,7 @@ aonyx-agent = { path = "crates/aonyx-agent", version = "0.6.0" }
 aonyx-mcp = { path = "crates/aonyx-mcp", version = "0.6.0" }
 aonyx-tui = { path = "crates/aonyx-tui", version = "0.6.0" }
 aonyx-adapters = { path = "crates/aonyx-adapters", version = "0.6.0" }
+aonyx-api = { path = "crates/aonyx-api", version = "0.6.0" }
 
 [profile.release]
 opt-level = 3
