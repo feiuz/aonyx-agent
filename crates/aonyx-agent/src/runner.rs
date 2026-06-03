@@ -121,6 +121,12 @@ pub struct AgentRunner {
     /// (and `summarize`) picks up the change.
     model: Arc<std::sync::Mutex<String>>,
     max_iterations: usize,
+    /// Pre-fetch RAG context before each turn (retrieve-then-generate).
+    auto_retrieve: bool,
+    /// Chunks injected when [`Self::with_auto_retrieve`] is enabled.
+    auto_retrieve_top_k: usize,
+    /// Skip auto-retrieve for user messages shorter than this (chars).
+    auto_retrieve_min_len: usize,
 }
 
 impl AgentRunner {
@@ -140,6 +146,9 @@ impl AgentRunner {
             approval: ApprovalPolicy::default(),
             model: Arc::new(std::sync::Mutex::new(model.into())),
             max_iterations: 10,
+            auto_retrieve: false,
+            auto_retrieve_top_k: 5,
+            auto_retrieve_min_len: 12,
         }
     }
 
@@ -207,6 +216,20 @@ impl AgentRunner {
         self
     }
 
+    /// Enable retrieve-then-generate. Before each turn, pre-fetch RAG context
+    /// for the latest user message via the `rag_search` MCP tool and inject it
+    /// as a system block — helps weaker models that don't reliably call the
+    /// tool themselves on interrogative messages. The agent stays free to call
+    /// `read_document` / `find_related` to dig deeper; this only pre-loads.
+    /// No-op when no `…__rag_search` tool is registered, on slash-commands, or
+    /// on messages shorter than `min_len` chars. `top_k` is clamped to 1..=10.
+    pub fn with_auto_retrieve(mut self, enabled: bool, top_k: usize, min_len: usize) -> Self {
+        self.auto_retrieve = enabled;
+        self.auto_retrieve_top_k = top_k.clamp(1, 10);
+        self.auto_retrieve_min_len = min_len;
+        self
+    }
+
     fn tools_schema(&self) -> Vec<Value> {
         let mut names: Vec<&str> = self.tools.names().collect();
         names.sort();
@@ -269,6 +292,65 @@ impl AgentRunner {
         messages.insert(0, Message::new(Role::System, block));
     }
 
+    /// Retrieve-then-generate: pre-fetch RAG context for the latest user
+    /// message and insert it as a system block right before that message.
+    /// Best-effort — any failure (no tool, tool error, empty result) leaves
+    /// `messages` untouched so the turn proceeds normally.
+    async fn inject_auto_retrieve(&self, messages: &mut Vec<Message>) {
+        if !self.auto_retrieve {
+            return;
+        }
+        let Some(user_idx) = messages.iter().rposition(|m| m.role == Role::User) else {
+            return;
+        };
+        let query = messages[user_idx].content.trim().to_string();
+        // Skip slash-commands and very short messages ("ok", "merci", …).
+        if query.starts_with('/') || query.chars().count() < self.auto_retrieve_min_len {
+            return;
+        }
+        // MCP tools are named "<server>__<tool>" — match rag_search whatever
+        // the configured server is called.
+        let Some(tool_name) = self
+            .tools
+            .names()
+            .find(|n| *n == "rag_search" || n.ends_with("__rag_search"))
+            .map(|n| n.to_string())
+        else {
+            tracing::debug!("auto_retrieve: no rag_search tool registered; skipping");
+            return;
+        };
+        let Some(handler) = self.tools.get(&tool_name) else {
+            return;
+        };
+        let call = ToolCall {
+            id: "auto-retrieve".to_string(),
+            name: tool_name,
+            args: json!({ "query": query, "top_k": self.auto_retrieve_top_k }),
+        };
+        let output = match handler.invoke(call).await {
+            Ok(tr) if tr.error.is_none() => tr.output,
+            Ok(tr) => {
+                tracing::debug!(
+                    "auto_retrieve: rag_search returned an error: {:?}",
+                    tr.error
+                );
+                return;
+            }
+            Err(e) => {
+                tracing::debug!("auto_retrieve: rag_search invoke failed: {e}");
+                return;
+            }
+        };
+        let Some(body) = format_retrieved_context(&output, self.auto_retrieve_top_k) else {
+            return;
+        };
+        let block = format!(
+            "[Contexte RAG pré-chargé pour la question — cite la source (projet / fichier) \
+             si tu l'utilises ; tu peux approfondir avec read_document / find_related]\n\n{body}"
+        );
+        messages.insert(user_idx, Message::new(Role::System, block));
+    }
+
     /// Run the loop and return the full transcript.
     ///
     /// Equivalent to [`AgentRunner::run_streaming`] with a discarded event
@@ -296,6 +378,7 @@ impl AgentRunner {
         events: mpsc::Sender<TurnEvent>,
     ) -> Result<TurnResult> {
         self.inject_active_skills(&mut messages);
+        self.inject_auto_retrieve(&mut messages).await;
         let tools = self.tools_schema();
         let mut iterations: usize = 0;
 
@@ -544,6 +627,72 @@ fn short_summary(value: &Value) -> String {
         format!("{cut}…")
     } else {
         trimmed
+    }
+}
+
+/// Format a `rag_search` tool result into a compact context block for
+/// [`AgentRunner::inject_auto_retrieve`]. Handles both a structured
+/// `{ "results": [{project, source, content}, …] }` payload and the MCP
+/// text-content case (where the server's JSON arrives as a single string —
+/// see `aonyx_mcp`'s `extract_call_result`). Returns `None` when there's
+/// nothing usable to inject.
+fn format_retrieved_context(output: &Value, top_k: usize) -> Option<String> {
+    if let Some(results) = output.get("results").and_then(|r| r.as_array()) {
+        return format_results_array(results, top_k);
+    }
+    if let Some(s) = output.as_str() {
+        // The MCP server's response often arrives as a JSON string.
+        if let Ok(parsed) = serde_json::from_str::<Value>(s) {
+            if let Some(results) = parsed.get("results").and_then(|r| r.as_array()) {
+                if let Some(block) = format_results_array(results, top_k) {
+                    return Some(block);
+                }
+            }
+        }
+        let trimmed = s.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+        return Some(cap(trimmed, 6000));
+    }
+    None
+}
+
+/// Render a `results` array (`{project, source, content}` objects) as a
+/// bulleted, source-attributed context block, capped per chunk.
+fn format_results_array(results: &[Value], top_k: usize) -> Option<String> {
+    let mut blocks = Vec::new();
+    for r in results.iter().take(top_k) {
+        let content = r
+            .get("content")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim();
+        if content.is_empty() {
+            continue;
+        }
+        let project = r.get("project").and_then(|v| v.as_str()).unwrap_or("?");
+        let source = r.get("source").and_then(|v| v.as_str()).unwrap_or("?");
+        blocks.push(format!(
+            "- (projet {project} / {source})\n{}",
+            cap(content, 1200)
+        ));
+    }
+    if blocks.is_empty() {
+        None
+    } else {
+        Some(blocks.join("\n\n"))
+    }
+}
+
+/// Truncate `s` to at most `max_chars` characters, appending an ellipsis
+/// when it was cut.
+fn cap(s: &str, max_chars: usize) -> String {
+    if s.chars().count() <= max_chars {
+        s.to_string()
+    } else {
+        let head: String = s.chars().take(max_chars).collect();
+        format!("{head}…")
     }
 }
 
@@ -949,5 +1098,60 @@ mod tests {
             .iter()
             .any(|e| matches!(e, TurnEvent::ToolRejected { name, .. } if name == "fs_write"));
         assert!(rejected, "expected ToolRejected for fs_write");
+    }
+
+    #[test]
+    fn auto_retrieve_formats_structured_results() {
+        let output = json!({
+            "results": [
+                {"project": "infra", "source": "ref.md", "content": "alpha fact"},
+                {"project": "ovelo", "source": "notes.md", "content": "beta fact"},
+            ]
+        });
+        let block = format_retrieved_context(&output, 5).expect("context block");
+        assert!(block.contains("projet infra / ref.md"));
+        assert!(block.contains("alpha fact"));
+        assert!(block.contains("beta fact"));
+    }
+
+    #[test]
+    fn auto_retrieve_parses_json_string_payload() {
+        // MCP servers commonly return their JSON as a single text-content string.
+        let payload = json!({
+            "results": [{"project": "p", "source": "s", "content": "gamma"}]
+        })
+        .to_string();
+        let block = format_retrieved_context(&Value::String(payload), 5).expect("context block");
+        assert!(block.contains("gamma"));
+        assert!(block.contains("projet p / s"));
+    }
+
+    #[test]
+    fn auto_retrieve_uses_plain_text_payload() {
+        let output = Value::String("just some prose context".to_string());
+        assert_eq!(
+            format_retrieved_context(&output, 5).unwrap(),
+            "just some prose context"
+        );
+    }
+
+    #[test]
+    fn auto_retrieve_top_k_limits_chunks() {
+        let output = json!({
+            "results": [
+                {"project":"p","source":"a","content":"one"},
+                {"project":"p","source":"b","content":"two"},
+                {"project":"p","source":"c","content":"three"},
+            ]
+        });
+        let block = format_retrieved_context(&output, 2).unwrap();
+        assert!(block.contains("one") && block.contains("two"));
+        assert!(!block.contains("three"), "top_k=2 must drop the 3rd chunk");
+    }
+
+    #[test]
+    fn auto_retrieve_none_on_empty() {
+        assert!(format_retrieved_context(&json!({"results": []}), 5).is_none());
+        assert!(format_retrieved_context(&Value::String(String::new()), 5).is_none());
     }
 }

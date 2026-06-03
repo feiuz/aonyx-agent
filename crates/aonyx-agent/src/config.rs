@@ -133,6 +133,23 @@ pub struct Config {
     /// `"fs_write"`, `"fs_edit"`, …) from an exposed bot/API deployment.
     #[serde(default)]
     pub tools_deny: Vec<String>,
+    /// Retrieve-then-generate: before each turn on the `aonyx serve` surfaces
+    /// (Telegram / Discord / OpenAI / API), pre-fetch RAG context for the
+    /// user's message via the `rag_search` MCP tool and inject it as a system
+    /// block. Helps weaker models that don't reliably call the tool on their
+    /// own for interrogative messages. The model can still call
+    /// `read_document` / `find_related` to dig deeper — this only pre-loads.
+    /// Off by default. (Interactive TUI = fast-follow.)
+    #[serde(default)]
+    pub auto_retrieve: bool,
+    /// Chunks injected per turn by [`Self::auto_retrieve`] (clamped 1..=10).
+    /// Defaults to 5.
+    #[serde(default = "default_auto_retrieve_top_k")]
+    pub auto_retrieve_top_k: usize,
+    /// Skip auto-retrieve for messages shorter than this many chars (so a
+    /// bare "ok" / "merci" never triggers a search). Defaults to 12.
+    #[serde(default = "default_auto_retrieve_min_len")]
+    pub auto_retrieve_min_len: usize,
 }
 
 /// Ten RGB colour fields persisted from the `/theme-edit` panel
@@ -250,6 +267,14 @@ fn default_skill_autogen_threshold() -> usize {
     3
 }
 
+fn default_auto_retrieve_top_k() -> usize {
+    5
+}
+
+fn default_auto_retrieve_min_len() -> usize {
+    12
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -287,6 +312,9 @@ impl Default for Config {
             sandbox_url: None,
             tools_allow: Vec::new(),
             tools_deny: Vec::new(),
+            auto_retrieve: false,
+            auto_retrieve_top_k: default_auto_retrieve_top_k(),
+            auto_retrieve_min_len: default_auto_retrieve_min_len(),
         }
     }
 }
@@ -420,6 +448,9 @@ mod tests {
             sandbox_url: None,
             tools_allow: Vec::new(),
             tools_deny: Vec::new(),
+            auto_retrieve: true,
+            auto_retrieve_top_k: 5,
+            auto_retrieve_min_len: 12,
         };
         let s = toml::to_string(&original).unwrap();
         let parsed: Config = toml::from_str(&s).unwrap();

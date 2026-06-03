@@ -241,6 +241,11 @@ mod api_imp {
             .with_max_iterations(config.max_iterations)
             .with_approval(ApprovalPolicy::DenyDestructive)
             .with_skills(skills)
+            .with_auto_retrieve(
+                config.auto_retrieve,
+                config.auto_retrieve_top_k,
+                config.auto_retrieve_min_len,
+            )
             .with_project(&project);
 
         let api_runner = ApiRunner {
@@ -492,6 +497,11 @@ mod imp {
         let runner = AgentRunner::new(provider, registry, config.model.clone())
             .with_max_iterations(config.max_iterations)
             .with_skills(crate::load_all_skills())
+            .with_auto_retrieve(
+                config.auto_retrieve,
+                config.auto_retrieve_top_k,
+                config.auto_retrieve_min_len,
+            )
             .with_project(project);
         Ok(Arc::new(RunnerHandler {
             runner,
