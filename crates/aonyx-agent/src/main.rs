@@ -28,6 +28,7 @@ use aonyx_llm::{
 use aonyx_memory::{Palace, SessionStore, SqliteSessionStore};
 use clap::{Parser, Subcommand};
 
+mod backup;
 mod config;
 mod images;
 mod pricing;
@@ -116,6 +117,20 @@ enum MemoryAction {
     Stats,
     /// Hybrid-search across chunks.
     Search { query: String },
+    /// Encrypt + back up this project's memory palace to a portable file.
+    Backup {
+        /// Output file (default ./aonyx-palace-<project>.aonyxbak).
+        #[arg(short, long)]
+        out: Option<PathBuf>,
+    },
+    /// Restore an encrypted palace backup into this project.
+    Restore {
+        /// The `.aonyxbak` file to restore.
+        file: PathBuf,
+        /// Overwrite an existing palace.
+        #[arg(short, long)]
+        force: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -729,13 +744,34 @@ fn handle_config(action: ConfigAction) -> anyhow::Result<()> {
 }
 
 async fn handle_memory(action: MemoryAction) -> anyhow::Result<()> {
-    use aonyx_core::MemoryStore;
-    use aonyx_memory::{ChunksStore, DiaryStore, KgStore};
-
     let project_root = std::env::current_dir()?;
     let palace_dir = Palace::default_project_dir(&project_root);
-    let palace = Palace::open(&palace_dir)?;
     let slug = project_slug(&project_root);
+
+    // Backup / restore work on the palace *files* — don't open the SQLite
+    // stores here (that would lock or recreate the .db files).
+    match &action {
+        MemoryAction::Backup { out } => {
+            let out = out
+                .clone()
+                .unwrap_or_else(|| PathBuf::from(format!("aonyx-palace-{slug}.aonyxbak")));
+            let pass = prompt_passphrase(true)?;
+            backup::backup(&palace_dir, &out, &pass)?;
+            println!("✓ encrypted backup written to {}", out.display());
+            return Ok(());
+        }
+        MemoryAction::Restore { file, force } => {
+            let pass = prompt_passphrase(false)?;
+            backup::restore(file, &palace_dir, &pass, *force)?;
+            println!("✓ palace restored from {}", file.display());
+            return Ok(());
+        }
+        _ => {}
+    }
+
+    use aonyx_core::MemoryStore;
+    use aonyx_memory::{ChunksStore, DiaryStore, KgStore};
+    let palace = Palace::open(&palace_dir)?;
 
     match action {
         MemoryAction::Stats => {
@@ -764,6 +800,18 @@ async fn handle_memory(action: MemoryAction) -> anyhow::Result<()> {
                 }
             }
         }
+        _ => {}
     }
     Ok(())
+}
+
+/// Prompt for a backup passphrase (with confirmation when `confirm`).
+fn prompt_passphrase(confirm: bool) -> anyhow::Result<String> {
+    use dialoguer::{theme::ColorfulTheme, Password};
+    let theme = ColorfulTheme::default();
+    let mut p = Password::with_theme(&theme).with_prompt("Backup passphrase");
+    if confirm {
+        p = p.with_confirmation("Confirm passphrase", "passphrases don't match");
+    }
+    Ok(p.interact()?)
 }

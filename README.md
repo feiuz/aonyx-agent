@@ -59,6 +59,8 @@ aonyx resume
 # Inspect your memory palace
 aonyx memory stats
 aonyx memory search "decisions about auth"
+aonyx memory backup                # encrypt the palace to a portable file
+aonyx memory restore <file>        # …and bring it back on another machine
 
 # Run it as a chat bot (install once with the matching feature):
 #   cargo install aonyx-agent --features telegram   # and/or --features discord
@@ -101,7 +103,7 @@ See [`.bmad/prd.md`](.bmad/prd.md) for the full plan. Where we are:
 
 - **Vague 1 (MVP)** — ✅ done: CLI, memory palace (KG + hybrid search + tree-sitter + cross-linking + time-machine), 6 LLM providers, fs/bash/git/web tools, 4 built-in skills, MCP client + server.
 - **Vague 2** — ✅ complete: full ratatui TUI, subagents, MCP client + server, **Telegram** + **Discord** + **OpenAI-compatible HTTP server** + **Lua plugins** (feature-gated), and **skill auto-generation** (on by default).
-- **Vague 3** — in progress: vision ✅ (Anthropic + OpenAI passthrough) + **browser automation** ✅ (`chromiumoxide` headless Chrome, feature-gated) + **image-gen** ✅ + **TTS** ✅ (OpenAI images/audio). Next: cloud sync, self-evolution.
+- **Vague 3** — in progress: vision ✅ (Anthropic + OpenAI passthrough) + **browser automation** ✅ (`chromiumoxide` headless Chrome, feature-gated) + **image-gen** ✅ + **TTS** ✅ (OpenAI images/audio) + **encrypted cloud-sync** ✅ (palace backup/restore). Next: self-evolution.
 
 ---
 

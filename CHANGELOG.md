@@ -7,7 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-_(nothing yet)_
+### Added
+- **Encrypted cloud-sync** (Phase AAA, Vague 3) — `aonyx memory backup`
+  zips the project palace and encrypts it (XChaCha20-Poly1305, key derived
+  from a passphrase via Argon2id) into a portable `.aonyxbak` file; `aonyx
+  memory restore <file>` brings it back on any machine. Sync the file via
+  any cloud (S3 / Dropbox / rsync / git) — only the passphrase opens it.
 
 ## [0.5.0] — 2026-06-02 — multimodal & web (Vague 3)
 

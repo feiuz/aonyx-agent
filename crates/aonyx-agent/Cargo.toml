@@ -57,6 +57,10 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 base64 = "0.22"
 pulldown-cmark = { version = "0.12", default-features = false, features = ["html"] }
 zip = { version = "2", default-features = false, features = ["deflate"] }
+# Phase AAA — encrypted palace backup (cloud-sync)
+chacha20poly1305 = "0.10"
+argon2 = "0.5"
+rand = "0.8"
 # Phase SS — onboarding wizard + secure key storage.
 # Linux backend = the Secret Service over PURE-RUST zbus (`async-secret-service`),
 # NOT `sync-secret-service` which links the C `libdbus` (absent on CI / minimal
