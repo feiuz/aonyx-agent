@@ -9,6 +9,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 _(nothing yet)_
 
+## [0.7.0] — 2026-06-03 — Vague 4 (1/2): automation API
+
+Adds a first-class **REST + WebSocket automation API** over the agent core
+(`aonyx serve api`) in a new `aonyx-api` crate. `clippy --all-features -D
+warnings` clean on the pinned 1.96.0 toolchain; full workspace test suite
+green.
+
+### Added
+- **Automation API** (`aonyx serve api`, feature `api`, in the `-full`
+  binary) — a bearer-authed HTTP surface over the same core that powers the
+  CLI/TUI:
+  - **Sessions** — `GET/POST /v1/sessions`, `GET/DELETE /v1/sessions/:id`,
+    `POST /v1/sessions/:id/messages` (blocking turn), persisted in the same
+    `~/.aonyx/sessions.db` as the CLI/TUI.
+  - **Streaming** — `GET /v1/sessions/:id/stream` (bidirectional WebSocket)
+    and `POST /v1/sessions/:id/messages/stream` (one-shot SSE): live text
+    deltas + tool-activity frames.
+  - **Memory palace** — `GET /v1/memory/search` (hybrid), `GET`/`POST
+    /v1/memory/diary`, `GET /v1/memory/kg/entities`, `/entities/:name`,
+    `/relations`.
+  - **Introspection** — `GET /v1/tools`, `/v1/skills`, `/v1/config`
+    (secrets are never exposed), `/v1/info`, `/v1/health`.
+  - **OpenAI-compatible** — `POST /v1/chat/completions` + `GET /v1/models`
+    co-mounted on the same port, so any OpenAI SDK is a drop-in client.
+  - **OpenAPI** — `GET /v1/openapi.json` (open, for discovery).
+  - **Security** — bearer token (flag / keyring `api_token` / `AONYX_API_TOKEN`);
+    binds `127.0.0.1` by default; a non-loopback bind **refuses to start
+    without a token**; destructive tools stay denied at the loop level.
+
+### Notes
+- New crate **`aonyx-api`** (10 crates total). The API never depends on
+  `aonyx-agent` — the agent loop is injected through an `ApiAgent` trait,
+  exactly like the channel adapters — so the binary pulls it in behind the
+  `api` feature with no dependency cycle.
+- First half of Vague 4. The Windows desktop app (Tauri 2, hybrid
+  local/remote) lands in v0.8.0.
+
 ## [0.6.0] — 2026-06-02 — Vague 3 finale (cloud-sync · self-evolution · sandbox)
 
 Closes the Vague 3 arc — and with it the full PRD roadmap (Vague 1 + 2 + 3).

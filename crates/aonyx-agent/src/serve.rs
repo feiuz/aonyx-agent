@@ -49,6 +49,256 @@ pub async fn openai(_port: u16, _token: Option<String>) -> anyhow::Result<()> {
     )
 }
 
+/// Run the REST + WebSocket automation API (`aonyx serve api`, Vague 4).
+#[cfg(feature = "api")]
+pub async fn api(port: u16, token: Option<String>, bind: String) -> anyhow::Result<()> {
+    api_imp::run(port, token, bind).await
+}
+
+/// Fallback when the binary was built without API support.
+#[cfg(not(feature = "api"))]
+pub async fn api(_port: u16, _token: Option<String>, _bind: String) -> anyhow::Result<()> {
+    anyhow::bail!(
+        "this build has no API support — reinstall with \
+         `cargo install aonyx-agent --features api`, or grab a release binary"
+    )
+}
+
+/// `aonyx serve api` — build the [`aonyx_api`] state over the real agent
+/// loop, memory palace, and session store, then serve it.
+#[cfg(feature = "api")]
+mod api_imp {
+    use std::sync::Arc;
+
+    use aonyx_agent::{AgentRunner, ApprovalPolicy, TurnEvent};
+    use aonyx_api::{
+        ApiAgent, ApiState, AuthConfig, ConfigInfo, ServerInfo, SkillInfo, StreamFrame, ToolInfo,
+    };
+    use aonyx_core::{Message, SafetyClass};
+    use aonyx_memory::{Palace, SqliteSessionStore};
+    use async_trait::async_trait;
+    use tokio::sync::mpsc;
+
+    use crate::config::Config;
+
+    /// Adapts the binary's [`AgentRunner`] (+ tool/skill/config snapshots) to
+    /// the [`ApiAgent`] trait the API layer drives.
+    struct ApiRunner {
+        runner: AgentRunner,
+        tools: Vec<ToolInfo>,
+        skills: Vec<SkillInfo>,
+        config: ConfigInfo,
+    }
+
+    #[async_trait]
+    impl ApiAgent for ApiRunner {
+        async fn run_turn(&self, history: Vec<Message>) -> aonyx_core::Result<Vec<Message>> {
+            Ok(self.runner.run(history).await?.messages)
+        }
+
+        async fn run_turn_streaming(
+            &self,
+            history: Vec<Message>,
+            tx: mpsc::Sender<StreamFrame>,
+        ) -> aonyx_core::Result<Vec<Message>> {
+            // Bridge the runner's TurnEvent stream onto the API's StreamFrame.
+            let (etx, mut erx) = mpsc::channel::<TurnEvent>(128);
+            let forward = async move {
+                while let Some(ev) = erx.recv().await {
+                    if let Some(frame) = map_event(ev) {
+                        if tx.send(frame).await.is_err() {
+                            break;
+                        }
+                    }
+                }
+            };
+            let drive = self.runner.run_streaming(history, etx);
+            let (res, _) = tokio::join!(drive, forward);
+            Ok(res?.messages)
+        }
+
+        fn tools(&self) -> Vec<ToolInfo> {
+            self.tools.clone()
+        }
+
+        fn skills(&self) -> Vec<SkillInfo> {
+            self.skills.clone()
+        }
+
+        fn config(&self) -> ConfigInfo {
+            self.config.clone()
+        }
+    }
+
+    fn class_str(c: SafetyClass) -> String {
+        match c {
+            SafetyClass::Safe => "safe",
+            SafetyClass::Caution => "caution",
+            SafetyClass::Destructive => "destructive",
+        }
+        .to_string()
+    }
+
+    /// Map a runner [`TurnEvent`] onto an API [`StreamFrame`]. The terminal
+    /// `AssistantMessageEnd`/`Done` are dropped — the API layer emits its own
+    /// `Done` after persisting.
+    fn map_event(ev: TurnEvent) -> Option<StreamFrame> {
+        Some(match ev {
+            TurnEvent::AssistantDelta(text) => StreamFrame::Delta { text },
+            TurnEvent::ToolStart { name, args, class } => StreamFrame::ToolStart {
+                name,
+                args,
+                class: class_str(class),
+            },
+            TurnEvent::ToolEnd { name, ok, summary } => StreamFrame::ToolEnd { name, ok, summary },
+            TurnEvent::ToolRejected { name, class } => StreamFrame::ToolRejected {
+                name,
+                class: class_str(class),
+            },
+            TurnEvent::IterationStart(n) => StreamFrame::Iteration { n: n as u32 },
+            TurnEvent::AssistantMessageEnd | TurnEvent::Done { .. } => return None,
+        })
+    }
+
+    fn tool_infos(registry: &aonyx_tools::ToolRegistry) -> Vec<ToolInfo> {
+        let names: Vec<String> = registry.names().map(|s| s.to_string()).collect();
+        names
+            .into_iter()
+            .filter_map(|name| registry.get_raw(&name))
+            .map(|h| {
+                let schema = h.schema();
+                let description = schema
+                    .get("description")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                ToolInfo {
+                    name: h.name().to_string(),
+                    description,
+                    class: class_str(h.classify()),
+                    schema,
+                }
+            })
+            .collect()
+    }
+
+    fn skill_infos(skills: &[aonyx_skills::Skill]) -> Vec<SkillInfo> {
+        skills
+            .iter()
+            .map(|s| {
+                let mut triggers = Vec::new();
+                if s.trigger.always_on {
+                    triggers.push("always-on".to_string());
+                }
+                if s.trigger.manual {
+                    triggers.push("manual".to_string());
+                }
+                triggers.extend(s.trigger.keywords.iter().cloned());
+                if let Some(p) = &s.trigger.project_matches {
+                    triggers.push(format!("project~/{p}/"));
+                }
+                SkillInfo {
+                    id: s.id.clone(),
+                    description: s.name.clone(),
+                    triggers,
+                }
+            })
+            .collect()
+    }
+
+    fn api_features() -> Vec<String> {
+        vec![
+            "memory".to_string(),
+            "openai-compat".to_string(),
+            "sessions".to_string(),
+            "streaming".to_string(),
+            "tools".to_string(),
+        ]
+    }
+
+    pub async fn run(port: u16, token: Option<String>, bind: String) -> anyhow::Result<()> {
+        let config = Config::load_or_init()?;
+        let cwd = std::env::current_dir()?;
+        let project = crate::project_slug(&cwd);
+
+        // Build the live components (provider + tools + skills) exactly like
+        // the chat adapters do.
+        let provider = crate::build_provider(&config)?;
+        let registry = crate::build_serve_registry()?;
+        let skills = crate::load_all_skills();
+
+        // Snapshot metadata BEFORE the registry/skills move into the runner.
+        let tools = tool_infos(&registry);
+        let skill_list = skill_infos(&skills);
+        let config_info = ConfigInfo {
+            provider: config.provider.clone(),
+            model: config.model.clone(),
+            max_iterations: config.max_iterations,
+            skill_autogen: config.skill_autogen,
+        };
+
+        let runner = AgentRunner::new(provider, registry, config.model.clone())
+            .with_max_iterations(config.max_iterations)
+            .with_approval(ApprovalPolicy::DenyDestructive)
+            .with_skills(skills)
+            .with_project(&project);
+
+        let api_runner = ApiRunner {
+            runner,
+            tools,
+            skills: skill_list,
+            config: config_info,
+        };
+
+        // Memory palace (current dir) + cross-run session store.
+        let palace = Palace::open(Palace::default_project_dir(&cwd))?;
+        let sessions = SqliteSessionStore::open(Config::config_dir()?.join("sessions.db"))?;
+
+        // Token: flag → keyring → env.
+        let token = token
+            .or_else(|| crate::secrets::get("api_token"))
+            .or_else(|| std::env::var("AONYX_API_TOKEN").ok());
+
+        // A non-loopback bind without a token is refused (FR-AX4).
+        let loopback = matches!(bind.as_str(), "127.0.0.1" | "::1" | "localhost");
+        if !loopback && token.is_none() {
+            anyhow::bail!(
+                "refusing to bind {bind} without a token — pass --token, set \
+                 AONYX_API_TOKEN, run `aonyx setup`-stored `api_token`, or bind 127.0.0.1"
+            );
+        }
+
+        let info = ServerInfo::new(config.provider.clone(), config.model.clone(), api_features());
+        // Destructive tools are denied at the loop level (DenyDestructive);
+        // the direct tool-invoke endpoint is not exposed, so `false` here.
+        let auth = AuthConfig::new(token.clone(), false);
+        let state = ApiState::new(
+            auth,
+            info,
+            Arc::new(sessions),
+            Arc::new(palace),
+            Arc::new(api_runner),
+            project,
+        );
+
+        let addr = format!("{bind}:{port}");
+        if token.is_some() {
+            eprintln!(
+                "aonyx: API on http://{addr}/v1 (bearer auth ON) — \
+                 docs at /v1/openapi.json. Ctrl-C to stop."
+            );
+        } else {
+            eprintln!(
+                "aonyx: API on http://{addr}/v1 (no auth — keep it on localhost) — \
+                 docs at /v1/openapi.json. Ctrl-C to stop."
+            );
+        }
+        aonyx_api::serve(state, &addr)
+            .await
+            .map_err(|e| anyhow::anyhow!("api serve: {e}"))
+    }
+}
+
 #[cfg(any(feature = "telegram", feature = "discord", feature = "openai-server"))]
 mod imp {
     use std::collections::HashMap;

@@ -9,7 +9,7 @@
 //! aonyx memory <subcmd>  stats / hybrid-search the palace
 //! aonyx skills <subcmd>  list the active skill catalogue
 //! aonyx mcp <subcmd>     run the MCP server (stdio or HTTP)
-//! aonyx serve <channel>  run an adapter: telegram, discord, or openai (HTTP)
+//! aonyx serve <channel>  run an adapter: telegram, discord, openai, or api
 //! aonyx reflect          distil the diary into an improved system prompt
 //! ```
 
@@ -186,6 +186,20 @@ enum ServeChannel {
         #[arg(long)]
         token: Option<String>,
     },
+    /// Run the REST + WebSocket automation API (needs the `api` feature).
+    Api {
+        /// TCP port to listen on.
+        #[arg(short, long, default_value_t = 8788)]
+        port: u16,
+        /// Require this bearer token (falls back to the keyring `api_token`
+        /// or $AONYX_API_TOKEN).
+        #[arg(long)]
+        token: Option<String>,
+        /// Address to bind. Default `127.0.0.1`; a non-loopback bind
+        /// requires a token.
+        #[arg(long, default_value = "127.0.0.1")]
+        bind: String,
+    },
 }
 
 #[tokio::main]
@@ -224,7 +238,9 @@ async fn main() -> anyhow::Result<()> {
             ServeChannel::Telegram => serve::telegram().await,
             ServeChannel::Discord => serve::discord().await,
             ServeChannel::Openai { port, token } => serve::openai(port, token).await,
+            ServeChannel::Api { port, token, bind } => serve::api(port, token, bind).await,
         },
+
         Some(Command::Reflect { apply }) => reflect::run(apply).await,
         Some(Command::Mcp { action }) => match action {
             McpAction::Serve { port, token } => {

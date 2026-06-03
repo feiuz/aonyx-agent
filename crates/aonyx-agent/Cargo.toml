@@ -27,6 +27,7 @@ aonyx-skills = { workspace = true }
 aonyx-tools = { workspace = true }
 aonyx-mcp = { workspace = true }
 aonyx-adapters = { workspace = true }
+aonyx-api = { workspace = true, optional = true }
 # Shared
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -77,6 +78,8 @@ discord = ["aonyx-adapters/discord"]
 openai-server = ["aonyx-adapters/openai-server"]
 lua-plugins = ["aonyx-tools/lua-plugins"]
 browser = ["aonyx-tools/browser"]
+# REST + WebSocket automation API (`aonyx serve api`, Vague 4).
+api = ["dep:aonyx-api"]
 
 [dev-dependencies]
 tokio = { workspace = true }

@@ -74,7 +74,7 @@ jobs:
           cp "target/${{ matrix.target }}/release/aonyx${{ matrix.ext }}" "staging/aonyx-lean${{ matrix.ext }}"
           # Full binary: every channel adapter + Lua plugins compiled in.
           cargo build --release --locked -p aonyx-agent \
-            --features telegram,discord,openai-server,lua-plugins,browser \
+            --features telegram,discord,openai-server,lua-plugins,browser,api \
             --target ${{ matrix.target }}
           cp "target/${{ matrix.target }}/release/aonyx${{ matrix.ext }}" "staging/aonyx-full${{ matrix.ext }}"
 

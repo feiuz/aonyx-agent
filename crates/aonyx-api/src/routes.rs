@@ -10,7 +10,7 @@ use crate::auth::require_auth;
 use crate::sessions::{create_session, delete_session, get_session, list_sessions, send_message};
 use crate::state::{ApiState, ServerInfo};
 use crate::streaming::{sse_message, ws_stream};
-use crate::{memory, meta};
+use crate::{memory, meta, openai};
 
 /// Build the complete API router for the given [`ApiState`].
 ///
@@ -40,6 +40,8 @@ pub fn build_router(state: ApiState) -> Router {
         .route("/v1/tools", get(meta::list_tools))
         .route("/v1/skills", get(meta::list_skills))
         .route("/v1/config", get(meta::get_config))
+        .route("/v1/chat/completions", post(openai::chat_completions))
+        .route("/v1/models", get(openai::models))
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             require_auth,
@@ -465,5 +467,21 @@ mod tests {
         assert_eq!(spec["openapi"], "3.0.3");
         assert!(spec["paths"]["/v1/sessions"].is_object());
         assert!(spec["paths"]["/v1/memory/search"].is_object());
+    }
+
+    #[tokio::test]
+    async fn openai_chat_completions_runs_a_turn() {
+        let app = build_router(state(None));
+        let res = app
+            .oneshot(post_req(
+                "/v1/chat/completions",
+                json!({ "messages": [{ "role": "user", "content": "hello" }] }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = body_json(res).await;
+        assert_eq!(body["object"], "chat.completion");
+        assert_eq!(body["choices"][0]["message"]["content"], "echo: hello");
     }
 }
