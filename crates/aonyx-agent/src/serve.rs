@@ -451,7 +451,10 @@ mod imp {
         if n.contains("rag") || n.contains("search") || n.contains("memory") || n.contains("recall")
         {
             "🔍 recherche dans la mémoire…".to_string()
-        } else if n.contains("read") || n.contains("view") || n.contains("get") || n.contains("list")
+        } else if n.contains("read")
+            || n.contains("view")
+            || n.contains("get")
+            || n.contains("list")
         {
             "📄 lecture…".to_string()
         } else if n.contains("write") || n.contains("edit") || n.contains("append") {
