@@ -7,7 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-_(nothing yet)_
+- **Native Ollama tool calling** — the built-in `ollama` provider
+  (`/api/chat`) now advertises tools, replays assistant tool calls +
+  `tool`-role results, and parses `message.tool_calls` from the JSON-lines
+  stream (arguments as an object). With this, tool calling works on **every**
+  provider except `claude-code`, which runs its own tool loop inside the
+  `claude` binary.
 
 ## [0.8.0] — 2026-06-03 — real end-to-end tool calling
 

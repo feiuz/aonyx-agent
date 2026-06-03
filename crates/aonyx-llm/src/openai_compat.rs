@@ -134,7 +134,8 @@ fn build_message(m: &Message) -> Value {
 
 /// Translate the runner's Anthropic-shaped tool schemas
 /// (`{name, description, input_schema}`) into OpenAI's function shape.
-fn translate_tools(tools: &[Value]) -> Vec<Value> {
+/// Shared with the Ollama provider, whose `/api/chat` accepts the same shape.
+pub(crate) fn translate_tools(tools: &[Value]) -> Vec<Value> {
     tools
         .iter()
         .map(|t| {

@@ -1,15 +1,20 @@
 //! Ollama provider — JSON-lines streaming from `POST /api/chat`.
 //!
-//! Wire format: each JSON line is `{ "message": { "content": "..." }, "done": bool }`,
-//! terminating on `done = true`. Unlike OpenAI, there is no SSE framing.
+//! Wire format: each JSON line is `{ "message": { "content": ..., "tool_calls": [...] }, "done": bool }`,
+//! terminating on `done = true`. Unlike OpenAI there is no SSE framing, and
+//! tool calls arrive **complete** in one message (arguments as an object, no
+//! call id) rather than as streamed fragments.
 
-use aonyx_core::{AonyxError, ChatChunk, ChatRequest, ChatStream, LlmProvider, Result, Role};
+use aonyx_core::{
+    Attachment, AonyxError, ChatChunk, ChatRequest, ChatStream, LlmProvider, Message, Result, Role,
+    ToolCall,
+};
 use async_stream::try_stream;
 use async_trait::async_trait;
 use futures::StreamExt;
 use reqwest::Client;
-use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde::Deserialize;
+use serde_json::{json, Value};
 
 /// Default local Ollama server URL.
 pub const OLLAMA_DEFAULT_BASE_URL: &str = "http://localhost:11434";
@@ -47,24 +52,42 @@ impl Default for OllamaProvider {
     }
 }
 
-#[derive(Serialize)]
-struct OllamaMessage<'a> {
-    role: &'a str,
-    content: &'a str,
-    /// Vision images as **raw** base64 strings (no `data:` prefix),
-    /// siblings of `content` — Ollama's `/api/chat` shape (Phase AA).
-    /// Omitted entirely when there are none.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    images: Vec<&'a str>,
-}
-
 fn map_role(role: Role) -> &'static str {
     match role {
         Role::System => "system",
         Role::User => "user",
         Role::Assistant => "assistant",
-        // Ollama has no `tool` role; surface tool results as user-side context.
-        Role::Tool => "user",
+        Role::Tool => "tool",
+    }
+}
+
+/// Serialize one [`Message`] into an Ollama `/api/chat` message object.
+fn build_message(m: &Message) -> Value {
+    // Tool result — Ollama supports a `tool` role; it tracks no call id.
+    if m.role == Role::Tool {
+        return json!({ "role": "tool", "content": m.content });
+    }
+    // Assistant turn requesting tools — arguments ride as an *object*.
+    if m.role == Role::Assistant && !m.tool_calls.is_empty() {
+        let calls: Vec<Value> = m
+            .tool_calls
+            .iter()
+            .map(|tc| json!({ "function": { "name": tc.name, "arguments": tc.args } }))
+            .collect();
+        return json!({ "role": "assistant", "content": m.content, "tool_calls": calls });
+    }
+    // Plain text, with optional raw-base64 vision images (Ollama's shape).
+    let images: Vec<&str> = m
+        .attachments
+        .iter()
+        .map(|att| match att {
+            Attachment::Image { data, .. } => data.as_str(),
+        })
+        .collect();
+    if images.is_empty() {
+        json!({ "role": map_role(m.role), "content": m.content })
+    } else {
+        json!({ "role": map_role(m.role), "content": m.content, "images": images })
     }
 }
 
@@ -75,32 +98,17 @@ impl LlmProvider for OllamaProvider {
     }
 
     async fn chat_stream(&self, req: ChatRequest) -> Result<ChatStream> {
-        let messages: Vec<OllamaMessage<'_>> = req
-            .messages
-            .iter()
-            .map(|m| {
-                // Phase AA — Ollama wants raw base64 (no `data:` prefix)
-                // in a sibling `images` array, not content blocks.
-                let images: Vec<&str> = m
-                    .attachments
-                    .iter()
-                    .map(|att| match att {
-                        aonyx_core::Attachment::Image { data, .. } => data.as_str(),
-                    })
-                    .collect();
-                OllamaMessage {
-                    role: map_role(m.role),
-                    content: m.content.as_str(),
-                    images,
-                }
-            })
-            .collect();
+        let messages: Vec<Value> = req.messages.iter().map(build_message).collect();
 
         let mut payload = json!({
             "model": req.model,
             "messages": messages,
             "stream": true,
         });
+        if !req.tools.is_empty() {
+            // Ollama's `/api/chat` accepts the OpenAI function shape.
+            payload["tools"] = json!(crate::openai_compat::translate_tools(&req.tools));
+        }
         let mut options = serde_json::Map::new();
         if let Some(t) = req.temperature {
             options.insert("temperature".into(), json!(t));
@@ -139,14 +147,14 @@ impl LlmProvider for OllamaProvider {
                 while let Some(idx) = buf.find('\n') {
                     let line = buf[..idx].trim().to_string();
                     buf.drain(..(idx + 1));
-                    if let Some(c) = parse_line(&line) {
+                    for c in parse_line(&line) {
                         yield c;
                     }
                 }
             }
             let trailing = buf.trim();
             if !trailing.is_empty() {
-                if let Some(c) = parse_line(trailing) {
+                for c in parse_line(trailing) {
                     yield c;
                 }
             }
@@ -168,23 +176,70 @@ struct OllamaChunk {
 struct OllamaMessageRecv {
     #[serde(default)]
     content: Option<String>,
+    #[serde(default)]
+    tool_calls: Vec<OllamaToolCall>,
 }
 
-pub(crate) fn parse_line(line: &str) -> Option<ChatChunk> {
+#[derive(Deserialize)]
+struct OllamaToolCall {
+    function: OllamaFn,
+}
+
+#[derive(Deserialize)]
+struct OllamaFn {
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    arguments: Value,
+}
+
+/// Parse one JSON line into zero or more [`ChatChunk`]s: a text delta, any
+/// complete tool calls (Ollama batches them in one message), and/or the
+/// terminal `done` marker.
+pub(crate) fn parse_line(line: &str) -> Vec<ChatChunk> {
     if line.is_empty() {
-        return None;
+        return Vec::new();
     }
-    let chunk: OllamaChunk = serde_json::from_str(line).ok()?;
-    let text = chunk.message.and_then(|m| m.content).unwrap_or_default();
-    let finished = chunk.done;
-    if text.is_empty() && !finished {
-        return None;
+    let chunk: OllamaChunk = match serde_json::from_str(line) {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+    let mut out = Vec::new();
+    if let Some(msg) = chunk.message {
+        if let Some(text) = msg.content {
+            if !text.is_empty() {
+                out.push(ChatChunk {
+                    delta_text: text,
+                    tool_call: None,
+                    finished: false,
+                });
+            }
+        }
+        for (i, tc) in msg.tool_calls.into_iter().enumerate() {
+            let args = if tc.function.arguments.is_null() {
+                json!({})
+            } else {
+                tc.function.arguments
+            };
+            out.push(ChatChunk {
+                delta_text: String::new(),
+                tool_call: Some(ToolCall {
+                    id: format!("call_{i}"),
+                    name: tc.function.name,
+                    args,
+                }),
+                finished: false,
+            });
+        }
     }
-    Some(ChatChunk {
-        delta_text: text,
-        tool_call: None,
-        finished,
-    })
+    if chunk.done {
+        out.push(ChatChunk {
+            delta_text: String::new(),
+            tool_call: None,
+            finished: true,
+        });
+    }
+    out
 }
 
 #[cfg(test)]
@@ -201,55 +256,68 @@ mod tests {
     #[test]
     fn parses_content_line() {
         let line = r#"{"message":{"role":"assistant","content":"Hello"},"done":false}"#;
-        let got = parse_line(line).expect("parsed");
-        assert_eq!(got.delta_text, "Hello");
-        assert!(!got.finished);
+        let got = parse_line(line);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].delta_text, "Hello");
+        assert!(!got[0].finished);
     }
 
     #[test]
     fn parses_terminal_line() {
-        let line = r#"{"message":{"content":""},"done":true}"#;
-        let got = parse_line(line).expect("parsed");
-        assert!(got.finished);
-        assert!(got.delta_text.is_empty());
+        let got = parse_line(r#"{"message":{"content":""},"done":true}"#);
+        assert_eq!(got.len(), 1);
+        assert!(got[0].finished);
+        assert!(got[0].delta_text.is_empty());
     }
 
     #[test]
     fn ignores_empty_or_malformed_lines() {
-        assert!(parse_line("").is_none());
-        assert!(parse_line("not json").is_none());
+        assert!(parse_line("").is_empty());
+        assert!(parse_line("not json").is_empty());
     }
 
     #[test]
     fn ignores_empty_content_non_terminal() {
-        let line = r#"{"message":{"content":""},"done":false}"#;
-        assert!(parse_line(line).is_none());
+        assert!(parse_line(r#"{"message":{"content":""},"done":false}"#).is_empty());
     }
 
     #[test]
-    fn text_only_message_omits_images_field() {
-        let m = OllamaMessage {
-            role: "user",
-            content: "hi",
-            images: vec![],
+    fn parses_tool_call_message() {
+        let line = r#"{"message":{"role":"assistant","content":"","tool_calls":[{"function":{"name":"list_projects","arguments":{"limit":5}}}]},"done":true}"#;
+        let got = parse_line(line);
+        // one tool-call chunk + the terminal done chunk
+        assert_eq!(got.len(), 2);
+        let tc = got[0].tool_call.as_ref().expect("tool call");
+        assert_eq!(tc.name, "list_projects");
+        assert_eq!(tc.args, json!({ "limit": 5 }));
+        assert!(got[1].finished);
+    }
+
+    #[test]
+    fn build_tool_result_message_uses_tool_role() {
+        let v = build_message(&Message::tool_result("x", "result"));
+        assert_eq!(v["role"], "tool");
+        assert_eq!(v["content"], "result");
+    }
+
+    #[test]
+    fn build_assistant_tool_calls_uses_object_arguments() {
+        let call = ToolCall {
+            id: "call_0".into(),
+            name: "list_projects".into(),
+            args: json!({ "limit": 5 }),
         };
-        let v = serde_json::to_value(&m).unwrap();
+        let v = build_message(&Message::assistant_tool_calls("", vec![call]));
+        assert_eq!(v["role"], "assistant");
+        assert_eq!(v["tool_calls"][0]["function"]["name"], "list_projects");
+        // arguments stay an object (unlike OpenAI's stringified form)
+        assert_eq!(v["tool_calls"][0]["function"]["arguments"], json!({ "limit": 5 }));
+    }
+
+    #[test]
+    fn build_text_message_omits_images() {
+        let v = build_message(&Message::new(Role::User, "hi"));
         assert_eq!(v["content"], "hi");
-        // Empty images array must be skipped on the wire.
         assert!(v.get("images").is_none());
-    }
-
-    #[test]
-    fn vision_message_carries_raw_base64_images() {
-        let m = OllamaMessage {
-            role: "user",
-            content: "describe",
-            images: vec!["AAAAbase64"],
-        };
-        let v = serde_json::to_value(&m).unwrap();
-        let imgs = v["images"].as_array().expect("array");
-        assert_eq!(imgs.len(), 1);
-        // Raw base64 — no data: URL prefix (unlike OpenAI).
-        assert_eq!(imgs[0], "AAAAbase64");
     }
 }
