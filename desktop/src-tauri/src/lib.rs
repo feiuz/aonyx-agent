@@ -259,6 +259,97 @@ fn stop_local(state: tauri::State<'_, LocalAgent>) {
     }
 }
 
+/// Path to the agent's global config (`~/.aonyx/config.toml`).
+fn aonyx_config_path() -> Result<std::path::PathBuf, String> {
+    dirs::home_dir()
+        .map(|h| h.join(".aonyx").join("config.toml"))
+        .ok_or_else(|| "could not resolve home directory".to_string())
+}
+
+/// Read the provider-relevant fields from `~/.aonyx/config.toml` (defaults
+/// when the file is absent) so the wizard can pre-fill.
+#[tauri::command]
+fn read_provider_config() -> Result<Value, String> {
+    let path = aonyx_config_path()?;
+    let table: toml::value::Table = if path.exists() {
+        toml::from_str(&std::fs::read_to_string(&path).map_err(|e| e.to_string())?)
+            .map_err(|e| format!("parse config: {e}"))?
+    } else {
+        toml::value::Table::new()
+    };
+    let s = |k: &str| {
+        table
+            .get(k)
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string()
+    };
+    Ok(serde_json::json!({
+        "provider": table.get("provider").and_then(|v| v.as_str()).unwrap_or("anthropic"),
+        "model": s("model"),
+        "anthropic_api_key": s("anthropic_api_key"),
+        "openai_api_key": s("openai_api_key"),
+        "openrouter_api_key": s("openrouter_api_key"),
+        "openai_base_url": s("openai_base_url"),
+        "ollama_base_url": s("ollama_base_url"),
+        "lm_studio_base_url": s("lm_studio_base_url"),
+        "claude_code_binary": s("claude_code_binary"),
+    }))
+}
+
+/// Merge the wizard's provider fields into `~/.aonyx/config.toml`, preserving
+/// every other key (mcp_servers, tools_allow, …). Optional values are set
+/// when non-empty and removed when explicitly blanked.
+#[tauri::command]
+fn save_provider_config(cfg: Value) -> Result<(), String> {
+    let path = aonyx_config_path()?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let content = if path.exists() {
+        std::fs::read_to_string(&path).map_err(|e| e.to_string())?
+    } else {
+        String::new()
+    };
+    // Format-preserving edit: keeps existing keys + tables ([[mcp_servers]],
+    // [custom_theme], tools_allow, …) intact, no risky key reordering.
+    let mut doc = content
+        .parse::<toml_edit::DocumentMut>()
+        .map_err(|e| format!("parse config: {e}"))?;
+
+    if let Some(p) = cfg.get("provider").and_then(|v| v.as_str()) {
+        doc["provider"] = toml_edit::value(p);
+    }
+    if let Some(m) = cfg
+        .get("model")
+        .and_then(|v| v.as_str())
+        .filter(|m| !m.is_empty())
+    {
+        doc["model"] = toml_edit::value(m);
+    }
+    for key in [
+        "anthropic_api_key",
+        "openai_api_key",
+        "openrouter_api_key",
+        "openai_base_url",
+        "ollama_base_url",
+        "lm_studio_base_url",
+        "claude_code_binary",
+    ] {
+        match cfg.get(key).and_then(|v| v.as_str()) {
+            Some(v) if !v.is_empty() => {
+                doc[key] = toml_edit::value(v);
+            }
+            Some(_) => {
+                doc.as_table_mut().remove(key);
+            }
+            None => {}
+        }
+    }
+
+    std::fs::write(&path, doc.to_string()).map_err(|e| e.to_string())
+}
+
 /// Run the desktop application.
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -274,7 +365,9 @@ pub fn run() {
             api_get_session,
             api_memory_search,
             start_local,
-            stop_local
+            stop_local,
+            read_provider_config,
+            save_provider_config
         ])
         .on_window_event(|window, event| {
             // Kill the managed local agent when the window closes so it never

@@ -436,6 +436,106 @@ function autoGrow() {
   input.style.height = Math.min(input.scrollHeight, 144) + "px";
 }
 
+// ---- provider wizard ----
+const PROVIDER_DEFAULTS = {
+  anthropic: { model: "claude-sonnet-4-5-20250929" },
+  openai: { model: "gpt-4o", base: "https://api.openai.com" },
+  openrouter: { model: "anthropic/claude-3.5-sonnet" },
+  ollama: { model: "llama3.1:8b", base: "http://localhost:11434" },
+  "lm-studio": { model: "local-model", base: "http://localhost:1234" },
+  "claude-code": { model: "claude-sonnet-4-5-20250929" },
+};
+
+function wzErr(msg) {
+  const n = $("wzNote");
+  n.classList.add("err");
+  n.textContent = msg;
+}
+
+function wzReflect() {
+  const p = $("wzProvider").value;
+  document.querySelectorAll("#wizard .wz-field").forEach((el) => {
+    const on = (el.dataset.for || "").split(" ").includes(p);
+    el.classList.toggle("hidden", !on);
+  });
+  const d = PROVIDER_DEFAULTS[p] || {};
+  if (!$("wzModel").value.trim()) $("wzModel").value = d.model || "";
+  $("wzBase").placeholder = d.base || "https://…";
+}
+
+async function openWizard() {
+  if (!invoke) return;
+  try {
+    const c = await invoke("read_provider_config");
+    $("wzProvider").value = c.provider || "anthropic";
+    $("wzModel").value =
+      c.model || (PROVIDER_DEFAULTS[c.provider] || {}).model || "";
+    $("wzKey").value =
+      c.anthropic_api_key || c.openai_api_key || c.openrouter_api_key || "";
+    $("wzBase").value =
+      c.openai_base_url || c.ollama_base_url || c.lm_studio_base_url || "";
+    $("wzBin").value = c.claude_code_binary || "";
+  } catch {}
+  $("wzNote").textContent = "";
+  $("wzNote").classList.remove("err");
+  wzReflect();
+  $("settings").classList.add("hidden");
+  $("workspace").style.display = "none";
+  $("wizard").classList.remove("hidden");
+}
+
+function closeWizard() {
+  $("wizard").classList.add("hidden");
+  $("workspace").style.display = "";
+}
+
+async function wzSave() {
+  if (!invoke) return;
+  const p = $("wzProvider").value;
+  const model = $("wzModel").value.trim();
+  if (!model) return wzErr("Set a model id first.");
+  const key = $("wzKey").value;
+  const base = $("wzBase").value.trim();
+  if (["anthropic", "openai", "openrouter"].includes(p) && !key) {
+    return wzErr("This provider needs an API key.");
+  }
+  const cfg = { provider: p, model };
+  if (p === "anthropic") cfg.anthropic_api_key = key;
+  else if (p === "openai") {
+    cfg.openai_api_key = key;
+    cfg.openai_base_url = base;
+  } else if (p === "openrouter") cfg.openrouter_api_key = key;
+  else if (p === "ollama") cfg.ollama_base_url = base;
+  else if (p === "lm-studio") cfg.lm_studio_base_url = base;
+  else if (p === "claude-code") cfg.claude_code_binary = $("wzBin").value.trim();
+
+  $("wzNote").classList.remove("err");
+  $("wzNote").textContent = "saving + restarting the local agent…";
+  try {
+    await invoke("save_provider_config", { cfg });
+  } catch (e) {
+    return wzErr("save failed: " + e);
+  }
+  store.local = true;
+  const ok = await connect();
+  if (ok) closeWizard();
+  else
+    wzErr(
+      "Saved, but the agent isn't reachable yet — check the key/model, or that `aonyx` (built with --features api) is on your PATH.",
+    );
+}
+
+$("wzProvider").addEventListener("change", () => {
+  $("wzModel").value = "";
+  wzReflect();
+});
+$("wzSave").addEventListener("click", wzSave);
+$("wzCancel").addEventListener("click", closeWizard);
+$("cfgProviderBtn").addEventListener("click", () => {
+  $("settings").classList.add("hidden");
+  openWizard();
+});
+
 // ---- wiring ----
 function reflectLocal() {
   const on = $("localMode").checked;
@@ -479,4 +579,8 @@ input.addEventListener("keydown", (e) => {
   }
 });
 
-connect();
+// First run: if the local agent can't be reached (no provider configured
+// yet), open the provider wizard instead of leaving a bare error.
+connect().then((ok) => {
+  if (!ok && store.local) openWizard();
+});

@@ -5,9 +5,11 @@ the **automation API** (`aonyx serve api`): the frontend talks to the API
 through Rust-side Tauri commands (so there is no CORS and no bundled npm
 toolchain — the UI is plain HTML/CSS/JS under `src/`).
 
-> **Status — v0.9.0 (Vague 4 complete).** Streaming markdown chat (live
-> tokens + tool activity), a sessions sidebar (switch / new), memory-palace
-> search, and an **embedded local agent** — the app launches `aonyx serve
+> **Status — v0.9.1.** A first-run **provider wizard** (all providers —
+> Anthropic / OpenAI / OpenRouter / Ollama / LM Studio / Claude Code, with
+> their keys / base URLs / model), streaming markdown chat (live tokens +
+> tool activity), a sessions sidebar (switch / new), memory-palace search,
+> and an **embedded local agent** — the app launches `aonyx serve
 > api` itself on a free loopback port (toggle in Settings) and falls back to
 > a configurable remote URL + bearer token. The Windows installer
 > (`.msi` + NSIS `.exe`) builds in CI

@@ -39,9 +39,52 @@
         <input id="token" type="password" spellcheck="false" placeholder="(optional — bearer)" />
       </label>
       <button id="saveBtn" type="button">Connect</button>
+      <button id="cfgProviderBtn" class="ghost" type="button">Configure provider…</button>
     </section>
 
-    <div class="workspace">
+    <section id="wizard" class="wizard hidden">
+      <h2 class="wizard-title">Configure your provider</h2>
+      <p class="wizard-sub">
+        Aonyx is provider-neutral. Pick one and fill its details — saved to
+        <code>~/.aonyx/config.toml</code>, then the local agent restarts.
+      </p>
+      <div class="wizard-grid">
+        <label
+          >Provider
+          <select id="wzProvider">
+            <option value="anthropic">Anthropic — Claude</option>
+            <option value="openai">OpenAI</option>
+            <option value="openrouter">OpenRouter</option>
+            <option value="ollama">Ollama — local</option>
+            <option value="lm-studio">LM Studio — local</option>
+            <option value="claude-code">Claude Code — no key</option>
+          </select>
+        </label>
+        <label
+          >Model
+          <input id="wzModel" type="text" spellcheck="false" placeholder="model id" />
+        </label>
+        <label class="wz-field" data-for="anthropic openai openrouter"
+          >API key
+          <input id="wzKey" type="password" spellcheck="false" placeholder="sk-…" />
+        </label>
+        <label class="wz-field" data-for="openai ollama lm-studio"
+          >Base URL
+          <input id="wzBase" type="text" spellcheck="false" placeholder="https://…" />
+        </label>
+        <label class="wz-field" data-for="claude-code"
+          >Claude binary
+          <input id="wzBin" type="text" spellcheck="false" placeholder="claude" />
+        </label>
+      </div>
+      <p class="wizard-note" id="wzNote"></p>
+      <div class="wizard-actions">
+        <button id="wzSave" type="button">Save &amp; connect</button>
+        <button id="wzCancel" class="ghost" type="button">Cancel</button>
+      </div>
+    </section>
+
+    <div class="workspace" id="workspace">
       <aside class="sidebar">
         <div class="side-head">
           <span>Sessions</span>

@@ -490,3 +490,82 @@ button.sm {
   padding: 0;
   white-space: pre;
 }
+
+/* ---- provider wizard ---- */
+.wizard {
+  position: relative;
+  z-index: 1;
+  width: min(560px, 92%);
+  margin: 2.5rem auto;
+  padding: 1.5rem 1.6rem;
+  background: var(--bg-card);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+}
+.wizard.hidden {
+  display: none;
+}
+.wizard-title {
+  font-family: var(--font-cond);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin: 0 0 0.4rem;
+}
+.wizard-sub {
+  color: var(--dim);
+  font-size: 0.9rem;
+  margin: 0 0 1.2rem;
+}
+.wizard-sub code,
+.wizard-note code {
+  font-family: var(--font-mono);
+  color: var(--fg);
+}
+.wizard-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 0.8rem;
+}
+.wizard label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--dim);
+}
+.wizard select,
+.wizard input {
+  font-family: var(--font-mono);
+  font-size: 0.92rem;
+  color: var(--fg);
+  background: var(--bg-2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  padding: 0.55rem 0.6rem;
+  user-select: text;
+}
+.wizard select:focus,
+.wizard input:focus {
+  outline: none;
+  border-color: var(--fg);
+}
+.wizard .wz-field.hidden {
+  display: none;
+}
+.wizard-note {
+  min-height: 1.1rem;
+  margin: 0.9rem 0 0;
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  color: var(--yellow);
+}
+.wizard-note.err {
+  color: var(--red);
+}
+.wizard-actions {
+  display: flex;
+  gap: 0.6rem;
+  margin-top: 1.1rem;
+}
