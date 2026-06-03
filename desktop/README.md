@@ -5,10 +5,11 @@ the **automation API** (`aonyx serve api`): the frontend talks to the API
 through Rust-side Tauri commands (so there is no CORS and no bundled npm
 toolchain — the UI is plain HTML/CSS/JS under `src/`).
 
-> **Status — V4.6 (scaffold + chat).** Connects to a running `aonyx serve
-> api`, creates a session, and runs **blocking** turns, surfacing which tools
-> the agent called. Streaming (WS/SSE), a sessions/memory/settings UI, an
-> embedded local agent, and a packaged `.msi` land in V4.7–V4.8.
+> **Status — V4.6–V4.7.** Connects to a running `aonyx serve api`:
+> **streaming** chat (live tokens + tool activity), a **sessions** sidebar
+> (switch / new), and **memory-palace search**. The Windows installer builds
+> in CI (`.github/workflows/desktop.yml`, manual dispatch). Remaining: an
+> embedded local agent (no separate server to launch) and the v0.9.0 cut.
 
 ## Prerequisites
 

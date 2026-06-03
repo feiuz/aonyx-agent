@@ -1,0 +1,57 @@
+name: Desktop
+
+# Manual only — building the Windows installer is heavy (downloads the WiX +
+# NSIS bundlers) and the desktop ships on its own cadence, so it never fires
+# on a normal crate tag. Pass a `tag` input to also attach the installer to
+# that GitHub Release.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Optional release tag to attach the installer to (e.g. v0.9.0). Must already exist."
+        required: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build Windows installer (.msi + .exe)
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@1.96.0
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri
+
+      - name: Install the Tauri CLI
+        run: cargo install tauri-cli --version "^2" --locked
+
+      - name: Build the bundles
+        working-directory: desktop
+        run: cargo tauri build
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: aonyx-desktop-windows
+          path: |
+            desktop/src-tauri/target/release/bundle/msi/*.msi
+            desktop/src-tauri/target/release/bundle/nsis/*.exe
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Attach to the GitHub Release
+        if: ${{ github.event.inputs.tag != '' }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag }}
+          files: |
+            desktop/src-tauri/target/release/bundle/msi/*.msi
+            desktop/src-tauri/target/release/bundle/nsis/*.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
