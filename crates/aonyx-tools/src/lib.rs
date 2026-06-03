@@ -28,6 +28,7 @@ pub mod memory;
 #[cfg(feature = "lua-plugins")]
 pub mod plugins;
 pub mod registry;
+pub mod sandbox;
 pub mod undo;
 pub mod web;
 

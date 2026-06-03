@@ -434,6 +434,8 @@ async fn start_interactive(
         media_key,
         config.openai_base_url.clone(),
     );
+    // Phase CCC — sandbox exec tool, only if a backend is configured.
+    register_sandbox_tool(&mut tool_registry, &config);
 
     // Phase OO — seed the always-allow approval set from persisted config
     // so tools the user chose to always allow skip the prompt this run.
@@ -601,6 +603,9 @@ fn build_serve_registry() -> anyhow::Result<aonyx_tools::ToolRegistry> {
     register_browser_tools(&mut registry);
     let media_key = secrets::get("openai_api_key").or_else(|| std::env::var("OPENAI_API_KEY").ok());
     register_media_tools(&mut registry, media_key, None);
+    if let Ok(cfg) = Config::load_or_init() {
+        register_sandbox_tool(&mut registry, &cfg);
+    }
     Ok(registry)
 }
 
@@ -655,6 +660,20 @@ fn register_media_tools(
         base_url.clone(),
     )));
     registry.register(Arc::new(aonyx_tools::media::Tts::new(openai_key, base_url)));
+}
+
+/// Register `sandbox_exec` (Phase CCC) when a sandbox backend is
+/// configured. No-op otherwise, so the tool never appears unconfigured.
+fn register_sandbox_tool(registry: &mut aonyx_tools::ToolRegistry, config: &Config) {
+    let token = secrets::get("sandbox_token");
+    if let Some(tool) = aonyx_tools::sandbox::SandboxExec::from_config(
+        config.sandbox_backend.as_deref(),
+        config.sandbox_image.clone(),
+        config.sandbox_url.clone(),
+        token,
+    ) {
+        registry.register(Arc::new(tool));
+    }
 }
 
 /// After a user turn, mine the request for a recurring shape and, when one

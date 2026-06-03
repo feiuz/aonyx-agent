@@ -110,6 +110,17 @@ pub struct Config {
     /// Occurrences of a recurring shape before a skill is auto-generated.
     #[serde(default = "default_skill_autogen_threshold")]
     pub skill_autogen_threshold: usize,
+    /// Sandbox backend for `sandbox_exec` (Phase CCC): `"docker"` or
+    /// `"http"`. Unset = the tool isn't registered. The HTTP token lives in
+    /// the OS keyring (`sandbox_token`).
+    #[serde(default)]
+    pub sandbox_backend: Option<String>,
+    /// Docker image for the `docker` sandbox backend (default `alpine`).
+    #[serde(default)]
+    pub sandbox_image: Option<String>,
+    /// Endpoint URL for the `http` sandbox backend (Modal / Daytona / shim).
+    #[serde(default)]
+    pub sandbox_url: Option<String>,
 }
 
 /// Ten RGB colour fields persisted from the `/theme-edit` panel
@@ -259,6 +270,9 @@ impl Default for Config {
             discord_allowed_channels: Vec::new(),
             skill_autogen: true,
             skill_autogen_threshold: 3,
+            sandbox_backend: None,
+            sandbox_image: None,
+            sandbox_url: None,
         }
     }
 }
@@ -387,6 +401,9 @@ mod tests {
             discord_allowed_channels: Vec::new(),
             skill_autogen: true,
             skill_autogen_threshold: 3,
+            sandbox_backend: None,
+            sandbox_image: None,
+            sandbox_url: None,
         };
         let s = toml::to_string(&original).unwrap();
         let parsed: Config = toml::from_str(&s).unwrap();

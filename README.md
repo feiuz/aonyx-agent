@@ -88,7 +88,7 @@ Cargo workspace, 9 crates:
 aonyx-core        Shared types, traits, errors
 aonyx-memory      ⭐ Memory palace: KG + diary + hybrid search (BM25 + fastembed vectors + RRF) + tree-sitter splitter + cross-linking + time-machine
 aonyx-llm         Provider router: Anthropic, OpenAI, OpenRouter, Ollama, LM Studio, Claude Code
-aonyx-tools       Built-in tools: fs, bash, git, web_fetch, web_search, memory_*, image_gen, tts + Lua plugin loader + browser automation (feature-gated)
+aonyx-tools       Built-in tools: fs, bash, git, web_fetch, web_search, memory_*, image_gen, tts, sandbox_exec + Lua plugin loader + browser automation (feature-gated)
 aonyx-skills      SKILL.md engine + loader + 4 built-in skills + trigger matching + auto-generation
 aonyx-agent       The `aonyx` binary (clap CLI + ratatui TUI) AND the agent-loop library (loop, compaction, classifier, subagents, approval gate)
 aonyx-mcp         MCP client (stdio + HTTP) + MCP server (expose self)
@@ -106,7 +106,7 @@ See [`.bmad/prd.md`](.bmad/prd.md) for the full plan. Where we are:
 
 - **Vague 1 (MVP)** — ✅ done: CLI, memory palace (KG + hybrid search + tree-sitter + cross-linking + time-machine), 6 LLM providers, fs/bash/git/web tools, 4 built-in skills, MCP client + server.
 - **Vague 2** — ✅ complete: full ratatui TUI, subagents, MCP client + server, **Telegram** + **Discord** + **OpenAI-compatible HTTP server** + **Lua plugins** (feature-gated), and **skill auto-generation** (on by default).
-- **Vague 3** — largely ✅: vision, **browser automation** (`chromiumoxide`), **image-gen** + **TTS** (OpenAI), **encrypted cloud-sync** (palace backup/restore), and **self-evolution** (`aonyx reflect` — distil the diary into a better system prompt). Remaining (indicative): Modal/Daytona terminal backends.
+- **Vague 3** — ✅ complete: vision, **browser automation** (`chromiumoxide`), **image-gen** + **TTS** (OpenAI), **encrypted cloud-sync** (palace backup/restore), **self-evolution** (`aonyx reflect`), and **sandboxed/remote exec** (`sandbox_exec` — Docker + HTTP, the Modal/Daytona path).
 
 ---
 

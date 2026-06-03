@@ -19,6 +19,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `aonyx reflect --apply` adopts it into `config.toml`. A bounded,
   deterministic take on the DSPy/GEPA idea — the agent learns from its own
   history.
+- **Sandboxed / remote exec** (Phase CCC, Vague 3) — `sandbox_exec` runs a
+  command off the host via a **Docker** backend (`docker run --rm <image>`)
+  or an **HTTP** backend (`POST {command}` → `{stdout,stderr,exit_code}`)
+  for a Modal function, a Daytona workspace, or any compatible shim.
+  Configured via `sandbox_backend` / `sandbox_image` / `sandbox_url` (HTTP
+  token in the keyring); registered only when a backend is set.
 
 ## [0.5.0] — 2026-06-02 — multimodal & web (Vague 3)
 
