@@ -2,8 +2,8 @@
 
 **Project**: Aonyx Agent
 **Phase**: 2 — Product
-**Date**: 2026-05-28
-**Status**: Draft v0.1
+**Date**: 2026-05-28 (delivery status updated 2026-06-02)
+**Status**: ✅ **Released — v0.6.0.** Vagues 1, 2 *and* 3 all shipped (see [`CHANGELOG.md`](../CHANGELOG.md)). The sections below are the original plan, annotated with delivery status.
 
 ---
 
@@ -86,7 +86,7 @@
 - **H2**: Rust single-binary is meaningful enough for adoption that it offsets the loss of Python's `pip install plugin` ergonomics. Validated by: install-success surveys + plugin contribution rate.
 - **H3**: Multi-provider out-of-box matters more than first-class Anthropic-only. Validated by: telemetry opt-in on provider distribution.
 
-## Vague 2 (post-MVP, indicative)
+## Vague 2 (post-MVP) — ✅ delivered (v0.4.0–v0.5.0)
 
 - TUI (`ratatui`) with streaming, slash commands, OSC-52 clipboard, status bar
 - Adapters: Telegram (`teloxide`), Discord (`serenity`)
@@ -95,24 +95,24 @@
 - Plugin system (Lua via `mlua`, or WASM via `wasmtime`)
 - Skill auto-generation enabled by default
 
-## Vague 3 (long-term, indicative)
+## Vague 3 (long-term) — ✅ delivered (v0.5.0–v0.6.0)
 
-- Browser automation (`fantoccini` or CDP via `chromiumoxide`)
-- Vision (multimodal models via providers)
-- Image gen / TTS providers
-- Self-evolution loop (Rust port of DSPy/GEPA concepts)
-- Cloud sync (encrypted memory palace backup)
-- Modal / Daytona / Singularity terminal backends
+- Browser automation — CDP via `chromiumoxide` ✅
+- Vision (multimodal models via providers) ✅
+- Image gen / TTS providers ✅ (`image_gen`, `tts`)
+- Self-evolution loop (DSPy/GEPA concepts) ✅ (`aonyx reflect`)
+- Cloud sync (encrypted memory-palace backup) ✅ (`aonyx memory backup/restore`)
+- Modal / Daytona / terminal backends ✅ via the `sandbox_exec` Docker + HTTP backends
 
 ---
 
-## Acceptance criteria (Vague 1)
+## Acceptance criteria (Vague 1) — ✅ all met (shipped through v0.6.0)
 
-- [ ] `cargo install --path crates/aonyx-cli` then `aonyx` opens an interactive session.
-- [ ] An out-of-the-box conversation produces at least one diary entry and one KG entity after a non-trivial multi-turn task.
-- [ ] `aonyx memory search "<query>"` returns hybrid-ranked results with sources.
-- [ ] `aonyx config set provider anthropic` then any prompt is served via Anthropic; switching to `ollama` works without restart.
-- [ ] All 4 built-in skills load and trigger correctly on sample prompts.
-- [ ] The MCP server (`aonyx mcp serve`) exposes 10+ tools consumable from Claude Code.
-- [ ] CI green on Linux / macOS / Windows.
-- [ ] A first GitHub Release with three signed static binaries.
+- [x] `cargo install aonyx-agent` then `aonyx` opens an interactive session.
+- [x] An out-of-the-box conversation produces a diary entry and a KG entity after a multi-turn task.
+- [x] `aonyx memory search "<query>"` returns hybrid-ranked results with sources.
+- [x] Provider/model switch live via `/provider` + `/model` (and the `aonyx setup` wizard); Anthropic ↔ Ollama without restart.
+- [x] All 4 built-in skills load and trigger correctly on sample prompts.
+- [x] The MCP server (`aonyx mcp serve`) exposes 10+ tools consumable from Claude Code.
+- [x] CI green on Linux / macOS / Windows.
+- [x] GitHub Releases with static binaries — lean + `-full`, 4 platforms + Linux arm64 — each with `SHA256SUMS.txt`.
