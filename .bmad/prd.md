@@ -3,7 +3,7 @@
 **Project**: Aonyx Agent
 **Phase**: 2 — Product
 **Date**: 2026-05-28 (delivery status updated 2026-06-02)
-**Status**: ✅ **Released — v0.6.0.** Vagues 1, 2 *and* 3 all shipped (see [`CHANGELOG.md`](../CHANGELOG.md)). The sections below are the original plan, annotated with delivery status.
+**Status**: ✅ **Released — v0.9.0.** Vagues 1–4 all shipped — including the REST + WebSocket automation API, real end-to-end tool calling, and the Tauri desktop app (see [`CHANGELOG.md`](../CHANGELOG.md) and the Vague 4 docs: [`vague4-brief.md`](vague4-brief.md) · [`vague4-prd.md`](vague4-prd.md) · [`vague4-architecture.md`](vague4-architecture.md)). The sections below are the original V1 plan, annotated with delivery status.
 
 ---
 
@@ -103,6 +103,19 @@
 - Self-evolution loop (DSPy/GEPA concepts) ✅ (`aonyx reflect`)
 - Cloud sync (encrypted memory-palace backup) ✅ (`aonyx memory backup/restore`)
 - Modal / Daytona / terminal backends ✅ via the `sandbox_exec` Docker + HTTP backends
+
+---
+
+## Vague 4 — ✅ delivered (v0.7.0–v0.9.0)
+
+- **Automation API** (`aonyx serve api`) — REST + WebSocket over the agent
+  core: sessions, streaming turns, memory palace, tools, OpenAI-compat,
+  OpenAPI; bearer-authed. ✅ v0.7.0
+- **Real end-to-end tool calling** across OpenAI-compatible, Anthropic, and
+  Ollama providers — reaching the served paths (bots/API), with a
+  `tools_allow` / `tools_deny` policy. ✅ v0.8.0–v0.8.1
+- **Desktop app** (Tauri 2) — streaming markdown chat, sessions sidebar,
+  memory-palace search, embedded local agent. ✅ v0.9.0
 
 ---
 

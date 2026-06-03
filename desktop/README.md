@@ -5,11 +5,13 @@ the **automation API** (`aonyx serve api`): the frontend talks to the API
 through Rust-side Tauri commands (so there is no CORS and no bundled npm
 toolchain — the UI is plain HTML/CSS/JS under `src/`).
 
-> **Status — V4.6–V4.7.** Connects to a running `aonyx serve api`:
-> **streaming** chat (live tokens + tool activity), a **sessions** sidebar
-> (switch / new), and **memory-palace search**. The Windows installer builds
-> in CI (`.github/workflows/desktop.yml`, manual dispatch). Remaining: an
-> embedded local agent (no separate server to launch) and the v0.9.0 cut.
+> **Status — v0.9.0 (Vague 4 complete).** Streaming markdown chat (live
+> tokens + tool activity), a sessions sidebar (switch / new), memory-palace
+> search, and an **embedded local agent** — the app launches `aonyx serve
+> api` itself on a free loopback port (toggle in Settings) and falls back to
+> a configurable remote URL + bearer token. The Windows installer
+> (`.msi` + NSIS `.exe`) builds in CI
+> (`.github/workflows/desktop.yml`, manual dispatch).
 
 ## Prerequisites
 
