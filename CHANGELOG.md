@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+_(nothing yet)_
+
+## [0.6.0] — 2026-06-02 — Vague 3 finale (cloud-sync · self-evolution · sandbox)
+
+Closes the Vague 3 arc — and with it the full PRD roadmap (Vague 1 + 2 + 3).
+`clippy --all-targets --all-features -D warnings` clean on the pinned 1.96.0
+toolchain; full workspace test suite green.
+
 ### Added
 - **Encrypted cloud-sync** (Phase AAA, Vague 3) — `aonyx memory backup`
   zips the project palace and encrypts it (XChaCha20-Poly1305, key derived

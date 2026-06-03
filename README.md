@@ -29,7 +29,7 @@ Inspired by [Hermes Agent](https://github.com/NousResearch/hermes-agent) (Nous R
 
 ## Status
 
-**v0.5.0 — released.** Vague 1 (MVP) and Vague 2 are complete; Vague 3 is in progress (vision, browser automation, image-gen, TTS). Published on crates.io (`cargo install aonyx-agent`); prebuilt binaries — **lean** and **-full** (all chat adapters + Lua plugins + browser automation compiled in) — on the [Releases](https://github.com/feiuz/aonyx-agent/releases/latest) page. `clippy --all-features -D warnings` clean on a pinned 1.96.0 toolchain; full workspace test suite green. See [`CHANGELOG.md`](CHANGELOG.md) for per-release detail and [`.bmad/prd.md`](.bmad/prd.md) for the roadmap.
+**v0.6.0 — released.** Vague 1, Vague 2, and Vague 3 are all complete — vision, browser automation, image-gen, TTS, encrypted cloud-sync, self-evolution, and sandboxed/remote exec. Published on crates.io (`cargo install aonyx-agent`); prebuilt binaries — **lean** and **-full** (all chat adapters + Lua plugins + browser automation compiled in) — on the [Releases](https://github.com/feiuz/aonyx-agent/releases/latest) page. `clippy --all-features -D warnings` clean on a pinned 1.96.0 toolchain; full workspace test suite green. See [`CHANGELOG.md`](CHANGELOG.md) for per-release detail and [`.bmad/prd.md`](.bmad/prd.md) for the roadmap.
 
 > API keys are stored in the OS keyring via `aonyx setup` (resolution order: `config.toml` → keyring → env var). Prebuilt binaries cover Linux x86_64 + aarch64, macOS x86_64 + arm64, and Windows x86_64. Grab the **`-full`** archive for the Telegram/Discord/OpenAI-server adapters + Lua plugins + browser automation, or build them in with `cargo install aonyx-agent --features telegram,discord,openai-server,lua-plugins,browser`.
 
