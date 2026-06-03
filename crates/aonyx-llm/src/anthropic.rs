@@ -10,7 +10,7 @@
 use std::collections::HashMap;
 
 use aonyx_core::{
-    Attachment, AonyxError, ChatChunk, ChatRequest, ChatStream, LlmProvider, Message, Result, Role,
+    AonyxError, Attachment, ChatChunk, ChatRequest, ChatStream, LlmProvider, Message, Result, Role,
     ToolCall,
 };
 use async_stream::try_stream;
@@ -161,9 +161,12 @@ impl LlmProvider for AnthropicProvider {
             .header("anthropic-version", ANTHROPIC_API_VERSION)
             .header("content-type", "application/json")
             .body(payload.to_string());
-        let response =
-            crate::retry::send_with_retry(builder, crate::retry::RetryPolicy::default(), "anthropic")
-                .await?;
+        let response = crate::retry::send_with_retry(
+            builder,
+            crate::retry::RetryPolicy::default(),
+            "anthropic",
+        )
+        .await?;
 
         if !response.status().is_success() {
             let status = response.status();
@@ -291,8 +294,7 @@ impl AnthropicAccumulator {
             Event::Delta { .. } => Vec::new(),
             Event::Stop { index } => match self.blocks.remove(&index) {
                 Some(b) => {
-                    let args =
-                        serde_json::from_str::<Value>(&b.args).unwrap_or_else(|_| json!({}));
+                    let args = serde_json::from_str::<Value>(&b.args).unwrap_or_else(|_| json!({}));
                     vec![ChatChunk {
                         delta_text: String::new(),
                         tool_call: Some(ToolCall {
@@ -402,7 +404,8 @@ mod tests {
             name: "list_projects".into(),
             args: json!({ "limit": 5 }),
         };
-        let v = build_message(&Message::assistant_tool_calls("let me check", vec![call])).expect("some");
+        let v = build_message(&Message::assistant_tool_calls("let me check", vec![call]))
+            .expect("some");
         assert_eq!(v["role"], "assistant");
         assert_eq!(v["content"][0]["type"], "text");
         assert_eq!(v["content"][0]["text"], "let me check");

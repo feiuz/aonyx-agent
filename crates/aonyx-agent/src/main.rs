@@ -630,7 +630,10 @@ async fn connect_configured_mcp(registry: &mut aonyx_tools::ToolRegistry, config
             )))
         };
         match outcome {
-            Ok(n) => eprintln!("aonyx: MCP '{}' connected — {n} tool(s) registered", srv.name),
+            Ok(n) => eprintln!(
+                "aonyx: MCP '{}' connected — {n} tool(s) registered",
+                srv.name
+            ),
             Err(e) => eprintln!("aonyx: MCP '{}' failed: {e}", srv.name),
         }
     }

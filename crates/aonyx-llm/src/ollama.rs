@@ -6,7 +6,7 @@
 //! call id) rather than as streamed fragments.
 
 use aonyx_core::{
-    Attachment, AonyxError, ChatChunk, ChatRequest, ChatStream, LlmProvider, Message, Result, Role,
+    AonyxError, Attachment, ChatChunk, ChatRequest, ChatStream, LlmProvider, Message, Result, Role,
     ToolCall,
 };
 use async_stream::try_stream;
@@ -311,7 +311,10 @@ mod tests {
         assert_eq!(v["role"], "assistant");
         assert_eq!(v["tool_calls"][0]["function"]["name"], "list_projects");
         // arguments stay an object (unlike OpenAI's stringified form)
-        assert_eq!(v["tool_calls"][0]["function"]["arguments"], json!({ "limit": 5 }));
+        assert_eq!(
+            v["tool_calls"][0]["function"]["arguments"],
+            json!({ "limit": 5 })
+        );
     }
 
     #[test]

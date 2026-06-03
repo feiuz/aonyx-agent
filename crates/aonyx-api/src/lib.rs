@@ -22,9 +22,9 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs, rust_2018_idioms)]
 
-pub mod error;
 mod agent;
 mod auth;
+pub mod error;
 mod memory;
 mod meta;
 mod openai;

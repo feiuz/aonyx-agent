@@ -15,7 +15,7 @@
 //! a [`ToolCall`] emitted when the turn finishes.
 
 use aonyx_core::{
-    Attachment, AonyxError, ChatChunk, ChatRequest, ChatStream, LlmProvider, Message, Result, Role,
+    AonyxError, Attachment, ChatChunk, ChatRequest, ChatStream, LlmProvider, Message, Result, Role,
     ToolCall,
 };
 use async_stream::try_stream;
@@ -178,7 +178,10 @@ impl LlmProvider for OpenAiCompatProvider {
             payload["tools"] = json!(translate_tools(&req.tools));
         }
 
-        let url = format!("{}/v1/chat/completions", self.base_url.trim_end_matches('/'));
+        let url = format!(
+            "{}/v1/chat/completions",
+            self.base_url.trim_end_matches('/')
+        );
         let mut rb = self
             .client
             .post(&url)
@@ -453,7 +456,8 @@ mod tests {
         assert!(acc
             .push_block("data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"5}\"}}]}}]}")
             .is_empty());
-        let out = acc.push_block("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}");
+        let out =
+            acc.push_block("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}");
         // one tool-call chunk + one finished chunk
         assert_eq!(out.len(), 2);
         let tc = out[0].tool_call.as_ref().expect("tool call");
@@ -505,9 +509,6 @@ mod tests {
         assert_eq!(v["tool_calls"][0]["type"], "function");
         assert_eq!(v["tool_calls"][0]["function"]["name"], "list_projects");
         // arguments must be a JSON-encoded *string*
-        assert_eq!(
-            v["tool_calls"][0]["function"]["arguments"],
-            "{\"limit\":5}"
-        );
+        assert_eq!(v["tool_calls"][0]["function"]["arguments"], "{\"limit\":5}");
     }
 }

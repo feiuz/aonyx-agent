@@ -27,7 +27,10 @@ async fn send(
     if let Some(b) = body {
         rb = rb.json(&b);
     }
-    let resp = rb.send().await.map_err(|e| format!("request failed: {e}"))?;
+    let resp = rb
+        .send()
+        .await
+        .map_err(|e| format!("request failed: {e}"))?;
     finish(resp).await
 }
 
@@ -77,7 +80,13 @@ async fn api_send(
 ) -> Result<Value, String> {
     let path = format!("/v1/sessions/{session}/messages");
     let body = serde_json::json!({ "content": content });
-    send(reqwest::Method::POST, join(&base, &path), &token, Some(body)).await
+    send(
+        reqwest::Method::POST,
+        join(&base, &path),
+        &token,
+        Some(body),
+    )
+    .await
 }
 
 /// `POST /v1/sessions/{id}/messages/stream` — run one turn, relaying each
@@ -94,11 +103,16 @@ async fn api_stream(
 
     let url = join(&base, &format!("/v1/sessions/{session}/messages/stream"));
     let client = reqwest::Client::new();
-    let mut rb = client.post(&url).json(&serde_json::json!({ "content": content }));
+    let mut rb = client
+        .post(&url)
+        .json(&serde_json::json!({ "content": content }));
     if !token.is_empty() {
         rb = rb.bearer_auth(token);
     }
-    let resp = rb.send().await.map_err(|e| format!("request failed: {e}"))?;
+    let resp = rb
+        .send()
+        .await
+        .map_err(|e| format!("request failed: {e}"))?;
     if !resp.status().is_success() {
         let status = resp.status();
         let text = resp.text().await.unwrap_or_default();
@@ -141,7 +155,12 @@ async fn api_list_sessions(
     if !token.is_empty() {
         rb = rb.bearer_auth(token);
     }
-    finish(rb.send().await.map_err(|e| format!("request failed: {e}"))?).await
+    finish(
+        rb.send()
+            .await
+            .map_err(|e| format!("request failed: {e}"))?,
+    )
+    .await
 }
 
 /// `GET /v1/sessions/{id}` — full record including the message log.
@@ -171,7 +190,12 @@ async fn api_memory_search(
     if !token.is_empty() {
         rb = rb.bearer_auth(token);
     }
-    finish(rb.send().await.map_err(|e| format!("request failed: {e}"))?).await
+    finish(
+        rb.send()
+            .await
+            .map_err(|e| format!("request failed: {e}"))?,
+    )
+    .await
 }
 
 /// Holds the managed local `aonyx serve api` child, if one is running.
@@ -192,7 +216,10 @@ fn free_port() -> u16 {
 /// Requires `aonyx` (built with `--features api`) on the PATH.
 #[tauri::command]
 fn start_local(state: tauri::State<'_, LocalAgent>) -> Result<String, String> {
-    let mut guard = state.0.lock().map_err(|_| "state lock poisoned".to_string())?;
+    let mut guard = state
+        .0
+        .lock()
+        .map_err(|_| "state lock poisoned".to_string())?;
     if let Some(mut child) = guard.take() {
         let _ = child.kill();
     }

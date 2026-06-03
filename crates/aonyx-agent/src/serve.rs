@@ -268,7 +268,11 @@ mod api_imp {
             );
         }
 
-        let info = ServerInfo::new(config.provider.clone(), config.model.clone(), api_features());
+        let info = ServerInfo::new(
+            config.provider.clone(),
+            config.model.clone(),
+            api_features(),
+        );
         // Destructive tools are denied at the loop level (DenyDestructive);
         // the direct tool-invoke endpoint is not exposed, so `false` here.
         let auth = AuthConfig::new(token.clone(), false);

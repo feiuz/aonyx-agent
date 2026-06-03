@@ -35,7 +35,10 @@ pub fn build_router(state: ApiState) -> Router {
             get(memory::diary_list).post(memory::diary_append),
         )
         .route("/v1/memory/kg/entities", get(memory::kg_entities))
-        .route("/v1/memory/kg/entities/:name", get(memory::kg_entity_by_name))
+        .route(
+            "/v1/memory/kg/entities/:name",
+            get(memory::kg_entity_by_name),
+        )
         .route("/v1/memory/kg/relations", get(memory::kg_relations))
         .route("/v1/tools", get(meta::list_tools))
         .route("/v1/skills", get(meta::list_skills))
@@ -374,7 +377,9 @@ mod tests {
         });
 
         let url = format!("ws://{addr}/v1/sessions/{}/stream", created.id);
-        let (mut ws, _resp) = tokio_tungstenite::connect_async(url.as_str()).await.unwrap();
+        let (mut ws, _resp) = tokio_tungstenite::connect_async(url.as_str())
+            .await
+            .unwrap();
         ws.send(TMsg::Text(
             json!({ "type": "user", "content": "hi" }).to_string(),
         ))
