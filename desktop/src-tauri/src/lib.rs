@@ -75,6 +75,52 @@ async fn api_send(
     send(reqwest::Method::POST, join(&base, &path), &token, Some(body)).await
 }
 
+/// `POST /v1/sessions/{id}/messages/stream` — run one turn, relaying each
+/// SSE `StreamFrame` to the frontend over a Tauri channel as it arrives.
+#[tauri::command]
+async fn api_stream(
+    base: String,
+    token: String,
+    session: String,
+    content: String,
+    on_event: tauri::ipc::Channel<Value>,
+) -> Result<(), String> {
+    use futures_util::StreamExt;
+
+    let url = join(&base, &format!("/v1/sessions/{session}/messages/stream"));
+    let client = reqwest::Client::new();
+    let mut rb = client.post(&url).json(&serde_json::json!({ "content": content }));
+    if !token.is_empty() {
+        rb = rb.bearer_auth(token);
+    }
+    let resp = rb.send().await.map_err(|e| format!("request failed: {e}"))?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        return Err(format!("HTTP {status}: {text}"));
+    }
+
+    let mut stream = resp.bytes_stream();
+    let mut buf = String::new();
+    while let Some(item) = stream.next().await {
+        let bytes = item.map_err(|e| format!("stream error: {e}"))?;
+        buf.push_str(std::str::from_utf8(&bytes).unwrap_or(""));
+        // SSE events are separated by a blank line.
+        while let Some(idx) = buf.find("\n\n") {
+            let block = buf[..idx].to_string();
+            buf.drain(..(idx + 2));
+            for line in block.lines() {
+                if let Some(p) = line.strip_prefix("data:") {
+                    if let Ok(frame) = serde_json::from_str::<Value>(p.trim_start()) {
+                        let _ = on_event.send(frame);
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Run the desktop application.
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -82,7 +128,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             api_info,
             api_create_session,
-            api_send
+            api_send,
+            api_stream
         ])
         .run(tauri::generate_context!())
         .expect("error while running the Aonyx desktop app");

@@ -27,7 +27,6 @@ const store = {
 };
 
 let sessionId = null;
-let lastToolCount = 0;
 let busy = false;
 
 function setStatus(state, text) {
@@ -74,18 +73,6 @@ function addMsg(role, text, opts = {}) {
   return b;
 }
 
-// Collect every tool name requested across a session's message log.
-function toolNames(session) {
-  const out = [];
-  const msgs = (session && session.messages) || [];
-  for (const m of msgs) {
-    for (const tc of m.tool_calls || []) {
-      if (tc && tc.name) out.push(tc.name);
-    }
-  }
-  return out;
-}
-
 async function connect() {
   if (!invoke) {
     setStatus("err", "not running in Tauri");
@@ -102,7 +89,6 @@ async function connect() {
       project: null,
     });
     sessionId = rec.id;
-    lastToolCount = 0;
     return true;
   } catch (e) {
     setStatus("err", String(e));
@@ -129,23 +115,85 @@ async function send() {
   autoGrow();
   busy = true;
   sendBtn.disabled = true;
-  const pending = addMsg("assistant", "…", { thinking: true });
+
+  // Assistant bubble we stream tokens into.
+  clearEmpty();
+  const wrap = document.createElement("div");
+  wrap.className = "msg assistant";
+  const role = document.createElement("div");
+  role.className = "role";
+  role.textContent = "aonyx";
+  const bubble = document.createElement("div");
+  bubble.className = "bubble thinking";
+  bubble.textContent = "…";
+  const toolsEl = document.createElement("div");
+  toolsEl.className = "tools";
+  toolsEl.style.display = "none";
+  wrap.append(role, bubble, toolsEl);
+  log.appendChild(wrap);
+  log.scrollTop = log.scrollHeight;
+
+  let acc = "";
+  const tools = [];
+  const renderTools = () => {
+    if (tools.length) {
+      toolsEl.style.display = "";
+      toolsEl.textContent = "called: " + tools.join(", ");
+    }
+  };
+  const startText = () => {
+    if (bubble.classList.contains("thinking")) {
+      bubble.classList.remove("thinking");
+      bubble.textContent = "";
+    }
+  };
+
+  const channel = new tauri.core.Channel();
+  channel.onmessage = (frame) => {
+    switch (frame && frame.type) {
+      case "delta":
+        startText();
+        acc += frame.text || "";
+        bubble.textContent = acc;
+        log.scrollTop = log.scrollHeight;
+        break;
+      case "tool_start":
+        if (frame.name) tools.push(frame.name);
+        renderTools();
+        log.scrollTop = log.scrollHeight;
+        break;
+      case "done":
+        bubble.classList.remove("thinking");
+        if (!acc && frame.reply) bubble.textContent = frame.reply;
+        renderTools();
+        break;
+      case "error":
+        bubble.classList.remove("thinking");
+        bubble.classList.add("error");
+        bubble.textContent = frame.message || "stream error";
+        break;
+      default:
+        break;
+    }
+  };
 
   try {
-    const res = await invoke("api_send", {
+    await invoke("api_stream", {
       base: store.url,
       token: store.token,
       session: sessionId,
       content: text,
+      onEvent: channel,
     });
-    const names = toolNames(res.session);
-    const fresh = names.slice(lastToolCount);
-    lastToolCount = names.length;
-    pending.parentElement.remove();
-    addMsg("assistant", res.reply || "(no reply)", { tools: fresh });
+    if (bubble.classList.contains("thinking")) {
+      // Stream ended with no delta/done (e.g. empty reply).
+      bubble.classList.remove("thinking");
+      bubble.textContent = acc || "(no reply)";
+    }
   } catch (e) {
-    pending.parentElement.remove();
-    addMsg("assistant", String(e), { error: true });
+    bubble.classList.remove("thinking");
+    bubble.classList.add("error");
+    bubble.textContent = String(e);
     setStatus("err", "request failed");
   } finally {
     busy = false;
