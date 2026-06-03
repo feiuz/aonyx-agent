@@ -10,6 +10,7 @@ use crate::auth::require_auth;
 use crate::sessions::{create_session, delete_session, get_session, list_sessions, send_message};
 use crate::state::{ApiState, ServerInfo};
 use crate::streaming::{sse_message, ws_stream};
+use crate::{memory, meta};
 
 /// Build the complete API router for the given [`ApiState`].
 ///
@@ -17,7 +18,9 @@ use crate::streaming::{sse_message, ws_stream};
 /// middleware (a no-op when no token is configured). Later V4 phases merge
 /// more route groups here (memory, tools, skills, config, streaming).
 pub fn build_router(state: ApiState) -> Router {
-    let public = Router::new().route("/v1/health", get(health));
+    let public = Router::new()
+        .route("/v1/health", get(health))
+        .route("/v1/openapi.json", get(meta::openapi));
 
     let protected = Router::new()
         .route("/v1/info", get(info))
@@ -26,6 +29,17 @@ pub fn build_router(state: ApiState) -> Router {
         .route("/v1/sessions/:id/messages", post(send_message))
         .route("/v1/sessions/:id/messages/stream", post(sse_message))
         .route("/v1/sessions/:id/stream", get(ws_stream))
+        .route("/v1/memory/search", get(memory::search))
+        .route(
+            "/v1/memory/diary",
+            get(memory::diary_list).post(memory::diary_append),
+        )
+        .route("/v1/memory/kg/entities", get(memory::kg_entities))
+        .route("/v1/memory/kg/entities/:name", get(memory::kg_entity_by_name))
+        .route("/v1/memory/kg/relations", get(memory::kg_relations))
+        .route("/v1/tools", get(meta::list_tools))
+        .route("/v1/skills", get(meta::list_skills))
+        .route("/v1/config", get(meta::get_config))
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             require_auth,
@@ -50,7 +64,7 @@ mod tests {
     use crate::agent::ApiAgent;
     use crate::state::{AuthConfig, ServerInfo};
     use aonyx_core::{Message, Role};
-    use aonyx_memory::SqliteSessionStore;
+    use aonyx_memory::{Palace, SqliteSessionStore};
     use async_trait::async_trait;
     use axum::body::Body;
     use axum::http::{header, Request, StatusCode};
@@ -79,6 +93,7 @@ mod tests {
             AuthConfig::new(token.map(str::to_string), false),
             ServerInfo::new("anthropic", "claude-test", vec!["api".into()]),
             Arc::new(SqliteSessionStore::open_in_memory().unwrap()),
+            Arc::new(Palace::open_in_memory().unwrap()),
             Arc::new(EchoAgent),
             "demo",
         )
@@ -345,6 +360,7 @@ mod tests {
             AuthConfig::new(None, false),
             ServerInfo::new("anthropic", "claude-test", vec!["api".into()]),
             store.clone(),
+            Arc::new(Palace::open_in_memory().unwrap()),
             Arc::new(EchoAgent),
             "demo",
         );
@@ -382,5 +398,72 @@ mod tests {
         let got = store.get(created.id).await.unwrap().unwrap();
         assert_eq!(got.messages.len(), 2);
         assert_eq!(got.turns, 1);
+    }
+
+    // ---- memory + metadata --------------------------------------------
+
+    #[tokio::test]
+    async fn diary_append_then_list() {
+        let app = build_router(state(None));
+        let res = app
+            .clone()
+            .oneshot(post_req("/v1/memory/diary", json!({ "content": "a note" })))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::CREATED);
+
+        let res = app
+            .oneshot(get_req("/v1/memory/diary?project=demo", None))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let entries = body_json(res).await;
+        assert_eq!(entries.as_array().unwrap().len(), 1);
+        assert_eq!(entries[0]["content"], "a note");
+    }
+
+    #[tokio::test]
+    async fn kg_entities_empty_is_ok() {
+        let app = build_router(state(None));
+        let res = app
+            .oneshot(get_req("/v1/memory/kg/entities", None))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(body_json(res).await.as_array().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn search_without_query_is_400() {
+        let app = build_router(state(None));
+        let res = app
+            .oneshot(get_req("/v1/memory/search", None))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn tools_skills_config_default_ok() {
+        let app = build_router(state(None));
+        for path in ["/v1/tools", "/v1/skills", "/v1/config"] {
+            let res = app.clone().oneshot(get_req(path, None)).await.unwrap();
+            assert_eq!(res.status(), StatusCode::OK, "for {path}");
+        }
+    }
+
+    #[tokio::test]
+    async fn openapi_is_public_and_well_formed() {
+        // token set, but the spec route is public
+        let app = build_router(state(Some("secret")));
+        let res = app
+            .oneshot(get_req("/v1/openapi.json", None))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let spec = body_json(res).await;
+        assert_eq!(spec["openapi"], "3.0.3");
+        assert!(spec["paths"]["/v1/sessions"].is_object());
+        assert!(spec["paths"]["/v1/memory/search"].is_object());
     }
 }

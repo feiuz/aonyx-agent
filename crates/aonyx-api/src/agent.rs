@@ -1,10 +1,10 @@
-//! The injected agent-turn runner + the streamed frame type.
+//! The injected agent-turn runner, the streamed frame type, and the
+//! read-only metadata DTOs (tools / skills / config).
 //!
-//! The API owns session persistence; this trait owns only the loop: "given
-//! the full message history, run one turn and return the post-turn log".
-//! Keeping it a trait means `aonyx-api` never depends on `aonyx-agent`
-//! (no dependency cycle), and the HTTP layer stays unit-testable with a
-//! stub agent. The binary implements it over its real `AgentRunner`.
+//! The API owns session + memory persistence directly; everything that lives
+//! in `aonyx-agent` (the loop, the tool registry, the loaded skills, the
+//! config) is reached through this trait so `aonyx-api` never depends on
+//! `aonyx-agent` (no dependency cycle) and stays unit-testable with a stub.
 
 use aonyx_core::{Message, Result, Role};
 use async_trait::async_trait;
@@ -67,7 +67,45 @@ pub enum StreamFrame {
     },
 }
 
-/// One agent turn over a full message history — blocking or streaming.
+/// Metadata for one registered tool (`GET /v1/tools`).
+#[derive(Debug, Clone, Serialize)]
+pub struct ToolInfo {
+    /// Tool name (matches `ToolHandler::name`).
+    pub name: String,
+    /// Human-readable description.
+    pub description: String,
+    /// Safety class (`safe` / `caution` / `destructive`).
+    pub class: String,
+    /// JSON Schema for the tool's arguments.
+    pub schema: serde_json::Value,
+}
+
+/// Metadata for one loaded skill (`GET /v1/skills`).
+#[derive(Debug, Clone, Serialize)]
+pub struct SkillInfo {
+    /// Skill id (the `SKILL.md` slug).
+    pub id: String,
+    /// Short description.
+    pub description: String,
+    /// Trigger labels (keywords / patterns / `always`).
+    pub triggers: Vec<String>,
+}
+
+/// Non-secret server configuration (`GET /v1/config`). Never carries keys.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct ConfigInfo {
+    /// Active provider id.
+    pub provider: String,
+    /// Active default model id.
+    pub model: String,
+    /// Loop iteration cap.
+    pub max_iterations: usize,
+    /// Whether skill auto-generation is on.
+    pub skill_autogen: bool,
+}
+
+/// One agent turn over a full message history — blocking or streaming — plus
+/// read-only metadata accessors the binary fills from its live components.
 #[async_trait]
 pub trait ApiAgent: Send + Sync + 'static {
     /// Run one turn over `history`, returning the complete message log after
@@ -91,6 +129,22 @@ pub trait ApiAgent: Send + Sync + 'static {
         let reply = last_assistant_text(&log);
         let _ = tx.send(StreamFrame::Delta { text: reply }).await;
         Ok(log)
+    }
+
+    /// The registered tools. Default: none (overridden by the binary).
+    fn tools(&self) -> Vec<ToolInfo> {
+        Vec::new()
+    }
+
+    /// The loaded skills. Default: none (overridden by the binary).
+    fn skills(&self) -> Vec<SkillInfo> {
+        Vec::new()
+    }
+
+    /// The non-secret config snapshot. Default: empty (overridden by the
+    /// binary).
+    fn config(&self) -> ConfigInfo {
+        ConfigInfo::default()
     }
 }
 

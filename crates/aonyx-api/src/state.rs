@@ -7,7 +7,7 @@
 
 use std::sync::Arc;
 
-use aonyx_memory::SessionStore;
+use aonyx_memory::{Palace, SessionStore};
 use serde::Serialize;
 
 use crate::agent::ApiAgent;
@@ -86,6 +86,8 @@ pub struct ApiState {
     pub info: Arc<ServerInfo>,
     /// Persistent session store (typically `~/.aonyx/sessions.db`).
     pub sessions: Arc<dyn SessionStore>,
+    /// The memory palace (KG + diary + chunks) for the memory endpoints.
+    pub palace: Arc<Palace>,
     /// The injected agent loop used to run a turn.
     pub agent: Arc<dyn ApiAgent>,
     /// Project slug used when a request does not specify one.
@@ -98,6 +100,7 @@ impl ApiState {
         auth: AuthConfig,
         info: ServerInfo,
         sessions: Arc<dyn SessionStore>,
+        palace: Arc<Palace>,
         agent: Arc<dyn ApiAgent>,
         default_project: impl Into<String>,
     ) -> Self {
@@ -105,6 +108,7 @@ impl ApiState {
             auth: Arc::new(auth),
             info: Arc::new(info),
             sessions,
+            palace,
             agent,
             default_project: Arc::new(default_project.into()),
         }

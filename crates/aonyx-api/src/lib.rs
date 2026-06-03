@@ -25,12 +25,14 @@
 pub mod error;
 mod agent;
 mod auth;
+mod memory;
+mod meta;
 mod routes;
 mod sessions;
 mod state;
 mod streaming;
 
-pub use agent::{ApiAgent, StreamFrame};
+pub use agent::{ApiAgent, ConfigInfo, SkillInfo, StreamFrame, ToolInfo};
 pub use error::{ApiError, ApiResult};
 pub use routes::build_router;
 pub use state::{ApiState, AuthConfig, ServerInfo};
