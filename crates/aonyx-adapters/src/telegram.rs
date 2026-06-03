@@ -6,13 +6,15 @@
 //! 4096-char message cap.
 
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use aonyx_core::Result as AonyxResult;
 use async_trait::async_trait;
 use teloxide::prelude::*;
-use teloxide::types::ChatAction;
+use teloxide::types::{ChatAction, ChatId, MessageId};
+use tokio::sync::mpsc;
 
-use crate::{AgentHandler, ConversationAdapter};
+use crate::{AgentHandler, ConversationAdapter, StreamEvent};
 
 /// A Telegram bot adapter.
 pub struct TelegramAdapter {
@@ -92,21 +94,124 @@ impl ConversationAdapter for TelegramAdapter {
                 let Some(text) = msg.text() else {
                     return Ok(());
                 };
-                // Best-effort "typing…" while the agent thinks.
-                let _ = bot.send_chat_action(chat_id, ChatAction::Typing).await;
-                let reply = match handler.handle(&chat_id.0.to_string(), text).await {
-                    Ok(r) if !r.trim().is_empty() => r,
-                    Ok(_) => "(no reply)".to_string(),
-                    Err(e) => format!("⚠ {e}"),
-                };
-                for part in chunk_message(&reply) {
-                    let _ = bot.send_message(chat_id, part).await;
-                }
+                // Stream the turn into a single message, edited live.
+                stream_reply(&bot, chat_id, &handler, text).await;
                 Ok(())
             }
         })
         .await;
         Ok(())
+    }
+}
+
+/// Stream one agent turn into a single Telegram message: send a placeholder,
+/// edit it in place as [`StreamEvent`]s arrive (throttled to dodge the
+/// ~1 edit/s per-chat rate limit), then finalise with the complete reply —
+/// chunked across messages if it exceeds Telegram's 4096-char cap.
+async fn stream_reply(bot: &Bot, chat_id: ChatId, handler: &Arc<dyn AgentHandler>, text: &str) {
+    // "typing…" then a placeholder we keep editing as tokens arrive.
+    let _ = bot.send_chat_action(chat_id, ChatAction::Typing).await;
+    let sent = match bot.send_message(chat_id, "…").await {
+        Ok(m) => m,
+        Err(e) => {
+            tracing::warn!("telegram: placeholder send failed: {e}");
+            return;
+        }
+    };
+    let msg_id = sent.id;
+
+    // Spawn the agent turn; it streams StreamEvents back on `tx`.
+    let (tx, mut rx) = mpsc::channel::<StreamEvent>(64);
+    {
+        let handler = Arc::clone(handler);
+        let chat_key = chat_id.0.to_string();
+        let user_text = text.to_string();
+        tokio::spawn(async move {
+            if let Err(e) = handler.handle_stream(&chat_key, &user_text, tx).await {
+                tracing::warn!("telegram: handle_stream: {e}");
+            }
+        });
+    }
+
+    let throttle = Duration::from_millis(900);
+    let mut buf = String::new();
+    let mut shown = String::from("…"); // what the message currently displays
+    let mut last_edit = Instant::now();
+    let mut painted = false;
+
+    while let Some(ev) = rx.recv().await {
+        match ev {
+            // Transient status (tool activity) — appended below the live text.
+            StreamEvent::Status(s) => {
+                let view = if buf.is_empty() {
+                    s
+                } else {
+                    format!("{}\n\n{}", stream_window(&buf), s)
+                };
+                edit_if_changed(bot, chat_id, msg_id, &view, &mut shown).await;
+                last_edit = Instant::now();
+                painted = true;
+            }
+            // Incremental tokens — paint first one immediately, then throttle.
+            StreamEvent::Delta(d) => {
+                buf.push_str(&d);
+                if (!painted || last_edit.elapsed() >= throttle) && !buf.trim().is_empty() {
+                    let view = stream_window(&buf);
+                    edit_if_changed(bot, chat_id, msg_id, &view, &mut shown).await;
+                    last_edit = Instant::now();
+                    painted = true;
+                }
+            }
+            // Authoritative final reply — first chunk replaces the streamed
+            // message; any overflow chunks go out as new messages.
+            StreamEvent::Final(f) => {
+                let f = if f.trim().is_empty() {
+                    "(no reply)".to_string()
+                } else {
+                    f
+                };
+                let parts = chunk_message(&f);
+                if let Some(first) = parts.first() {
+                    edit_if_changed(bot, chat_id, msg_id, first, &mut shown).await;
+                }
+                for extra in parts.iter().skip(1) {
+                    let _ = bot.send_message(chat_id, extra.clone()).await;
+                }
+            }
+        }
+    }
+}
+
+/// Keep a live (pre-final) edit under Telegram's 4096-char cap by showing the
+/// tail of the buffer (the newest text) behind a leading ellipsis.
+fn stream_window(s: &str) -> String {
+    const CAP: usize = 3900;
+    let n = s.chars().count();
+    if n <= CAP {
+        s.to_string()
+    } else {
+        let tail: String = s.chars().skip(n - CAP).collect();
+        format!("…{tail}")
+    }
+}
+
+/// Edit the message only when the text actually changed — Telegram answers
+/// 400 "message is not modified" otherwise. Records the new text on success.
+async fn edit_if_changed(
+    bot: &Bot,
+    chat_id: ChatId,
+    msg_id: MessageId,
+    text: &str,
+    shown: &mut String,
+) {
+    if text == shown {
+        return;
+    }
+    match bot.edit_message_text(chat_id, msg_id, text).await {
+        Ok(_) => *shown = text.to_string(),
+        // Rate-limit (429) or transient error — keep going; the Final edit
+        // reconciles the displayed text.
+        Err(e) => tracing::debug!("telegram: edit skipped: {e}"),
     }
 }
 

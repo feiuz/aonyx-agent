@@ -308,11 +308,11 @@ mod imp {
     use std::collections::HashMap;
     use std::sync::Arc;
 
-    use aonyx_adapters::AgentHandler;
-    use aonyx_agent::AgentRunner;
+    use aonyx_adapters::{AgentHandler, StreamEvent};
+    use aonyx_agent::{AgentRunner, TurnEvent};
     use aonyx_core::{Message, Role};
     use async_trait::async_trait;
-    use tokio::sync::Mutex;
+    use tokio::sync::{mpsc, Mutex};
 
     use crate::config::Config;
 
@@ -368,6 +368,60 @@ mod imp {
             let result = self.runner.run(msgs).await?;
             Ok(last_assistant_text(&result.messages))
         }
+
+        async fn handle_stream(
+            &self,
+            chat_id: &str,
+            text: &str,
+            out: mpsc::Sender<StreamEvent>,
+        ) -> aonyx_core::Result<()> {
+            let mut history = {
+                let map = self.chats.lock().await;
+                map.get(chat_id).cloned().unwrap_or_else(|| self.seed())
+            };
+            history.push(Message::new(Role::User, text));
+
+            // Drive the runner's streaming loop; translate its internal
+            // TurnEvents into adapter-level StreamEvents as they arrive. Tool
+            // calls surface as a transient status line (never raw tool JSON).
+            let (etx, mut erx) = mpsc::channel::<TurnEvent>(256);
+            let fwd = out.clone();
+            let forward = async move {
+                while let Some(ev) = erx.recv().await {
+                    let mapped = match ev {
+                        TurnEvent::AssistantDelta(t) => Some(StreamEvent::Delta(t)),
+                        TurnEvent::ToolStart { name, .. } => {
+                            Some(StreamEvent::Status(tool_status(&name)))
+                        }
+                        _ => None,
+                    };
+                    if let Some(se) = mapped {
+                        if fwd.send(se).await.is_err() {
+                            break; // adapter hung up
+                        }
+                    }
+                }
+            };
+
+            let drive = self.runner.run_streaming(history, etx);
+            let (res, _) = tokio::join!(drive, forward);
+
+            // Persist trimmed history + emit the authoritative final reply.
+            // On error, surface it as the Final text so the adapter shows it.
+            match res {
+                Ok(result) => {
+                    let reply = last_assistant_text(&result.messages);
+                    let trimmed = trim_history(result.messages, MAX_HISTORY);
+                    self.chats.lock().await.insert(chat_id.to_string(), trimmed);
+                    let _ = out.send(StreamEvent::Final(reply)).await;
+                    Ok(())
+                }
+                Err(e) => {
+                    let _ = out.send(StreamEvent::Final(format!("⚠ {e}"))).await;
+                    Err(e)
+                }
+            }
+        }
     }
 
     /// Map an OpenAI role string to an Aonyx [`Role`].
@@ -388,6 +442,23 @@ mod imp {
             .find(|m| matches!(m.role, Role::Assistant) && !m.content.trim().is_empty())
             .map(|m| m.content.clone())
             .unwrap_or_else(|| "(no reply)".to_string())
+    }
+
+    /// A short, friendly status line for a tool call — shown transiently in a
+    /// streamed reply while the tool runs (never the raw tool arguments).
+    fn tool_status(name: &str) -> String {
+        let n = name.to_ascii_lowercase();
+        if n.contains("rag") || n.contains("search") || n.contains("memory") || n.contains("recall")
+        {
+            "🔍 recherche dans la mémoire…".to_string()
+        } else if n.contains("read") || n.contains("view") || n.contains("get") || n.contains("list")
+        {
+            "📄 lecture…".to_string()
+        } else if n.contains("write") || n.contains("edit") || n.contains("append") {
+            "✏️ écriture…".to_string()
+        } else {
+            format!("🔧 {name}…")
+        }
     }
 
     /// Keep the leading system message (if any) plus the last `max`

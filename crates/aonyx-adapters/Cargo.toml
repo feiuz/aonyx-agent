@@ -16,6 +16,11 @@ aonyx-core = { workspace = true }
 async-trait = { workspace = true }
 tracing = { workspace = true }
 
+# tokio: required in the BASE crate for the streaming `AgentHandler::handle_stream`
+# channel (`mpsc`) — NOT behind a feature, so every adapter can stream and the
+# trait compiles in the default build.
+tokio = { workspace = true }
+
 # Heavy platform SDKs are opt-in so the default `aonyx` binary stays lean.
 # Telegram (Phase TT):
 teloxide = { version = "0.13", default-features = false, features = ["rustls", "ctrlc_handler"], optional = true }
@@ -23,7 +28,6 @@ teloxide = { version = "0.13", default-features = false, features = ["rustls", "
 serenity = { version = "0.12", default-features = false, features = ["client", "gateway", "rustls_backend", "model"], optional = true }
 # OpenAI-compatible HTTP server (Phase VV):
 axum = { version = "0.7", optional = true }
-tokio = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 
@@ -31,4 +35,4 @@ serde_json = { workspace = true, optional = true }
 default = []
 telegram = ["dep:teloxide"]
 discord = ["dep:serenity"]
-openai-server = ["dep:axum", "dep:tokio", "dep:serde", "dep:serde_json"]
+openai-server = ["dep:axum", "dep:serde", "dep:serde_json"]
