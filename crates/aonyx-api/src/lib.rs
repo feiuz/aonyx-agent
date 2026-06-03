@@ -28,8 +28,9 @@ mod auth;
 mod routes;
 mod sessions;
 mod state;
+mod streaming;
 
-pub use agent::ApiAgent;
+pub use agent::{ApiAgent, StreamFrame};
 pub use error::{ApiError, ApiResult};
 pub use routes::build_router;
 pub use state::{ApiState, AuthConfig, ServerInfo};

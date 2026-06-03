@@ -9,6 +9,7 @@ use serde_json::json;
 use crate::auth::require_auth;
 use crate::sessions::{create_session, delete_session, get_session, list_sessions, send_message};
 use crate::state::{ApiState, ServerInfo};
+use crate::streaming::{sse_message, ws_stream};
 
 /// Build the complete API router for the given [`ApiState`].
 ///
@@ -23,6 +24,8 @@ pub fn build_router(state: ApiState) -> Router {
         .route("/v1/sessions", get(list_sessions).post(create_session))
         .route("/v1/sessions/:id", get(get_session).delete(delete_session))
         .route("/v1/sessions/:id/messages", post(send_message))
+        .route("/v1/sessions/:id/messages/stream", post(sse_message))
+        .route("/v1/sessions/:id/stream", get(ws_stream))
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             require_auth,
@@ -279,5 +282,105 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    // ---- streaming (SSE + WS) -----------------------------------------
+
+    #[tokio::test]
+    async fn sse_streams_delta_then_done_and_persists() {
+        let app = build_router(state(None));
+        let res = app
+            .clone()
+            .oneshot(post_req("/v1/sessions", json!({})))
+            .await
+            .unwrap();
+        let id = body_json(res).await["id"].as_str().unwrap().to_string();
+
+        let res = app
+            .clone()
+            .oneshot(post_req(
+                &format!("/v1/sessions/{id}/messages/stream"),
+                json!({ "content": "hi" }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let ct = res
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+        assert!(ct.starts_with("text/event-stream"), "content-type: {ct}");
+
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(text.contains("\"type\":\"delta\""), "body: {text}");
+        assert!(text.contains("echo: hi"), "body: {text}");
+        assert!(text.contains("\"type\":\"done\""), "body: {text}");
+
+        // the turn was persisted (user + assistant)
+        let got = body_json(
+            app.oneshot(get_req(&format!("/v1/sessions/{id}"), None))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(got["messages"].as_array().unwrap().len(), 2);
+        assert_eq!(got["turns"], 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn ws_streams_a_turn_and_persists() {
+        use aonyx_memory::SessionStore;
+        use futures::{SinkExt, StreamExt};
+        use tokio_tungstenite::tungstenite::Message as TMsg;
+
+        let store = Arc::new(SqliteSessionStore::open_in_memory().unwrap());
+        let created = store.create("demo", Vec::new()).await.unwrap();
+
+        let st = ApiState::new(
+            AuthConfig::new(None, false),
+            ServerInfo::new("anthropic", "claude-test", vec!["api".into()]),
+            store.clone(),
+            Arc::new(EchoAgent),
+            "demo",
+        );
+        let app = build_router(st);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let url = format!("ws://{addr}/v1/sessions/{}/stream", created.id);
+        let (mut ws, _resp) = tokio_tungstenite::connect_async(url.as_str()).await.unwrap();
+        ws.send(TMsg::Text(
+            json!({ "type": "user", "content": "hi" }).to_string(),
+        ))
+        .await
+        .unwrap();
+
+        let mut saw_delta = false;
+        let mut saw_done = false;
+        while let Some(Ok(msg)) = ws.next().await {
+            if let TMsg::Text(t) = msg {
+                if t.contains("\"type\":\"delta\"") {
+                    saw_delta = true;
+                }
+                if t.contains("\"type\":\"done\"") {
+                    saw_done = true;
+                    break;
+                }
+            }
+        }
+        assert!(saw_delta, "expected a delta frame");
+        assert!(saw_done, "expected a done frame");
+
+        let got = store.get(created.id).await.unwrap().unwrap();
+        assert_eq!(got.messages.len(), 2);
+        assert_eq!(got.turns, 1);
     }
 }
