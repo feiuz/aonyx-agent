@@ -44,6 +44,83 @@ function escapeHtml(s) {
     .replace(/>/g, "&gt;");
 }
 
+// Minimal markdown. The source is HTML-escaped first, so the worst case is
+// imperfect formatting — never injection.
+function mdInline(s) {
+  return s
+    .replace(/`([^`]+)`/g, "<code>$1</code>")
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/(^|[^*])\*([^*]+)\*/g, "$1<em>$2</em>")
+    .replace(
+      /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g,
+      '<a href="$2" target="_blank" rel="noreferrer">$1</a>',
+    );
+}
+
+function renderMarkdown(src) {
+  const lines = escapeHtml(src).split("\n");
+  let html = "";
+  let list = null;
+  const closeList = () => {
+    if (list) {
+      html += "</" + list + ">";
+      list = null;
+    }
+  };
+  for (let i = 0; i < lines.length; ) {
+    const line = lines[i];
+    if (line.startsWith("```")) {
+      closeList();
+      i++;
+      const buf = [];
+      while (i < lines.length && !lines[i].startsWith("```")) buf.push(lines[i++]);
+      i++; // skip closing fence
+      html += "<pre><code>" + buf.join("\n") + "</code></pre>";
+      continue;
+    }
+    const h = line.match(/^(#{1,3})\s+(.*)$/);
+    if (h) {
+      closeList();
+      const lvl = h[1].length + 2; // # -> h3
+      html += "<h" + lvl + ">" + mdInline(h[2]) + "</h" + lvl + ">";
+      i++;
+      continue;
+    }
+    const ul = line.match(/^\s*[-*]\s+(.*)$/);
+    if (ul) {
+      if (list !== "ul") {
+        closeList();
+        html += "<ul>";
+        list = "ul";
+      }
+      html += "<li>" + mdInline(ul[1]) + "</li>";
+      i++;
+      continue;
+    }
+    const ol = line.match(/^\s*\d+\.\s+(.*)$/);
+    if (ol) {
+      if (list !== "ol") {
+        closeList();
+        html += "<ol>";
+        list = "ol";
+      }
+      html += "<li>" + mdInline(ol[1]) + "</li>";
+      i++;
+      continue;
+    }
+    if (line.trim() === "") {
+      closeList();
+      i++;
+      continue;
+    }
+    closeList();
+    html += "<p>" + mdInline(line) + "</p>";
+    i++;
+  }
+  closeList();
+  return html;
+}
+
 function clearEmpty() {
   const e = $("empty");
   if (e) e.remove();
@@ -67,8 +144,8 @@ function addMsg(role, text, opts = {}) {
   r.textContent = role === "user" ? "you" : "aonyx";
   wrap.appendChild(r);
   const b = document.createElement("div");
-  b.className = "bubble" + (opts.error ? " error" : "");
-  b.innerHTML = escapeHtml(text);
+  b.className = "bubble" + (opts.error ? " error" : "") + (opts.md ? " md" : "");
+  b.innerHTML = opts.md ? renderMarkdown(text) : escapeHtml(text);
   wrap.appendChild(b);
   if (opts.tools && opts.tools.length) {
     const t = document.createElement("div");
@@ -143,7 +220,7 @@ async function switchSession(id) {
     for (const m of rec.messages || []) {
       if (m.role === "user" && m.content) addMsg("user", m.content);
       else if (m.role === "assistant" && (m.content || toolNamesOf(m).length))
-        addMsg("assistant", m.content || "", { tools: toolNamesOf(m) });
+        addMsg("assistant", m.content || "", { tools: toolNamesOf(m), md: true });
     }
     if (!log.children.length) {
       log.innerHTML = '<div class="empty"><p class="muted">empty session — say hello</p></div>';
@@ -281,8 +358,10 @@ async function send() {
         break;
       case "done":
         bubble.classList.remove("thinking");
-        if (!acc && frame.reply) bubble.textContent = frame.reply;
+        bubble.classList.add("md");
+        bubble.innerHTML = renderMarkdown(acc || frame.reply || "(no reply)");
         renderTools();
+        log.scrollTop = log.scrollHeight;
         break;
       case "error":
         bubble.classList.remove("thinking");
@@ -301,7 +380,8 @@ async function send() {
     );
     if (bubble.classList.contains("thinking")) {
       bubble.classList.remove("thinking");
-      bubble.textContent = acc || "(no reply)";
+      bubble.classList.add("md");
+      bubble.innerHTML = renderMarkdown(acc || "(no reply)");
     }
     loadSessions(); // refresh titles / turn counts
   } catch (e) {
