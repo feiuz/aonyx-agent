@@ -509,6 +509,136 @@ async fn install_update(app: tauri::AppHandle) -> Result<(), String> {
     app.restart();
 }
 
+// ─── aonyx-account: device-code grant + keyring token storage (ADR-011) ──────
+const ACCOUNT_SERVICE: &str = "aonyx-agent";
+
+fn account_entry(key: &str) -> Result<keyring::Entry, String> {
+    keyring::Entry::new(ACCOUNT_SERVICE, key).map_err(|e| e.to_string())
+}
+
+/// Stable per-install device id, kept in the OS keyring.
+fn device_id() -> String {
+    if let Ok(entry) = account_entry("device-id") {
+        if let Ok(id) = entry.get_password() {
+            if !id.is_empty() {
+                return id;
+            }
+        }
+        let id = uuid::Uuid::new_v4().to_string();
+        let _ = entry.set_password(&id);
+        return id;
+    }
+    uuid::Uuid::new_v4().to_string()
+}
+
+/// Open a URL in the user's default system browser.
+fn open_browser(url: &str) {
+    #[cfg(target_os = "windows")]
+    let _ = std::process::Command::new("cmd").args(["/C", "start", "", url]).spawn();
+    #[cfg(target_os = "macos")]
+    let _ = std::process::Command::new("open").arg(url).spawn();
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let _ = std::process::Command::new("xdg-open").arg(url).spawn();
+}
+
+fn account_base(base: &str) -> String {
+    let b = base.trim().trim_end_matches('/');
+    if b.is_empty() {
+        "https://account.aonyx.fr".to_string()
+    } else {
+        b.to_string()
+    }
+}
+
+fn account_access_token() -> Option<String> {
+    let raw = account_entry("tokens").ok()?.get_password().ok()?;
+    let json: Value = serde_json::from_str(&raw).ok()?;
+    json.get("accessToken")?
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+}
+
+/// Start the device-code grant: request a code, then open the browser to approve.
+#[tauri::command]
+async fn account_device_start(base: String) -> Result<Value, String> {
+    let url = format!("{}/api/v1/auth/device/code", account_base(&base));
+    let body = serde_json::json!({ "product": "aonyx-agent", "deviceId": device_id() });
+    let resp = reqwest::Client::new()
+        .post(url)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("request failed: {e}"))?;
+    let status = resp.status();
+    let json: Value = resp.json().await.map_err(|e| format!("bad JSON: {e}"))?;
+    if !status.is_success() {
+        return Err(format!("HTTP {status}: {json}"));
+    }
+    if let Some(v) = json.get("verificationUrl").and_then(|v| v.as_str()) {
+        open_browser(v);
+    }
+    Ok(json)
+}
+
+/// Poll once for the device token. The body carries `status`
+/// (pending / approved / denied / expired) plus `tokens` + `user` when approved.
+#[tauri::command]
+async fn account_device_poll(base: String, device_code: String) -> Result<Value, String> {
+    let url = format!("{}/api/v1/auth/device/token", account_base(&base));
+    let body = serde_json::json!({ "deviceCode": device_code });
+    let resp = reqwest::Client::new()
+        .post(url)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("request failed: {e}"))?;
+    resp.json().await.map_err(|e| format!("bad JSON: {e}"))
+}
+
+/// Persist access + refresh tokens in the OS keyring.
+#[tauri::command]
+fn account_store(access: String, refresh: String) -> Result<(), String> {
+    let val = serde_json::json!({ "accessToken": access, "refreshToken": refresh }).to_string();
+    account_entry("tokens")?
+        .set_password(&val)
+        .map_err(|e| e.to_string())
+}
+
+/// Clear stored tokens (sign out).
+#[tauri::command]
+fn account_logout() -> Result<(), String> {
+    if let Ok(e) = account_entry("tokens") {
+        let _ = e.set_password("{}");
+    }
+    Ok(())
+}
+
+/// True if an access token is stored.
+#[tauri::command]
+fn account_has_token() -> bool {
+    account_access_token().is_some()
+}
+
+/// Fetch the signed-in user's profile (Bearer the stored access token).
+#[tauri::command]
+async fn account_me(base: String) -> Result<Value, String> {
+    let token = account_access_token().ok_or_else(|| "NOT_AUTHENTICATED".to_string())?;
+    let url = format!("{}/api/v1/auth/profile", account_base(&base));
+    let resp = reqwest::Client::new()
+        .get(url)
+        .bearer_auth(token)
+        .send()
+        .await
+        .map_err(|e| format!("request failed: {e}"))?;
+    let status = resp.status();
+    let json: Value = resp.json().await.map_err(|e| format!("bad JSON: {e}"))?;
+    if !status.is_success() {
+        return Err(format!("HTTP {status}"));
+    }
+    Ok(json)
+}
+
 /// Run the desktop application.
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -530,7 +660,13 @@ pub fn run() {
             save_provider_config,
             list_models,
             check_for_update,
-            install_update
+            install_update,
+            account_device_start,
+            account_device_poll,
+            account_store,
+            account_logout,
+            account_has_token,
+            account_me
         ])
         .on_window_event(|window, event| {
             // Kill the managed local agent when the window closes so it never

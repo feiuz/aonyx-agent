@@ -1,6 +1,7 @@
 import { Outlet } from "react-router-dom";
 import TitleBar from "./TitleBar";
 import Sidebar from "./Sidebar";
+import SignInModal from "../components/auth/SignInModal";
 
 export default function AppShell() {
   return (
@@ -12,6 +13,7 @@ export default function AppShell() {
           <Outlet />
         </main>
       </div>
+      <SignInModal />
     </div>
   );
 }

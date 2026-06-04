@@ -40,7 +40,7 @@ export default function Sidebar() {
     () => localStorage.getItem("aonyx.sidebarCollapsed") === "1",
   );
   const { theme, toggle } = useTheme();
-  const { isAuthenticated, user, signIn } = useAuth();
+  const { isAuthenticated, user, signIn, logout } = useAuth();
   const [update, setUpdate] = useState(null);
 
   useEffect(() => {
@@ -115,8 +115,8 @@ export default function Sidebar() {
         </div>
 
         <button
-          onClick={signIn}
-          title="aonyx-account"
+          onClick={() => (isAuthenticated ? logout() : signIn())}
+          title={isAuthenticated ? "Se déconnecter" : "Se connecter (aonyx-account)"}
           className={`w-full flex items-center ${collapsed ? "justify-center" : "gap-2.5"} px-2.5 py-2 rounded-lg bg-aonyx-200/50 dark:bg-aonyx-900/60 hover:bg-aonyx-200 dark:hover:bg-aonyx-900 transition-colors`}
         >
           <span className="flex items-center justify-center w-7 h-7 rounded-full bg-aonyx-300 dark:bg-aonyx-800 text-aonyx-700 dark:text-aonyx-200 flex-shrink-0">
