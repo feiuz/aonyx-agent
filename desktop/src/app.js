@@ -438,13 +438,97 @@ function autoGrow() {
 
 // ---- provider wizard ----
 const PROVIDER_DEFAULTS = {
-  anthropic: { model: "claude-sonnet-4-5-20250929" },
-  openai: { model: "gpt-4o", base: "https://api.openai.com" },
-  openrouter: { model: "anthropic/claude-3.5-sonnet" },
-  ollama: { model: "llama3.1:8b", base: "http://localhost:11434" },
-  "lm-studio": { model: "local-model", base: "http://localhost:1234" },
-  "claude-code": { model: "claude-sonnet-4-5-20250929" },
+  anthropic: { base: "" },
+  openai: { base: "https://api.openai.com" },
+  openrouter: { base: "" },
+  ollama: { base: "http://localhost:11434" },
+  "lm-studio": { base: "http://localhost:1234" },
+  "claude-code": { base: "" },
 };
+const MODEL_CUSTOM = "__custom__";
+// Providers whose model *list* requires an API key to query.
+const LIST_NEEDS_KEY = { anthropic: true, openai: true };
+
+// Live-fetch the models a provider actually exposes (Rust `list_models`) and
+// fill the <select>. No hardcoded suggestions; signals when a key is required.
+async function loadModels(provider, current) {
+  const sel = $("wzModel");
+  const note = $("wzModelNote");
+  if (!invoke) return;
+
+  if (provider === "claude-code") {
+    // The `claude` CLI takes an alias (sonnet/opus/haiku) or a full id — there
+    // is no HTTP models endpoint, so these are its accepted values.
+    setModelOptions(["sonnet", "opus", "haiku"], current);
+    note.textContent = "Claude Code — alias CLI ; « Custom » pour un id daté précis.";
+    return;
+  }
+  if (LIST_NEEDS_KEY[provider] && !$("wzKey").value.trim()) {
+    setModelOptions([], current);
+    note.textContent = "🔑 Saisis ta clé API, puis ↻ pour lister les modèles.";
+    return;
+  }
+
+  const base =
+    $("wzBase").value.trim() || (PROVIDER_DEFAULTS[provider] || {}).base || "";
+  const key = $("wzKey").value;
+  note.textContent = "chargement des modèles…";
+  sel.disabled = true;
+  try {
+    const models = await invoke("list_models", { provider, base, key });
+    setModelOptions(models || [], current);
+    note.textContent =
+      models && models.length
+        ? `${models.length} modèles disponibles`
+        : "aucun modèle retourné — utilise Custom.";
+  } catch (e) {
+    const msg = String(e);
+    setModelOptions([], current);
+    note.textContent = msg.includes("API_KEY_REQUIRED")
+      ? "🔑 Clé API requise — saisis-la puis ↻."
+      : "fetch impossible (" + msg + ") — démarre le serveur ou utilise Custom.";
+  } finally {
+    sel.disabled = false;
+  }
+}
+
+// (Re)build the model <select> from a list + a Custom… option; preselect current.
+function setModelOptions(models, current) {
+  const sel = $("wzModel");
+  // Keep the currently-configured model as a real, selectable entry — an
+  // existing config must never be forced into the "Custom…" typing path.
+  const list =
+    current && !models.includes(current) ? [current, ...models] : models;
+  sel.innerHTML = "";
+  for (const m of list) {
+    const o = document.createElement("option");
+    o.value = m;
+    o.textContent = m;
+    sel.appendChild(o);
+  }
+  const custom = document.createElement("option");
+  custom.value = MODEL_CUSTOM;
+  custom.textContent = "Custom… (saisir l'id)";
+  sel.appendChild(custom);
+
+  if (current && list.includes(current)) {
+    sel.value = current;
+    showModelCustom(false);
+  } else {
+    sel.value = list[0] || MODEL_CUSTOM;
+    showModelCustom(sel.value === MODEL_CUSTOM);
+  }
+}
+
+function showModelCustom(on) {
+  $("wzModelCustomRow").style.display = on ? "" : "none";
+}
+
+// Effective model id: the custom input when "Custom…" is picked, else the select.
+function selectedModel() {
+  const v = $("wzModel").value;
+  return v === MODEL_CUSTOM ? $("wzModelCustom").value.trim() : v;
+}
 
 function wzErr(msg) {
   const n = $("wzNote");
@@ -459,7 +543,6 @@ function wzReflect() {
     el.classList.toggle("hidden", !on);
   });
   const d = PROVIDER_DEFAULTS[p] || {};
-  if (!$("wzModel").value.trim()) $("wzModel").value = d.model || "";
   $("wzBase").placeholder = d.base || "https://…";
 }
 
@@ -468,8 +551,7 @@ async function openWizard() {
   try {
     const c = await invoke("read_provider_config");
     $("wzProvider").value = c.provider || "anthropic";
-    $("wzModel").value =
-      c.model || (PROVIDER_DEFAULTS[c.provider] || {}).model || "";
+    loadModels(c.provider || "anthropic", c.model);
     $("wzKey").value =
       c.anthropic_api_key || c.openai_api_key || c.openrouter_api_key || "";
     $("wzBase").value =
@@ -492,8 +574,8 @@ function closeWizard() {
 async function wzSave() {
   if (!invoke) return;
   const p = $("wzProvider").value;
-  const model = $("wzModel").value.trim();
-  if (!model) return wzErr("Set a model id first.");
+  const model = selectedModel();
+  if (!model) return wzErr("Pick a model (or enter a custom id).");
   const key = $("wzKey").value;
   const base = $("wzBase").value.trim();
   if (["anthropic", "openai", "openrouter"].includes(p) && !key) {
@@ -526,8 +608,20 @@ async function wzSave() {
 }
 
 $("wzProvider").addEventListener("change", () => {
-  $("wzModel").value = "";
   wzReflect();
+  loadModels($("wzProvider").value, null);
+});
+$("wzModel").addEventListener("change", () => {
+  showModelCustom($("wzModel").value === MODEL_CUSTOM);
+});
+$("wzModelRefresh").addEventListener("click", () =>
+  loadModels($("wzProvider").value, selectedModel()),
+);
+// Once the key is entered, auto-load the list for key-gated providers.
+$("wzKey").addEventListener("change", () => {
+  if (LIST_NEEDS_KEY[$("wzProvider").value]) {
+    loadModels($("wzProvider").value, selectedModel());
+  }
 });
 $("wzSave").addEventListener("click", wzSave);
 $("wzCancel").addEventListener("click", closeWizard);

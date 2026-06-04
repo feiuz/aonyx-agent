@@ -198,6 +198,92 @@ async fn api_memory_search(
     .await
 }
 
+/// List the models a provider actually exposes — a **live** query, not a
+/// hardcoded list: ollama `/api/tags`, OpenAI-compatible `/v1/models`,
+/// OpenRouter's public catalogue, Anthropic `/v1/models`. Returns the marker
+/// `API_KEY_REQUIRED` when the provider needs a key and none was supplied, so
+/// the UI can prompt for it. Claude Code has no endpoint (drives the `claude`
+/// CLI), so it asks for a manual model.
+#[tauri::command]
+async fn list_models(provider: String, base: String, key: String) -> Result<Vec<String>, String> {
+    let client = reqwest::Client::new();
+    let trim = |b: &str| b.trim_end_matches('/').to_string();
+    let req = match provider.as_str() {
+        "ollama" => {
+            let b = if base.is_empty() {
+                "http://localhost:11434".to_string()
+            } else {
+                base
+            };
+            client.get(format!("{}/api/tags", trim(&b)))
+        }
+        "lm-studio" => {
+            let b = if base.is_empty() {
+                "http://localhost:1234".to_string()
+            } else {
+                base
+            };
+            client.get(format!("{}/v1/models", trim(&b)))
+        }
+        "openai" => {
+            if key.trim().is_empty() {
+                return Err("API_KEY_REQUIRED".to_string());
+            }
+            let b = if base.is_empty() {
+                "https://api.openai.com".to_string()
+            } else {
+                base
+            };
+            client.get(format!("{}/v1/models", trim(&b))).bearer_auth(key)
+        }
+        "openrouter" => client.get("https://openrouter.ai/api/v1/models"),
+        "anthropic" => {
+            if key.trim().is_empty() {
+                return Err("API_KEY_REQUIRED".to_string());
+            }
+            client
+                .get("https://api.anthropic.com/v1/models")
+                .header("x-api-key", key)
+                .header("anthropic-version", "2023-06-01")
+        }
+        "claude-code" => {
+            return Err("Claude Code has no models endpoint — type the model (e.g. sonnet, opus).".to_string())
+        }
+        other => return Err(format!("unknown provider: {other}")),
+    };
+    let resp = req.send().await.map_err(|e| format!("request failed: {e}"))?;
+    let status = resp.status();
+    let body = resp.text().await.unwrap_or_default();
+    if !status.is_success() {
+        let snippet: String = body.chars().take(200).collect();
+        return Err(format!("HTTP {status}: {snippet}"));
+    }
+    let json: Value = serde_json::from_str(&body).map_err(|e| format!("bad JSON: {e}"))?;
+    let mut models: Vec<String> = if provider == "ollama" {
+        json.get("models")
+            .and_then(|m| m.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|m| m.get("name").and_then(|n| n.as_str()).map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default()
+    } else {
+        // OpenAI-shaped: { "data": [ { "id": "..." }, … ] }.
+        json.get("data")
+            .and_then(|d| d.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|m| m.get("id").and_then(|i| i.as_str()).map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    models.sort();
+    models.dedup();
+    Ok(models)
+}
+
 /// Holds the managed local `aonyx serve api` child, if one is running.
 #[derive(Default)]
 struct LocalAgent(std::sync::Mutex<Option<std::process::Child>>);
@@ -408,6 +494,7 @@ pub fn run() {
             stop_local,
             read_provider_config,
             save_provider_config,
+            list_models,
             check_for_update,
             install_update
         ])

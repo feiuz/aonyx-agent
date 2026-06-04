@@ -67,7 +67,31 @@
         </label>
         <label
           >Model
-          <input id="wzModel" type="text" spellcheck="false" placeholder="model id" />
+          <span style="display: flex; gap: 6px; align-items: center">
+            <select id="wzModel" style="flex: 1"></select>
+            <button
+              id="wzModelRefresh"
+              type="button"
+              class="ghost"
+              title="Recharger la liste des modèles"
+            >
+              ↻
+            </button>
+          </span>
+        </label>
+        <span
+          id="wzModelNote"
+          class="muted"
+          style="font-size: 0.85em; margin: -6px 0 4px"
+        ></span>
+        <label id="wzModelCustomRow" style="display: none"
+          >Custom model id
+          <input
+            id="wzModelCustom"
+            type="text"
+            spellcheck="false"
+            placeholder="exact model id"
+          />
         </label>
         <label class="wz-field" data-for="anthropic openai openrouter"
           >API key
