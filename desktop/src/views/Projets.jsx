@@ -9,7 +9,7 @@ export default function Projets() {
 
   const counts = {};
   for (const s of sessions) {
-    const p = s.project || "(défaut)";
+    const p = s.project || t("projects.default");
     counts[p] = (counts[p] || 0) + 1;
   }
   const projects = Object.entries(counts).sort((a, b) => b[1] - a[1]);

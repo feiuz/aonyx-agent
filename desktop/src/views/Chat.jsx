@@ -170,7 +170,7 @@ export default function Chat() {
                     : "text-aonyx-600 dark:text-aonyx-400 hover:bg-aonyx-200/50 dark:hover:bg-aonyx-900/50"
                 }`}
               >
-                <span className="block truncate text-sm">{s.title || "(sans titre)"}</span>
+                <span className="block truncate text-sm">{s.title || t("chat.untitled")}</span>
                 <span className="block text-[11px] font-mono text-aonyx-500">
                   {s.turns} {s.turns === 1 ? t("chat.turn") : t("chat.turns")}
                 </span>

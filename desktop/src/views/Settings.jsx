@@ -64,31 +64,26 @@ export default function Settings() {
   const [msg, setMsg] = useState("");
   const [saving, setSaving] = useState(false);
 
-  const loadModels = useCallback(async (prov, current, keyVal, baseVal) => {
-    setLoadingModels(true);
-    setModelNote("chargement des modèles…");
-    try {
-      const list = (await listModels(prov, baseVal || DEFAULT_BASE[prov] || "", keyVal || "")) || [];
-      const finalList = current && !list.includes(current) ? [current, ...list] : list;
-      setModels(finalList);
-      if (!current && finalList.length) setModel(finalList[0]);
-      setModelNote(
-        list.length
-          ? `${list.length} modèle${list.length > 1 ? "s" : ""} disponible${list.length > 1 ? "s" : ""}`
-          : "aucun modèle retourné — utilise Custom",
-      );
-    } catch (e) {
-      const m = String(e);
-      setModels(current ? [current] : []);
-      setModelNote(
-        m.includes("API_KEY_REQUIRED")
-          ? "🔑 Clé API requise — saisis-la puis ↻"
-          : "fetch impossible : " + m,
-      );
-    } finally {
-      setLoadingModels(false);
-    }
-  }, []);
+  const loadModels = useCallback(
+    async (prov, current, keyVal, baseVal) => {
+      setLoadingModels(true);
+      setModelNote(t("settings.model.loading"));
+      try {
+        const list = (await listModels(prov, baseVal || DEFAULT_BASE[prov] || "", keyVal || "")) || [];
+        const finalList = current && !list.includes(current) ? [current, ...list] : list;
+        setModels(finalList);
+        if (!current && finalList.length) setModel(finalList[0]);
+        setModelNote(list.length ? `${list.length} ${t("settings.model.available")}` : t("settings.model.none"));
+      } catch (e) {
+        const m = String(e);
+        setModels(current ? [current] : []);
+        setModelNote(m.includes("API_KEY_REQUIRED") ? t("settings.model.keyRequired") : t("settings.model.fetchFail") + m);
+      } finally {
+        setLoadingModels(false);
+      }
+    },
+    [t],
+  );
 
   useEffect(() => {
     (async () => {
@@ -115,8 +110,8 @@ export default function Settings() {
 
   const save = async () => {
     const m = selectedModel();
-    if (!m) return setMsg("Choisis un modèle (ou saisis un id custom).");
-    if (NEEDS_KEY.has(provider) && !apiKey.trim()) return setMsg("Ce fournisseur requiert une clé API.");
+    if (!m) return setMsg(t("settings.save.pickModel"));
+    if (NEEDS_KEY.has(provider) && !apiKey.trim()) return setMsg(t("settings.save.needsKey"));
 
     const cfg = { provider, model: m };
     if (provider === "anthropic") cfg.anthropic_api_key = apiKey;
@@ -131,17 +126,13 @@ export default function Settings() {
     conn.token = token;
 
     setSaving(true);
-    setMsg("Enregistrement + reconnexion…");
+    setMsg(t("settings.save.saving"));
     try {
       await saveProviderConfig(cfg);
       const ok = await connect();
-      setMsg(
-        ok
-          ? "Connecté ✓"
-          : "Enregistré, mais l'agent n'est pas joignable — vérifie clé/modèle ou que `aonyx` (build --features api) est sur le PATH.",
-      );
+      setMsg(ok ? t("settings.save.connected") : t("settings.save.unreachable"));
     } catch (e) {
-      setMsg("Échec : " + e);
+      setMsg("✗ " + e);
     } finally {
       setSaving(false);
     }
@@ -168,12 +159,12 @@ export default function Settings() {
                   {models.map((m) => (
                     <option key={m} value={m}>{m}</option>
                   ))}
-                  <option value={CUSTOM}>Custom… (saisir l'id)</option>
+                  <option value={CUSTOM}>{t("settings.customOption")}</option>
                 </select>
                 <button
                   onClick={() => loadModels(provider, selectedModel() || null, apiKey, base)}
                   disabled={loadingModels}
-                  title="Recharger les modèles"
+                  title="↻"
                   className="flex items-center justify-center w-10 rounded-lg border border-aonyx-300 dark:border-aonyx-700 hover:bg-aonyx-200/60 dark:hover:bg-aonyx-900/50 disabled:opacity-50"
                 >
                   <RefreshCw className={`w-4 h-4 ${loadingModels ? "animate-spin" : ""}`} />
@@ -182,12 +173,12 @@ export default function Settings() {
               {modelNote && <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">{modelNote}</p>}
             </Field>
             {model === CUSTOM && (
-              <Field label="Id du modèle (custom)">
+              <Field label={t("settings.customModel")}>
                 <input value={customModel} onChange={(e) => setCustomModel(e.target.value)} className={inputCls} placeholder="exact model id" spellCheck={false} />
               </Field>
             )}
             {NEEDS_KEY.has(provider) && (
-              <Field label="Clé API">
+              <Field label={t("settings.apiKey")}>
                 <input
                   type="password"
                   value={apiKey}
@@ -200,12 +191,12 @@ export default function Settings() {
               </Field>
             )}
             {HAS_BASE.has(provider) && (
-              <Field label="Base URL">
+              <Field label={t("settings.baseUrl")}>
                 <input value={base} onChange={(e) => setBase(e.target.value)} className={inputCls} placeholder={DEFAULT_BASE[provider] || "https://…"} spellCheck={false} />
               </Field>
             )}
             {provider === "claude-code" && (
-              <Field label="Binaire claude">
+              <Field label={t("settings.binary")}>
                 <input value={binary} onChange={(e) => setBinary(e.target.value)} className={inputCls} placeholder="claude" spellCheck={false} />
               </Field>
             )}
@@ -216,12 +207,12 @@ export default function Settings() {
             <h2 className="font-cond uppercase tracking-wide text-sm text-aonyx-500">{t("settings.connectionSection")}</h2>
             <label className="flex items-center gap-2.5 text-sm text-aonyx-700 dark:text-aonyx-200">
               <input type="checkbox" checked={local} onChange={(e) => setLocal(e.target.checked)} className="accent-primary-600" />
-              Agent local embarqué (lance <code className="font-mono text-xs text-aonyx-500">aonyx serve api</code>)
+              {t("settings.embedded")} (<code className="font-mono text-xs text-aonyx-500">aonyx serve api</code>)
             </label>
-            <Field label="URL de l'API">
+            <Field label={t("settings.apiUrl")}>
               <input value={apiUrl} onChange={(e) => setApiUrl(e.target.value)} disabled={local} className={inputCls} placeholder="http://127.0.0.1:8788" spellCheck={false} />
             </Field>
-            <Field label="Token (optionnel)">
+            <Field label={t("settings.token")}>
               <input type="password" value={token} onChange={(e) => setToken(e.target.value)} disabled={local} className={inputCls} placeholder="bearer" spellCheck={false} />
             </Field>
           </section>
