@@ -1,3 +1,8 @@
+# Frontend (Vite + React renderer)
+node_modules/
+dist/
+*.log
+
 # Rust build output (separate target dir — this is its own workspace)
 src-tauri/target/
 

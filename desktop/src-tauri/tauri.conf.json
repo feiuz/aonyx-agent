@@ -4,7 +4,10 @@
   "version": "0.9.1",
   "identifier": "site.aonyx.desktop",
   "build": {
-    "frontendDist": "../src"
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:1420",
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build"
   },
   "app": {
     "withGlobalTauri": true,
@@ -14,7 +17,8 @@
         "width": 1100,
         "height": 760,
         "minWidth": 720,
-        "minHeight": 520
+        "minHeight": 520,
+        "decorations": false
       }
     ],
     "security": {
