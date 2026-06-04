@@ -27,8 +27,8 @@ function Stub({ icon: Icon, title, note }) {
   );
 }
 
+export { default as Chat } from "./Chat";
 export const Dashboard = () => <Stub icon={LayoutDashboard} title="Dashboard" note="Vue d'ensemble — à venir." />;
-export const Chat = () => <Stub icon={MessageSquare} title="Chat" note="Le chat agent (stream, sessions, outils) arrive en P1." />;
 export const Projets = () => <Stub icon={FolderOpen} title="Projets" />;
 export const Stats = () => <Stub icon={BarChart3} title="Statistiques" />;
 export const MemoryHealth = () => <Stub icon={Activity} title="Memory Health" />;
