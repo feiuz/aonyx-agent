@@ -128,7 +128,7 @@ Format: `ADR-NNN — short title (date) — status`
 
 ---
 
-## ADR-010 — Desktop frontend: stay vanilla JS + golden-layout for docking (2026-06-04) — accepted
+## ADR-010 — Desktop frontend: stay vanilla JS + golden-layout for docking (2026-06-04) — superseded by ADR-014
 
 **Context**: Desktop v2 wants Claude-Code-like movable panels (drag/stack/resize, persisted), plus a conversation-history sidebar, a user-session widget, an updates zone, i18n and auth screens. The current frontend is plain vanilla JS (`desktop/src/{index.html,app.js,styles.css}`). Options: migrate to React+dockview (best docking, full rewrite), Svelte+golden-layout, or vanilla+golden-layout, or vanilla+split.js (resize only). Plan: [`desktop-v2-plan.md`](desktop-v2-plan.md).
 
@@ -177,6 +177,20 @@ Format: `ADR-NNN — short title (date) — status`
 - ✅ Monetization/cloud-feature path in place from the start, reusing the toolkit's license machinery.
 - ✅ Local-first/OSS guarantee intact — no license needed to run the agent locally.
 - ❌ FREE/PREMIUM feature split still to be defined (OQ4-bis); more work on the aonyx-account side than a license-free app.
+
+---
+
+## ADR-014 — Desktop frontend: adopt aonyx-rag's React/Vite/Tailwind organization (2026-06-04) — accepted
+
+**Context**: ADR-010 chose vanilla JS + golden-layout. In practice the desktop needs a nav-rail dashboard (Dashboard/Chat/Projets/…/Paramètres), auth, a settings sub-app, KG viz, theming, i18n — a lot of stateful UI. The user's own mature Electron app (aonyx-rag, `H:\Web\RAG`) already solves this with React 18 + Vite + Tailwind + react-router (HashRouter) + react-query + lucide-react, cleanly organized (shell, section views, `ui/` design system, `context/AuthContext`, `hooks/`, `services/`, `config/`). The shared sidebar screenshot is its nav rail. Plan: [`desktop-v2-architecture.md`](desktop-v2-architecture.md). Clean-room (ADR-001/008): mirror the *organization/patterns/conventions*, never aonyx-rag's data or RAG business logic.
+
+**Decision**: Rebuild the desktop renderer as a React + Vite + Tailwind app mirroring aonyx-rag's structure, on Tauri. Electron IPC (`window.electronAPI`/contextBridge) maps to a `services/` layer over `window.__TAURI__.core.invoke`; the existing Rust commands ARE the API. HashRouter for the nav sections (`tauri://` origin, like Electron's `file://`). Supersedes ADR-010 — vanilla + golden-layout abandoned; the nav rail + router is the real answer to "a sidebar like that". Movable panels become an optional later feature (`react-resizable-panels`) inside Chat.
+
+**Consequences**:
+- ✅ Proven, maintainable architecture matching the user's reference app; scales to auth/settings/KG/i18n.
+- ✅ Rust backend commands unchanged — the hard part is done; only the renderer is rebuilt.
+- ❌ Vanilla→React migration is a real lift (phased P0–P5); the in-progress vanilla nav-rail is discarded.
+- ❌ Adds a JS toolchain (Vite/npm) to the desktop build (`beforeDevCommand`/`beforeBuildCommand`) — standard for Tauri.
 
 ---
 
