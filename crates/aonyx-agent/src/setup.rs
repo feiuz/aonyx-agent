@@ -114,7 +114,11 @@ pub async fn run_provider_wizard() -> anyhow::Result<()> {
     let b_idx = Select::with_theme(&theme)
         .with_prompt("RAG backend")
         .items(&backends)
-        .default(if config.rag.backend == "external" { 1 } else { 0 })
+        .default(if config.rag.backend == "external" {
+            1
+        } else {
+            0
+        })
         .interact()?;
     config.rag.backend = if b_idx == 1 { "external" } else { "local" }.to_string();
 
@@ -125,7 +129,11 @@ pub async fn run_provider_wizard() -> anyhow::Result<()> {
     let e_idx = Select::with_theme(&theme)
         .with_prompt("Embeddings")
         .items(&embeds)
-        .default(if config.rag.embeddings == "provider" { 1 } else { 0 })
+        .default(if config.rag.embeddings == "provider" {
+            1
+        } else {
+            0
+        })
         .interact()?;
     config.rag.embeddings = if e_idx == 1 { "provider" } else { "local" }.to_string();
 

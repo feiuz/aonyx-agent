@@ -595,7 +595,9 @@ async fn build_serve_registry() -> anyhow::Result<aonyx_tools::ToolRegistry> {
 
     let mut registry = aonyx_tools::ToolRegistry::default_set();
     if rag_local {
-        registry.register(Arc::new(aonyx_tools::memory::RagSearch::new(palace.clone())));
+        registry.register(Arc::new(aonyx_tools::memory::RagSearch::new(
+            palace.clone(),
+        )));
     }
     registry.register(Arc::new(aonyx_tools::memory::MemorySearch::new(
         palace.clone(),

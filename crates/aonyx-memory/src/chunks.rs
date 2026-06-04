@@ -151,7 +151,12 @@ impl SqliteChunksStore {
 
     /// Store (or replace) the embedding `vec` for `chunk_id`, tagged with the
     /// `model_id` that produced it (so a model change can be detected).
-    pub async fn upsert_vector(&self, chunk_id: ChunkId, model_id: &str, vec: &[f32]) -> Result<()> {
+    pub async fn upsert_vector(
+        &self,
+        chunk_id: ChunkId,
+        model_id: &str,
+        vec: &[f32],
+    ) -> Result<()> {
         let conn = self.conn.clone();
         let id = chunk_id.to_string();
         let model_id = model_id.to_string();

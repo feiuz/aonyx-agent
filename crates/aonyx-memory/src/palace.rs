@@ -111,7 +111,12 @@ impl Palace {
             bm25.truncate(k);
             return Ok(bm25);
         };
-        let Some(qv) = embedder.embed(&[query.to_string()]).await?.into_iter().next() else {
+        let Some(qv) = embedder
+            .embed(&[query.to_string()])
+            .await?
+            .into_iter()
+            .next()
+        else {
             let mut bm25 = bm25;
             bm25.truncate(k);
             return Ok(bm25);
