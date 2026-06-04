@@ -128,4 +128,56 @@ Format: `ADR-NNN — short title (date) — status`
 
 ---
 
+## ADR-010 — Desktop frontend: stay vanilla JS + golden-layout for docking (2026-06-04) — accepted
+
+**Context**: Desktop v2 wants Claude-Code-like movable panels (drag/stack/resize, persisted), plus a conversation-history sidebar, a user-session widget, an updates zone, i18n and auth screens. The current frontend is plain vanilla JS (`desktop/src/{index.html,app.js,styles.css}`). Options: migrate to React+dockview (best docking, full rewrite), Svelte+golden-layout, or vanilla+golden-layout, or vanilla+split.js (resize only). Plan: [`desktop-v2-plan.md`](desktop-v2-plan.md).
+
+**Decision**: Keep the **vanilla JS** frontend and add **golden-layout** (framework-agnostic docking lib) for true drag-dock with persisted layout. No framework migration. A small hand-rolled state module keeps auth/history/i18n/widget state manageable.
+
+**Consequences**:
+- ✅ Real "movable like Claude Code" docking without rewriting the working app; moderate churn, existing code preserved.
+- ✅ Smallest bundle / simplest Tauri integration.
+- ❌ App state stays in vanilla — discipline required (a tiny store) as auth/history/i18n grow; revisit a framework only if it gets unwieldy.
+
+---
+
+## ADR-011 — Desktop auth: device-code grant, optional / offline-first (2026-06-04) — accepted
+
+**Context**: The desktop must depend on aonyx-account (account, license, sync) but the agent is local-first/offline (embedded `aonyx serve api`, local palace/RAG). aonyx-account already ships a device-code auth flow (`/api/v1/auth/device/{code,token,approve,deny}`) — the OAuth grant designed for desktop/CLI clients.
+
+**Decision**: Authenticate via the **device-code grant** (open browser → user approves on web, where MFA/WebAuthn already live → desktop polls for JWT). Tokens stored in the **OS keyring** (Rust `keyring` crate), refreshed via `/api/v1/auth/refresh`, all behind Tauri Rust commands (`account_*`, server-to-server → no CORS). Auth is **optional and non-blocking**: the local agent works fully offline; signing in unlocks license/sync/preferences/language.
+
+**Consequences**:
+- ✅ No password/MFA handling in the client; reuses the existing, security-hardened web flow.
+- ✅ Preserves the offline-first promise — no account required to use the agent.
+- ❌ Two states (anon/local vs authenticated) to handle in the UI; mitigated by treating auth as an additive overlay.
+- ❌ Device-code grant not yet validated against a real client — a dedicated milestone (D2), not a formality.
+
+---
+
+## ADR-012 — Desktop i18n: FR/EN with auto-detect, account language wins (2026-06-04) — accepted
+
+**Context**: UI is English-only and hard-coded. User wants FR/EN with automatic language detection. aonyx-account stores `UserProfile.language`.
+
+**Decision**: Ship FR/EN message bundles (`fr.json`/`en.json`, EN fallback) with a `t()` helper. Detect OS/browser locale on first run; when signed in, **`UserProfile.language` is authoritative** (and a manual change in the desktop pushes back to the account). Manual override available in Settings.
+
+**Consequences**:
+- ✅ Zero-config localized UX; consistent language across a user's devices via the account.
+- ❌ All UI strings must be extracted; one-time cost, enforced by a lint pass.
+
+---
+
+## ADR-013 — Register `aonyx-agent` in aonyx-account with FREE/PREMIUM licensing (2026-06-04) — accepted
+
+**Context**: Adding an app to aonyx-account = one entry in `server/config/apps.config.ts`. `imvu-toolkit` (type `electron`, `licensingEnabled:true`, FREE/PREMIUM) is the precedent. The agent code is OSS/MIT and must stay freely usable locally.
+
+**Decision**: Register `aonyx-agent` (`type:'electron'`, `routePrefix:'agent'`, `licensingEnabled:true`, `defaultTier:'FREE'`) mirroring the toolkit. The license **gates cloud/premium features** (sync, multi-device, quotas) — never the local binary. Adds workstream D3 (routes `/api/v1/agent/*` + license service).
+
+**Consequences**:
+- ✅ Monetization/cloud-feature path in place from the start, reusing the toolkit's license machinery.
+- ✅ Local-first/OSS guarantee intact — no license needed to run the agent locally.
+- ❌ FREE/PREMIUM feature split still to be defined (OQ4-bis); more work on the aonyx-account side than a license-free app.
+
+---
+
 *Future decisions append here.*
