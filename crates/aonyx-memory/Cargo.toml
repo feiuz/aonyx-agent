@@ -20,7 +20,15 @@ tracing = { workspace = true }
 tokio = { workspace = true }
 rusqlite = { workspace = true }
 
-# fastembed-rs, hnsw_rs, tree-sitter join when their subsystems land.
+# Local embeddings (RG1 / ADR-005 / ADR-009) — ONNX via fastembed-rs, behind
+# the `rag` feature so the default binary stays lean. hnsw_rs + tree-sitter
+# land with Phase 2 (HNSW ANN + AST splitter).
+fastembed = { version = "5", optional = true }
+
+[features]
+# Pulls the local ONNX embedder ([`LocalEmbedder`]). Enabled by the `aonyx`
+# binary's own `rag` feature and the `-full` build.
+rag = ["dep:fastembed"]
 
 [dev-dependencies]
 tokio = { workspace = true }

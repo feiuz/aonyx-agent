@@ -80,6 +80,8 @@ lua-plugins = ["aonyx-tools/lua-plugins"]
 browser = ["aonyx-tools/browser"]
 # REST + WebSocket automation API (`aonyx serve api`, Vague 4).
 api = ["dep:aonyx-api"]
+# Local RAG embeddings (ONNX via fastembed) — heavy, opt-in (the `-full` build).
+rag = ["aonyx-memory/rag"]
 
 [dev-dependencies]
 tokio = { workspace = true }

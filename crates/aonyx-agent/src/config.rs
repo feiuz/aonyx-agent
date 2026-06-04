@@ -150,6 +150,35 @@ pub struct Config {
     /// bare "ok" / "merci" never triggers a search). Defaults to 12.
     #[serde(default = "default_auto_retrieve_min_len")]
     pub auto_retrieve_min_len: usize,
+    /// Built-in RAG settings (`[rag]`) — ADR-008 (backend) / ADR-009 (embeddings).
+    #[serde(default)]
+    pub rag: RagConfig,
+}
+
+/// Built-in RAG configuration (`[rag]` table).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RagConfig {
+    /// `"local"` (built-in palace + the `rag_search` tool) or `"external"`
+    /// (an MCP `<server>__rag_search`). Default `"local"`.
+    #[serde(default = "default_rag_backend")]
+    pub backend: String,
+    /// `"local"` (fastembed, offline; needs the `rag` build feature) or
+    /// `"provider"` (OpenAI / Ollama embeddings). Default `"local"`.
+    #[serde(default = "default_rag_embeddings")]
+    pub embeddings: String,
+    /// fastembed model id when `embeddings = "local"`. Default `"bge-m3"`.
+    #[serde(default = "default_embed_model")]
+    pub embed_model: String,
+}
+
+impl Default for RagConfig {
+    fn default() -> Self {
+        Self {
+            backend: default_rag_backend(),
+            embeddings: default_rag_embeddings(),
+            embed_model: default_embed_model(),
+        }
+    }
 }
 
 /// Ten RGB colour fields persisted from the `/theme-edit` panel
@@ -255,6 +284,18 @@ fn default_compact_threshold() -> u64 {
     24_000
 }
 
+fn default_rag_backend() -> String {
+    "local".to_string()
+}
+
+fn default_rag_embeddings() -> String {
+    "local".to_string()
+}
+
+fn default_embed_model() -> String {
+    "bge-m3".to_string()
+}
+
 fn default_max_iterations() -> usize {
     10
 }
@@ -315,6 +356,7 @@ impl Default for Config {
             auto_retrieve: false,
             auto_retrieve_top_k: default_auto_retrieve_top_k(),
             auto_retrieve_min_len: default_auto_retrieve_min_len(),
+            rag: RagConfig::default(),
         }
     }
 }
@@ -451,6 +493,7 @@ mod tests {
             auto_retrieve: true,
             auto_retrieve_top_k: 5,
             auto_retrieve_min_len: 12,
+            rag: RagConfig::default(),
         };
         let s = toml::to_string(&original).unwrap();
         let parsed: Config = toml::from_str(&s).unwrap();

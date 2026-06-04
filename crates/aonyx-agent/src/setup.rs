@@ -106,6 +106,29 @@ pub async fn run_provider_wizard() -> anyhow::Result<()> {
     // Model.
     config.model = prompt_default(&theme, "Model", default_model(provider, &config.model))?;
 
+    // RAG — backend + embeddings (ADR-008 / ADR-009).
+    let backends = [
+        "local — built-in palace (offline)",
+        "external — MCP rag_search",
+    ];
+    let b_idx = Select::with_theme(&theme)
+        .with_prompt("RAG backend")
+        .items(&backends)
+        .default(if config.rag.backend == "external" { 1 } else { 0 })
+        .interact()?;
+    config.rag.backend = if b_idx == 1 { "external" } else { "local" }.to_string();
+
+    let embeds = [
+        "local — fastembed (offline; needs the `rag` build feature)",
+        "provider — OpenAI / Ollama embeddings",
+    ];
+    let e_idx = Select::with_theme(&theme)
+        .with_prompt("Embeddings")
+        .items(&embeds)
+        .default(if config.rag.embeddings == "provider" { 1 } else { 0 })
+        .interact()?;
+    config.rag.embeddings = if e_idx == 1 { "provider" } else { "local" }.to_string();
+
     // Live connection test (skip for claude-code — that shells out to the
     // `claude` CLI, which we don't want to spawn just to ping).
     if provider != "claude-code"

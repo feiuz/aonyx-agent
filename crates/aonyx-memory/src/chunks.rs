@@ -144,7 +144,100 @@ impl SqliteChunksStore {
     fn migrate(conn: &Connection) -> Result<()> {
         conn.execute_batch(MIGRATION_V1)
             .map_err(|e| AonyxError::Memory(format!("migrate chunks schema: {e}")))?;
+        conn.execute_batch(MIGRATION_V2)
+            .map_err(|e| AonyxError::Memory(format!("migrate chunk_vectors schema: {e}")))?;
         Ok(())
+    }
+
+    /// Store (or replace) the embedding `vec` for `chunk_id`, tagged with the
+    /// `model_id` that produced it (so a model change can be detected).
+    pub async fn upsert_vector(&self, chunk_id: ChunkId, model_id: &str, vec: &[f32]) -> Result<()> {
+        let conn = self.conn.clone();
+        let id = chunk_id.to_string();
+        let model_id = model_id.to_string();
+        let dim = vec.len() as i64;
+        let blob = vec_to_blob(vec);
+        tokio::task::spawn_blocking(move || -> Result<()> {
+            let lock = conn.lock().expect("chunks mutex poisoned");
+            lock.execute(
+                "INSERT INTO chunk_vectors (chunk_id, model_id, dim, vec) VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT(chunk_id) DO UPDATE SET model_id = ?2, dim = ?3, vec = ?4",
+                params![id, model_id, dim, blob],
+            )
+            .map_err(|e| AonyxError::Memory(format!("upsert_vector: {e}")))?;
+            Ok(())
+        })
+        .await
+        .map_err(|e| AonyxError::Memory(format!("upsert_vector join: {e}")))?
+    }
+
+    /// Brute-force cosine search over stored vectors (optionally scoped to a
+    /// project). Returns the top-`k` chunks by similarity to `query`. Vectors
+    /// whose dimension differs from `query` (a stale embedder) are skipped.
+    pub async fn vector_search(
+        &self,
+        project: Option<&str>,
+        query: &[f32],
+        k: usize,
+    ) -> Result<Vec<ScoredChunk>> {
+        let conn = self.conn.clone();
+        let project = project.map(str::to_string);
+        let query = query.to_vec();
+        tokio::task::spawn_blocking(move || -> Result<Vec<ScoredChunk>> {
+            let lock = conn.lock().expect("chunks mutex poisoned");
+            let mut stmt = lock
+                .prepare(
+                    "SELECT f.uuid, f.project, f.source, f.ts, f.kind, f.metadata_json, f.content, v.vec
+                     FROM chunk_vectors v JOIN chunks_fts f ON f.uuid = v.chunk_id",
+                )
+                .map_err(|e| AonyxError::Memory(format!("prepare vector_search: {e}")))?;
+            let rows = stmt
+                .query_map([], |row| {
+                    let blob: Vec<u8> = row.get(7)?;
+                    Ok((chunk_from_row(row)?, blob_to_vec(&blob)))
+                })
+                .map_err(|e| AonyxError::Memory(format!("query vector_search: {e}")))?;
+            let qn = norm(&query);
+            let mut scored: Vec<ScoredChunk> = Vec::new();
+            for r in rows {
+                let (chunk, vec) = r.map_err(|e| AonyxError::Memory(format!("row decode: {e}")))?;
+                if let Some(p) = &project {
+                    if &chunk.project != p {
+                        continue;
+                    }
+                }
+                if vec.len() != query.len() {
+                    continue; // dim mismatch → stale embedder, skip
+                }
+                scored.push(ScoredChunk {
+                    score: cosine(&query, qn, &vec),
+                    chunk,
+                });
+            }
+            scored.sort_by(|a, b| {
+                b.score
+                    .partial_cmp(&a.score)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+            scored.truncate(k);
+            Ok(scored)
+        })
+        .await
+        .map_err(|e| AonyxError::Memory(format!("vector_search join: {e}")))?
+    }
+
+    /// Count stored vectors (diagnostics / reindex decisions).
+    pub async fn count_vectors(&self) -> Result<usize> {
+        let conn = self.conn.clone();
+        tokio::task::spawn_blocking(move || -> Result<usize> {
+            let lock = conn.lock().expect("chunks mutex poisoned");
+            let n: i64 = lock
+                .query_row("SELECT COUNT(*) FROM chunk_vectors", [], |r| r.get(0))
+                .map_err(|e| AonyxError::Memory(format!("count_vectors: {e}")))?;
+            Ok(n.max(0) as usize)
+        })
+        .await
+        .map_err(|e| AonyxError::Memory(format!("count_vectors join: {e}")))?
     }
 }
 
@@ -158,6 +251,15 @@ CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
     metadata_json  UNINDEXED,
     content,
     tokenize = 'unicode61 remove_diacritics 2'
+);
+"#;
+
+const MIGRATION_V2: &str = r#"
+CREATE TABLE IF NOT EXISTS chunk_vectors (
+    chunk_id TEXT PRIMARY KEY,
+    model_id TEXT NOT NULL,
+    dim      INTEGER NOT NULL,
+    vec      BLOB NOT NULL
 );
 "#;
 
@@ -269,7 +371,9 @@ impl ChunksStore for SqliteChunksStore {
     }
 }
 
-fn decode_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ScoredChunk> {
+/// Decode a chunk from a row whose first 7 columns are
+/// `uuid, project, source, ts, kind, metadata_json, content`.
+fn chunk_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Chunk> {
     let uuid_str: String = row.get(0)?;
     let project: String = row.get(1)?;
     let source: String = row.get(2)?;
@@ -277,7 +381,6 @@ fn decode_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ScoredChunk> {
     let kind: Option<String> = row.get(4)?;
     let metadata_raw: Option<String> = row.get(5)?;
     let content: String = row.get(6)?;
-    let raw_score: f64 = row.get(7)?;
 
     let id = Uuid::parse_str(&uuid_str).map_err(|e| {
         rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e))
@@ -289,19 +392,56 @@ fn decode_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ScoredChunk> {
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or(JsonValue::Null);
 
+    Ok(Chunk {
+        id,
+        project,
+        source,
+        content,
+        ts,
+        kind,
+        metadata,
+    })
+}
+
+fn decode_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ScoredChunk> {
+    let chunk = chunk_from_row(row)?;
+    let raw_score: f64 = row.get(7)?;
     Ok(ScoredChunk {
-        chunk: Chunk {
-            id,
-            project,
-            source,
-            content,
-            ts,
-            kind,
-            metadata,
-        },
+        chunk,
         // SQLite's bm25() returns negative values; flip the sign so larger = better.
         score: -(raw_score as f32),
     })
+}
+
+/// Serialise a vector as little-endian f32 bytes.
+fn vec_to_blob(v: &[f32]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(v.len() * 4);
+    for f in v {
+        out.extend_from_slice(&f.to_le_bytes());
+    }
+    out
+}
+
+/// Deserialise a little-endian f32 byte blob back into a vector.
+fn blob_to_vec(b: &[u8]) -> Vec<f32> {
+    b.chunks_exact(4)
+        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        .collect()
+}
+
+fn norm(v: &[f32]) -> f32 {
+    v.iter().map(|x| x * x).sum::<f32>().sqrt()
+}
+
+/// Cosine similarity; `qn` is the precomputed norm of `q`.
+fn cosine(q: &[f32], qn: f32, d: &[f32]) -> f32 {
+    let dot: f32 = q.iter().zip(d).map(|(a, b)| a * b).sum();
+    let dn = norm(d);
+    if qn == 0.0 || dn == 0.0 {
+        0.0
+    } else {
+        dot / (qn * dn)
+    }
 }
 
 #[cfg(test)]

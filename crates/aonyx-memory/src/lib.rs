@@ -23,6 +23,7 @@
 pub mod chunks;
 pub mod cross_link;
 pub mod diary;
+pub mod embed;
 pub mod hybrid;
 pub mod kg;
 pub mod palace;
@@ -34,6 +35,9 @@ mod inmem;
 
 pub use chunks::{Chunk, ChunkId, ChunksStore, ScoredChunk, SqliteChunksStore};
 pub use diary::{DiaryEntry, DiaryEntryId, DiaryStore, SqliteDiaryStore};
+pub use embed::Embedder;
+#[cfg(feature = "rag")]
+pub use embed::LocalEmbedder;
 pub use inmem::InMemoryStore;
 pub use kg::{Direction, Entity, EntityId, KgStore, Relation, RelationId, SqliteKgStore};
 pub use palace::Palace;

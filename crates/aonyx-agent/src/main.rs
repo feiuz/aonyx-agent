@@ -109,6 +109,11 @@ enum Command {
         #[arg(long)]
         apply: bool,
     },
+    /// Ingest documents into the project memory palace for RAG.
+    Ingest {
+        /// File or directory to ingest (.md / .markdown / .txt).
+        path: PathBuf,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -242,6 +247,7 @@ async fn main() -> anyhow::Result<()> {
         },
 
         Some(Command::Reflect { apply }) => reflect::run(apply).await,
+        Some(Command::Ingest { path }) => ingest_path(path).await,
         Some(Command::Mcp { action }) => match action {
             McpAction::Serve { port, token } => {
                 // Phase HH/NN — expose the built-in tools plus the
@@ -577,7 +583,20 @@ async fn build_serve_registry() -> anyhow::Result<aonyx_tools::ToolRegistry> {
     let slug = project_slug(&project_root);
     let config = Config::load_or_init().unwrap_or_default();
 
+    // RAG (ADR-008/009): backend=local → attach the embedder (so the palace
+    // runs hybrid search) and expose the built-in `rag_search` tool (the name
+    // `auto_retrieve` looks for). backend=external relies on an MCP
+    // `<server>__rag_search` loaded by connect_configured_mcp.
+    let rag_local = config.rag.backend == "local";
+    let palace = match rag_local.then(|| build_local_embedder(&config)).flatten() {
+        Some(emb) => palace.with_embedder(emb),
+        None => palace,
+    };
+
     let mut registry = aonyx_tools::ToolRegistry::default_set();
+    if rag_local {
+        registry.register(Arc::new(aonyx_tools::memory::RagSearch::new(palace.clone())));
+    }
     registry.register(Arc::new(aonyx_tools::memory::MemorySearch::new(
         palace.clone(),
     )));
@@ -603,6 +622,147 @@ async fn build_serve_registry() -> anyhow::Result<aonyx_tools::ToolRegistry> {
     apply_tool_policy(&registry, &config.tools_allow, &config.tools_deny);
 
     Ok(registry)
+}
+
+/// Build the local embedder when `[rag] embeddings = "local"` and the `rag`
+/// feature is compiled in; `None` (BM25-only) otherwise.
+#[cfg(feature = "rag")]
+fn build_local_embedder(config: &Config) -> Option<std::sync::Arc<dyn aonyx_memory::Embedder>> {
+    if config.rag.embeddings != "local" {
+        return None;
+    }
+    let cache = Config::config_dir().ok()?.join("models");
+    match aonyx_memory::LocalEmbedder::new(cache) {
+        Ok(e) => Some(std::sync::Arc::new(e)),
+        Err(e) => {
+            eprintln!("aonyx: local embedder unavailable ({e}) — falling back to BM25");
+            None
+        }
+    }
+}
+
+#[cfg(not(feature = "rag"))]
+fn build_local_embedder(_config: &Config) -> Option<std::sync::Arc<dyn aonyx_memory::Embedder>> {
+    None
+}
+
+/// `aonyx ingest <path>` — chunk + (optionally) embed text/markdown files into
+/// the current project's palace so `rag_search` / `memory_search` find them.
+async fn ingest_path(path: PathBuf) -> anyhow::Result<()> {
+    use aonyx_memory::{Chunk, ChunksStore};
+
+    let config = Config::load_or_init()?;
+    let cwd = std::env::current_dir()?;
+    let project = project_slug(&cwd);
+    let palace = Palace::open(Palace::default_project_dir(&cwd))?;
+    let embedder = build_local_embedder(&config);
+
+    let files = collect_text_files(&path)?;
+    if files.is_empty() {
+        eprintln!(
+            "aonyx: no .md / .markdown / .txt files under {}",
+            path.display()
+        );
+        return Ok(());
+    }
+
+    let mut total = 0usize;
+    for file in &files {
+        let content = std::fs::read_to_string(file).unwrap_or_default();
+        if content.trim().is_empty() {
+            continue;
+        }
+        let source = file.display().to_string();
+        let parts = split_text(&content);
+
+        let mut ids = Vec::with_capacity(parts.len());
+        for p in &parts {
+            let chunk = Chunk::new(project.as_str(), source.as_str(), p.as_str()).with_kind("doc");
+            ids.push(palace.chunks.append(chunk).await?);
+        }
+        if let Some(emb) = &embedder {
+            let vecs = emb.embed(&parts).await?;
+            for (id, v) in ids.iter().zip(vecs) {
+                palace.chunks.upsert_vector(*id, emb.model_id(), &v).await?;
+            }
+        }
+        total += parts.len();
+    }
+
+    println!(
+        "aonyx: ingested {total} chunk(s) from {} file(s) into project '{project}'",
+        files.len()
+    );
+    if embedder.is_none() {
+        println!(
+            "  (BM25-only — for hybrid search, build with `--features rag` and set \
+             [rag] embeddings = \"local\")"
+        );
+    }
+    Ok(())
+}
+
+/// Collect ingestible text files under `path` (a single file, or every
+/// matching file in a directory tree).
+fn collect_text_files(path: &std::path::Path) -> anyhow::Result<Vec<PathBuf>> {
+    fn is_text(p: &std::path::Path) -> bool {
+        matches!(
+            p.extension()
+                .and_then(|e| e.to_str())
+                .map(|s| s.to_ascii_lowercase())
+                .as_deref(),
+            Some("md" | "markdown" | "txt" | "text")
+        )
+    }
+    let mut out = Vec::new();
+    if path.is_file() {
+        if is_text(path) {
+            out.push(path.to_path_buf());
+        }
+    } else {
+        for entry in walkdir::WalkDir::new(path)
+            .into_iter()
+            .filter_map(|e| e.ok())
+        {
+            let p = entry.path();
+            if p.is_file() && is_text(p) {
+                out.push(p.to_path_buf());
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Split a document into retrieval-sized chunks on blank-line paragraph
+/// boundaries, grouping paragraphs up to ~1200 chars (hard-splitting any
+/// single over-long paragraph).
+fn split_text(content: &str) -> Vec<String> {
+    const MAX: usize = 1200;
+    let mut chunks = Vec::new();
+    let mut buf = String::new();
+    for para in content.split("\n\n") {
+        let para = para.trim();
+        if para.is_empty() {
+            continue;
+        }
+        if !buf.is_empty() && buf.len() + para.len() + 2 > MAX {
+            chunks.push(std::mem::take(&mut buf));
+        }
+        if para.len() > MAX {
+            for slice in para.as_bytes().chunks(MAX) {
+                chunks.push(String::from_utf8_lossy(slice).into_owned());
+            }
+        } else {
+            if !buf.is_empty() {
+                buf.push_str("\n\n");
+            }
+            buf.push_str(para);
+        }
+    }
+    if !buf.is_empty() {
+        chunks.push(buf);
+    }
+    chunks
 }
 
 /// Connect every configured MCP server and register its tools into

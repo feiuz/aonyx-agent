@@ -70,6 +70,78 @@ impl ToolHandler for MemorySearch {
     }
 }
 
+/// `rag_search` — retrieval over the palace returning **source-attributed**
+/// chunks (citations). Hybrid (BM25 + vectors) when an embedder is configured,
+/// BM25-only otherwise. Named exactly `rag_search` so `auto_retrieve` picks it
+/// up as the local backend (ADR-008) — same contract as the external MCP
+/// `<server>__rag_search`.
+pub struct RagSearch {
+    palace: Palace,
+}
+
+#[derive(Deserialize)]
+struct RagSearchArgs {
+    query: String,
+    /// Preferred arg name (matches `auto_retrieve` + the external MCP tool).
+    #[serde(default)]
+    top_k: Option<usize>,
+    /// Accepted alias.
+    #[serde(default)]
+    k: Option<usize>,
+}
+
+impl RagSearch {
+    /// Wrap a palace handle (with or without an embedder attached).
+    pub fn new(palace: Palace) -> Self {
+        Self { palace }
+    }
+}
+
+#[async_trait]
+impl ToolHandler for RagSearch {
+    fn name(&self) -> &str {
+        "rag_search"
+    }
+
+    fn classify(&self) -> SafetyClass {
+        SafetyClass::Safe
+    }
+
+    fn schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "query": { "type": "string", "description": "Question or keywords to retrieve from the memory palace." },
+                "top_k": { "type": "integer", "minimum": 1, "maximum": 10, "default": 5 }
+            },
+            "required": ["query"]
+        })
+    }
+
+    async fn invoke(&self, call: ToolCall) -> Result<ToolResult> {
+        let args: RagSearchArgs = serde_json::from_value(call.args)
+            .map_err(|e| AonyxError::Tool(format!("rag_search args: {e}")))?;
+        let k = args.top_k.or(args.k).unwrap_or(5).clamp(1, 10);
+        let hits = self.palace.search(&args.query, k).await?;
+        let results: Vec<Value> = hits
+            .into_iter()
+            .map(|sc| {
+                json!({
+                    "project": sc.chunk.project,
+                    "source": sc.chunk.source,
+                    "content": sc.chunk.content,
+                    "score": sc.score,
+                })
+            })
+            .collect();
+        Ok(ToolResult {
+            call_id: call.id,
+            output: json!({ "query": args.query, "results": results }),
+            error: None,
+        })
+    }
+}
+
 /// `memory_diary_append` — append a dated note to the project diary.
 pub struct MemoryDiaryAppend {
     palace: Palace,
