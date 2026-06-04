@@ -9,6 +9,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 _(nothing yet)_
 
+## [0.9.2] — 2026-06-04 — auto_retrieve (retrieve-then-generate)
+
+Pre-loads memory-palace context so weak/local models benefit from the RAG even
+when they don't call `rag_search` themselves. `auto_retrieve` is covered by 5
+unit tests; workspace suite green.
+
+### Added
+- **`auto_retrieve` — retrieve-then-generate before the agent loop.** On the
+  `aonyx serve` surfaces, the runner can pre-fetch RAG context for the user's
+  message and inject it as a source-attributed system block *before* the loop,
+  instead of relying on the model to call `rag_search` (weak models — e.g. a
+  local 8B — skip it on interrogative messages, leaving the palace unused). The
+  agent stays free to call `read_document` / `find_related` to dig deeper
+  (pre-load, not replace).
+  - Config: `auto_retrieve` (off by default), `auto_retrieve_top_k` (5, clamped
+    `1..=10`), `auto_retrieve_min_len` (12).
+  - Applies to Telegram / Discord / OpenAI / API; the interactive TUI is a
+    fast-follow.
+  - Finds the `rag_search` MCP tool dynamically (`<server>__rag_search`),
+    handles both structured `{results:[…]}` and the MCP JSON-as-string payload,
+    and is best-effort (no tool / error / empty ⇒ no-op).
+
+## [0.9.1] — 2026-06-04 — Telegram streaming + desktop provider wizard
+
+### Added
+- **Telegram live token streaming.** The Telegram bot renders replies token by
+  token (via `editMessageText`) instead of one block, bridging the agent loop's
+  existing `run_streaming` / `TurnEvent` to the adapter. New
+  `StreamEvent {Status, Delta, Final}` in `aonyx-adapters` with a default
+  `AgentHandler::handle_stream` (so Discord / the OpenAI server are unchanged).
+  Edits are throttled (≈900 ms, edit-only-when-changed to dodge 429 / "not
+  modified"), the live view is capped at 4096 chars, and tool calls surface as
+  a transient status line (never raw tool JSON).
+- **Desktop — first-run provider wizard** (`desktop/` 0.9.1). Configures the
+  provider on first launch (Anthropic / OpenAI / OpenRouter / Ollama / LM Studio
+  / Claude Code, with key / base URL / model), writes `~/.aonyx/config.toml`
+  format-preserving (`toml_edit`), and restarts the embedded local agent.
+  Auto-opens when the local agent can't be reached.
+
+### Notes
+- **Versioning:** the desktop app (`desktop/`) is a **standalone workspace** and
+  versions **independently** from the agent workspace — desktop `0.9.1` (the
+  wizard) is a different artifact from workspace `0.9.1` (Telegram streaming).
+  Agent crates + binaries follow the workspace version; the desktop installer
+  follows `desktop/src-tauri`'s version.
+
 ## [0.9.0] — 2026-06-03 — Vague 4 complete: the desktop app
 
 Ships **Aonyx Desktop** (Tauri 2), closing Vague 4 (automation API + desktop

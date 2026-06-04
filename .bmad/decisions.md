@@ -73,4 +73,32 @@ Format: `ADR-NNN — short title (date) — status`
 
 ---
 
+## ADR-006 — auto_retrieve: retrieve-then-generate for served deployments (2026-06-04) — accepted
+
+**Context**: Weak/local models (e.g. an 8B via Ollama) frequently fail to call `rag_search` on interrogative messages, so the memory palace goes unused for exactly the privacy-first, local-model users who most need it.
+
+**Decision**: Add an opt-in `auto_retrieve` path in `AgentRunner`: pre-fetch RAG context for the user's message and inject it as a source-attributed system block before the loop, on the `aonyx serve` surfaces (Telegram / Discord / OpenAI / API). Off by default; `top_k` clamped `1..=10`; minimum message-length gate; best-effort no-op on any failure. The agent remains free to call `read_document` / `find_related` (pre-load, not replace).
+
+**Consequences**:
+- ✅ The palace is used even by models that don't tool-call reliably — directly serves goal G2.
+- ✅ Safe: opt-in, bounded, no-op on error; default behaviour unchanged.
+- ❌ One extra retrieval per served turn when enabled; mitigated by the min-len gate + `top_k` clamp.
+- ❌ Interactive TUI not covered yet (fast-follow).
+
+---
+
+## ADR-007 — Telegram live token streaming via editMessageText (2026-06-04) — accepted
+
+**Context**: The Telegram adapter delivered replies as a single block; the agent loop already streams (`run_streaming` / `TurnEvent`) but it was not bridged to the adapter.
+
+**Decision**: Add `StreamEvent {Status, Delta, Final}` to `aonyx-adapters` with a default `AgentHandler::handle_stream` (aggregate → one Final, so Discord / the OpenAI server stay unchanged), and have the Telegram adapter edit a placeholder message in place as deltas arrive (throttled ≈900 ms, edit-only-when-changed, 4096-char live cap, chunked final).
+
+**Consequences**:
+- ✅ Token-by-token UX on Telegram; other adapters unaffected (default handler).
+- ✅ Tool calls surface as a status line, never raw JSON.
+- ❌ `tokio` becomes a non-optional dep of `aonyx-adapters` (the streaming trait needs the mpsc type). Accepted.
+- ❌ Final reply is plain text for now; CommonMark → MarkdownV2 is a follow-up.
+
+---
+
 *Future decisions append here.*

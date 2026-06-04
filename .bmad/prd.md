@@ -3,7 +3,7 @@
 **Project**: Aonyx Agent
 **Phase**: 2 — Product
 **Date**: 2026-05-28 (delivery status updated 2026-06-02)
-**Status**: ✅ **Released — v0.9.0.** Vagues 1–4 all shipped — including the REST + WebSocket automation API, real end-to-end tool calling, and the Tauri desktop app (see [`CHANGELOG.md`](../CHANGELOG.md) and the Vague 4 docs: [`vague4-brief.md`](vague4-brief.md) · [`vague4-prd.md`](vague4-prd.md) · [`vague4-architecture.md`](vague4-architecture.md)). The sections below are the original V1 plan, annotated with delivery status.
+**Status**: ✅ **Released — v0.9.2.** Vagues 1–4 all shipped — the REST + WebSocket automation API, real end-to-end tool calling, and the Tauri desktop app. **Post-V4 polish (v0.9.1–0.9.2):** Telegram live token streaming, the desktop first-run provider wizard, and `auto_retrieve` (retrieve-then-generate for served deployments) — see [`CHANGELOG.md`](../CHANGELOG.md) and [`decisions.md`](decisions.md) (ADR-006 / ADR-007). Vague 4 docs: [`vague4-brief.md`](vague4-brief.md) · [`vague4-prd.md`](vague4-prd.md) · [`vague4-architecture.md`](vague4-architecture.md). The sections below are the original V1 plan, annotated with delivery status.
 
 ---
 
