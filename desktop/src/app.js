@@ -1,6 +1,11 @@
 // Aonyx Desktop — talks to `aonyx serve api` through Rust-side Tauri
 // commands (no CORS, sandboxed webview). V4.6 streaming chat + V4.7 sessions
-// sidebar and memory-palace search.
+// sidebar and memory-palace search. Desktop v2: golden-layout dockable panels.
+
+import {
+  GoldenLayout,
+  LayoutConfig,
+} from "./vendor/golden-layout/golden-layout.esm.js";
 
 const tauri = window.__TAURI__;
 const invoke = tauri && tauri.core && tauri.core.invoke;
@@ -562,13 +567,14 @@ async function openWizard() {
   $("wzNote").classList.remove("err");
   wzReflect();
   $("settings").classList.add("hidden");
-  $("workspace").style.display = "none";
+  $("glRoot").style.display = "none";
   $("wizard").classList.remove("hidden");
 }
 
 function closeWizard() {
   $("wizard").classList.add("hidden");
-  $("workspace").style.display = "";
+  $("glRoot").style.display = "";
+  relayout();
 }
 
 async function wzSave() {
@@ -652,43 +658,61 @@ $("saveBtn").addEventListener("click", async () => {
   $("settings").classList.add("hidden");
   await connect();
 });
-// ---- updater ----
+// ---- updater (settings panel + sidebar zone above the user widget) ----
 let pendingUpdate = null;
-async function checkUpdate() {
-  if (!invoke) return;
-  const note = $("updateNote");
-  const installBtn = $("installUpdateBtn");
-  installBtn.classList.add("hidden");
+function showUpdateAvailable(u) {
+  pendingUpdate = u;
+  $("updateNote").textContent = `v${u.version} available`;
+  $("installUpdateBtn").classList.remove("hidden");
+  $("sideUpdateNote").textContent = `v${u.version} ready`;
+  $("updateZone").classList.remove("hidden");
+}
+function clearUpdateAvailable(note) {
   pendingUpdate = null;
-  note.textContent = "checking…";
+  $("installUpdateBtn").classList.add("hidden");
+  $("updateZone").classList.add("hidden");
+  if (note) $("updateNote").textContent = note;
+}
+async function checkUpdate(opts = {}) {
+  if (!invoke) return;
+  if (!opts.silent) $("updateNote").textContent = "checking…";
   try {
     const u = await invoke("check_for_update");
-    if (u && u.version) {
-      pendingUpdate = u;
-      note.textContent = `v${u.version} available`;
-      installBtn.classList.remove("hidden");
-    } else {
-      note.textContent = "up to date";
-    }
+    if (u && u.version) showUpdateAvailable(u);
+    else clearUpdateAvailable(opts.silent ? "" : "up to date");
   } catch (e) {
-    note.textContent = "check failed: " + e;
+    if (!opts.silent) $("updateNote").textContent = "check failed: " + e;
   }
 }
 async function installUpdate() {
   if (!invoke || !pendingUpdate) return;
-  const note = $("updateNote");
-  const installBtn = $("installUpdateBtn");
-  installBtn.disabled = true;
-  note.textContent = "downloading & installing… the app will restart";
+  $("installUpdateBtn").disabled = true;
+  $("updateNote").textContent = "downloading & installing… the app will restart";
+  $("sideUpdateNote").textContent = "installing…";
   try {
     await invoke("install_update"); // app re-execs into the new build on success
   } catch (e) {
-    note.textContent = "update failed: " + e;
-    installBtn.disabled = false;
+    $("updateNote").textContent = "update failed: " + e;
+    $("sideUpdateNote").textContent = "failed";
+    $("installUpdateBtn").disabled = false;
   }
 }
-$("updateBtn").addEventListener("click", checkUpdate);
+$("updateBtn").addEventListener("click", () => checkUpdate());
 $("installUpdateBtn").addEventListener("click", installUpdate);
+$("sideInstallBtn").addEventListener("click", installUpdate);
+$("resetLayoutBtn").addEventListener("click", () => {
+  localStorage.removeItem("aonyx.layout");
+  location.reload();
+});
+// User widget — auth wiring lands in Phase 2 (device-code grant via aonyx-account).
+$("userBtn").addEventListener("click", () => {
+  const n = $("userName");
+  const prev = n.textContent;
+  n.textContent = "Bientôt — aonyx-account";
+  setTimeout(() => {
+    n.textContent = prev;
+  }, 1800);
+});
 
 window.addEventListener("beforeunload", () => {
   try {
@@ -711,6 +735,90 @@ input.addEventListener("keydown", (e) => {
   }
 });
 
+// ---- layout: golden-layout dockable panels (Conversations / Chat / Memory) ----
+const DEFAULT_LAYOUT = {
+  settings: {
+    showPopoutIcon: false,
+    showMaximiseIcon: true,
+    showCloseIcon: false,
+    constrainDragToContainer: true,
+    reorderEnabled: true,
+  },
+  dimensions: { borderWidth: 6, headerHeight: 30 },
+  root: {
+    type: "row",
+    content: [
+      { type: "component", componentType: "conversations", title: "Conversations", width: 22 },
+      { type: "component", componentType: "chat", title: "Chat", width: 53 },
+      { type: "component", componentType: "memory", title: "Memory palace", width: 25 },
+    ],
+  },
+};
+let glLayout = null;
+const mountPanel = (id) => (container) => {
+  const el = document.getElementById(id);
+  if (el) {
+    container.element.style.position = "relative";
+    container.element.appendChild(el);
+  }
+};
+function relayout() {
+  if (!glLayout) return;
+  const r = $("glRoot");
+  try {
+    glLayout.setSize(r.clientWidth, r.clientHeight);
+  } catch {}
+}
+function fallbackLayout() {
+  const root = $("glRoot");
+  root.classList.add("gl-fallback");
+  ["panel-conversations", "panel-chat", "panel-memory"].forEach((id) => {
+    const el = document.getElementById(id);
+    if (el) root.appendChild(el);
+  });
+}
+function initLayout() {
+  const root = $("glRoot");
+  try {
+    const layout = new GoldenLayout(root);
+    layout.registerComponentFactoryFunction("conversations", mountPanel("panel-conversations"));
+    layout.registerComponentFactoryFunction("chat", mountPanel("panel-chat"));
+    layout.registerComponentFactoryFunction("memory", mountPanel("panel-memory"));
+    try {
+      layout.resizeWithContainerAutomatically = true;
+    } catch {}
+    glLayout = layout;
+    // Reliable sizing: track the container ourselves (the built-in
+    // auto-resize is flaky in 2.6.0).
+    new ResizeObserver(() => relayout()).observe(root);
+    layout.on("stateChanged", () => {
+      try {
+        localStorage.setItem("aonyx.layout", JSON.stringify(layout.saveLayout()));
+      } catch {}
+    });
+    const raw = localStorage.getItem("aonyx.layout");
+    if (raw) {
+      try {
+        layout.loadLayout(LayoutConfig.fromResolved(JSON.parse(raw)));
+      } catch (e) {
+        console.warn("layout restore failed — using default", e);
+        localStorage.removeItem("aonyx.layout");
+        layout.loadLayout(DEFAULT_LAYOUT);
+      }
+    } else {
+      layout.loadLayout(DEFAULT_LAYOUT);
+    }
+    relayout();
+  } catch (e) {
+    console.error("golden-layout init failed — static fallback", e);
+    fallbackLayout();
+  }
+}
+window.addEventListener("resize", relayout);
+
+// ---- boot ----
+initLayout();
+checkUpdate({ silent: true }); // reveal the sidebar update zone only if one exists
 // First run: if the local agent can't be reached (no provider configured
 // yet), open the provider wizard instead of leaving a bare error.
 connect().then((ok) => {

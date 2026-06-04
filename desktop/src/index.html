@@ -10,6 +10,8 @@
       rel="stylesheet"
       href="https://fonts.googleapis.com/css2?family=Saira:wght@400;500;600;700&family=Saira+Condensed:wght@600;700&display=swap"
     />
+    <link rel="stylesheet" href="vendor/golden-layout/goldenlayout-base.css" />
+    <link rel="stylesheet" href="vendor/golden-layout/goldenlayout-dark-theme.css" />
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
@@ -40,6 +42,7 @@
       </label>
       <button id="saveBtn" type="button">Connect</button>
       <button id="cfgProviderBtn" class="ghost" type="button">Configure provider…</button>
+      <button id="resetLayoutBtn" class="ghost" type="button">Reset layout</button>
       <div class="update-row" style="margin-top:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
         <button id="updateBtn" class="ghost" type="button">Check for updates</button>
         <button id="installUpdateBtn" class="hidden" type="button">Install &amp; restart</button>
@@ -113,44 +116,62 @@
       </div>
     </section>
 
-    <div class="workspace" id="workspace">
-      <aside class="sidebar">
-        <div class="side-head">
-          <span>Sessions</span>
-          <button id="newBtn" class="ghost sm" type="button">New</button>
+    <div id="glRoot" class="gl-root"></div>
+
+    <!-- Panel contents — moved into golden-layout components at runtime so the
+         panels become draggable/dockable/resizable. All ids are preserved, so
+         every existing wiring (sessions, chat, memory, updater) keeps working. -->
+    <div id="gl-templates" hidden>
+      <div id="panel-conversations" class="panel panel-conv">
+        <div class="side-head side-head-actions">
+          <button id="newBtn" class="ghost sm" type="button" data-i18n="new">+ New</button>
         </div>
         <ul id="sessions" class="sessions"></ul>
-
-        <div class="side-head"><span>Memory palace</span></div>
-        <div class="search">
-          <input id="memq" type="text" spellcheck="false" placeholder="search the palace…  ⏎" />
+        <div class="conv-footer">
+          <div id="updateZone" class="update-zone hidden">
+            <span class="upd-dot"></span>
+            <span id="sideUpdateNote" class="upd-note"></span>
+            <button id="sideInstallBtn" class="sm" type="button" data-i18n="update">Update</button>
+          </div>
+          <button id="userBtn" class="user-widget" type="button" title="aonyx-account">
+            <span class="user-avatar" id="userAvatar">⬡</span>
+            <span class="user-meta">
+              <span id="userName" data-i18n="signin">Sign in</span>
+              <span id="userTier" class="user-tier muted"></span>
+            </span>
+          </button>
         </div>
-        <ul id="hits" class="hits"></ul>
-      </aside>
+      </div>
 
-      <section class="chatcol">
+      <div id="panel-chat" class="panel panel-chat">
         <main id="log" class="log">
           <div class="empty" id="empty">
             <p class="empty-title">Aonyx Agent</p>
-            <p class="empty-sub">
+            <p class="empty-sub" data-i18n="empty_sub">
               Point me at a running <code>aonyx serve api</code> in Settings,
               then ask away — I'll call my tools (built-in, MCP, plugin) to
               answer, and stream the reply.
             </p>
           </div>
         </main>
-
         <footer class="composer">
           <textarea
             id="input"
             rows="1"
             placeholder="Message Aonyx…  (Enter to send · Shift+Enter for a newline)"
           ></textarea>
-          <button id="send" type="button">Send</button>
+          <button id="send" type="button" data-i18n="send">Send</button>
         </footer>
-      </section>
+      </div>
+
+      <div id="panel-memory" class="panel panel-memory">
+        <div class="search">
+          <input id="memq" type="text" spellcheck="false" placeholder="search the palace…  ⏎" />
+        </div>
+        <ul id="hits" class="hits"></ul>
+      </div>
     </div>
 
-    <script src="app.js"></script>
+    <script type="module" src="app.js"></script>
   </body>
 </html>
