@@ -558,6 +558,44 @@ $("saveBtn").addEventListener("click", async () => {
   $("settings").classList.add("hidden");
   await connect();
 });
+// ---- updater ----
+let pendingUpdate = null;
+async function checkUpdate() {
+  if (!invoke) return;
+  const note = $("updateNote");
+  const installBtn = $("installUpdateBtn");
+  installBtn.classList.add("hidden");
+  pendingUpdate = null;
+  note.textContent = "checking…";
+  try {
+    const u = await invoke("check_for_update");
+    if (u && u.version) {
+      pendingUpdate = u;
+      note.textContent = `v${u.version} available`;
+      installBtn.classList.remove("hidden");
+    } else {
+      note.textContent = "up to date";
+    }
+  } catch (e) {
+    note.textContent = "check failed: " + e;
+  }
+}
+async function installUpdate() {
+  if (!invoke || !pendingUpdate) return;
+  const note = $("updateNote");
+  const installBtn = $("installUpdateBtn");
+  installBtn.disabled = true;
+  note.textContent = "downloading & installing… the app will restart";
+  try {
+    await invoke("install_update"); // app re-execs into the new build on success
+  } catch (e) {
+    note.textContent = "update failed: " + e;
+    installBtn.disabled = false;
+  }
+}
+$("updateBtn").addEventListener("click", checkUpdate);
+$("installUpdateBtn").addEventListener("click", installUpdate);
+
 window.addEventListener("beforeunload", () => {
   try {
     if (store.local && invoke) invoke("stop_local");

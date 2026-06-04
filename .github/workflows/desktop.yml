@@ -10,6 +10,9 @@ on:
       tag:
         description: "Optional release tag to attach the installer to (e.g. v0.9.0). Must already exist."
         required: false
+      updater_base_url:
+        description: "Public base URL hosting the installer + latest.json (the updater endpoint dir). Default: https://cdn.aonyx.fr/desktop"
+        required: false
 
 env:
   CARGO_TERM_COLOR: always
@@ -35,6 +38,35 @@ jobs:
       - name: Build the bundles
         working-directory: desktop
         run: cargo tauri build
+        env:
+          # Signs the updater artifacts (*.sig) verified against the pubkey in
+          # tauri.conf.json. Store the minisign key (desktop/.tauri-signing.key)
+          # + its password as repo secrets.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+
+      - name: Assemble updater manifest (latest.json)
+        shell: pwsh
+        working-directory: desktop/src-tauri/target/release/bundle
+        run: |
+          $conf = Get-Content "$env:GITHUB_WORKSPACE/desktop/src-tauri/tauri.conf.json" -Raw | ConvertFrom-Json
+          $version = $conf.version
+          $base = "${{ github.event.inputs.updater_base_url }}"
+          if ([string]::IsNullOrWhiteSpace($base)) { $base = "https://cdn.aonyx.fr/desktop" }
+          $base = $base.TrimEnd('/')
+          $exe = Get-ChildItem -Path nsis -Filter *-setup.exe | Select-Object -First 1
+          if (-not $exe) { throw "no NSIS *-setup.exe produced — is createUpdaterArtifacts on?" }
+          if (-not (Test-Path "$($exe.FullName).sig")) { throw "missing $($exe.Name).sig — was TAURI_SIGNING_PRIVATE_KEY set?" }
+          $sig = (Get-Content "$($exe.FullName).sig" -Raw).Trim()
+          $manifest = [ordered]@{
+            version   = $version
+            pub_date  = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+            platforms = [ordered]@{
+              "windows-x86_64" = [ordered]@{ signature = $sig; url = "$base/$($exe.Name)" }
+            }
+          }
+          $manifest | ConvertTo-Json -Depth 6 | Out-File -FilePath latest.json -Encoding utf8
+          Write-Host "=== latest.json ==="; Get-Content latest.json
 
       - uses: actions/upload-artifact@v4
         with:
@@ -42,6 +74,8 @@ jobs:
           path: |
             desktop/src-tauri/target/release/bundle/msi/*.msi
             desktop/src-tauri/target/release/bundle/nsis/*.exe
+            desktop/src-tauri/target/release/bundle/nsis/*.exe.sig
+            desktop/src-tauri/target/release/bundle/latest.json
           if-no-files-found: error
           retention-days: 14
 
@@ -53,5 +87,7 @@ jobs:
           files: |
             desktop/src-tauri/target/release/bundle/msi/*.msi
             desktop/src-tauri/target/release/bundle/nsis/*.exe
+            desktop/src-tauri/target/release/bundle/nsis/*.exe.sig
+            desktop/src-tauri/target/release/bundle/latest.json
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

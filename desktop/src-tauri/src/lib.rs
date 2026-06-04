@@ -350,12 +350,52 @@ fn save_provider_config(cfg: Value) -> Result<(), String> {
     std::fs::write(&path, doc.to_string()).map_err(|e| e.to_string())
 }
 
+/// Check the configured update endpoint. Returns the new version's metadata
+/// when an update is available, or `null` when the app is already current.
+/// Runs entirely Rust-side (the webview only calls this command), so no
+/// updater JS-capability is needed.
+#[tauri::command]
+async fn check_for_update(app: tauri::AppHandle) -> Result<Option<Value>, String> {
+    use tauri_plugin_updater::UpdaterExt;
+    let updater = app.updater().map_err(|e| e.to_string())?;
+    match updater.check().await.map_err(|e| e.to_string())? {
+        Some(u) => Ok(Some(serde_json::json!({
+            "version": u.version,
+            "currentVersion": u.current_version,
+            "notes": u.body,
+            "date": u.date.map(|d| d.to_string()),
+        }))),
+        None => Ok(None),
+    }
+}
+
+/// Download + install the pending update (verifying its minisign signature
+/// against the bundled pubkey), then relaunch. Errors when nothing is
+/// available.
+#[tauri::command]
+async fn install_update(app: tauri::AppHandle) -> Result<(), String> {
+    use tauri_plugin_updater::UpdaterExt;
+    let updater = app.updater().map_err(|e| e.to_string())?;
+    let update = updater
+        .check()
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "no update available".to_string())?;
+    update
+        .download_and_install(|_chunk, _total| {}, || {})
+        .await
+        .map_err(|e| e.to_string())?;
+    // `restart()` diverges (`-> !`): the process re-execs into the new build.
+    app.restart();
+}
+
 /// Run the desktop application.
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     use tauri::Manager;
     tauri::Builder::default()
         .manage(LocalAgent::default())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             api_info,
             api_create_session,
@@ -367,7 +407,9 @@ pub fn run() {
             start_local,
             stop_local,
             read_provider_config,
-            save_provider_config
+            save_provider_config,
+            check_for_update,
+            install_update
         ])
         .on_window_event(|window, event| {
             // Kill the managed local agent when the window closes so it never
