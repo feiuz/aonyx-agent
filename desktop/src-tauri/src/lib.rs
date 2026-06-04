@@ -200,10 +200,10 @@ async fn api_memory_search(
 
 /// List the models a provider actually exposes — a **live** query, not a
 /// hardcoded list: ollama `/api/tags`, OpenAI-compatible `/v1/models`,
-/// OpenRouter's public catalogue, Anthropic `/v1/models`. Returns the marker
-/// `API_KEY_REQUIRED` when the provider needs a key and none was supplied, so
-/// the UI can prompt for it. Claude Code has no endpoint (drives the `claude`
-/// CLI), so it asks for a manual model.
+/// OpenRouter's catalogue, Anthropic `/v1/models`. Claude Code reuses its own
+/// stored OAuth session token (`~/.claude/.credentials.json`) against the same
+/// Anthropic Models API — verified to return the real list. Returns the marker
+/// `API_KEY_REQUIRED` when a key-based provider has no key, so the UI prompts.
 #[tauri::command]
 async fn list_models(provider: String, base: String, key: String) -> Result<Vec<String>, String> {
     let client = reqwest::Client::new();
@@ -242,12 +242,30 @@ async fn list_models(provider: String, base: String, key: String) -> Result<Vec<
                 return Err("API_KEY_REQUIRED".to_string());
             }
             client
-                .get("https://api.anthropic.com/v1/models")
+                .get("https://api.anthropic.com/v1/models?limit=1000")
                 .header("x-api-key", key)
                 .header("anthropic-version", "2023-06-01")
         }
         "claude-code" => {
-            return Err("Claude Code has no models endpoint — type the model (e.g. sonnet, opus).".to_string())
+            // Real live fetch: reuse Claude Code's own OAuth session token
+            // (~/.claude/.credentials.json) against the Anthropic Models API,
+            // else fall back to ANTHROPIC_API_KEY. No hardcoded list.
+            if let Some(token) = read_claude_code_token() {
+                client
+                    .get("https://api.anthropic.com/v1/models?limit=1000")
+                    .header("authorization", format!("Bearer {token}"))
+                    .header("anthropic-version", "2023-06-01")
+            } else if let Ok(api_key) = std::env::var("ANTHROPIC_API_KEY") {
+                client
+                    .get("https://api.anthropic.com/v1/models?limit=1000")
+                    .header("x-api-key", api_key)
+                    .header("anthropic-version", "2023-06-01")
+            } else {
+                return Err(
+                    "Claude Code non connecté — lance `claude` puis /login (ou définis ANTHROPIC_API_KEY)."
+                        .to_string(),
+                );
+            }
         }
         other => return Err(format!("unknown provider: {other}")),
     };
@@ -282,6 +300,22 @@ async fn list_models(provider: String, base: String, key: String) -> Result<Vec<
     models.sort();
     models.dedup();
     Ok(models)
+}
+
+/// Read Claude Code's stored OAuth access token (`~/.claude/.credentials.json`,
+/// key `claudeAiOauth.accessToken`) so models can be listed from the Anthropic
+/// Models API using the user's existing Claude Code session — no separate key.
+fn read_claude_code_token() -> Option<String> {
+    let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"))?;
+    let path = std::path::Path::new(&home)
+        .join(".claude")
+        .join(".credentials.json");
+    let data = std::fs::read_to_string(path).ok()?;
+    let json: Value = serde_json::from_str(&data).ok()?;
+    json.get("claudeAiOauth")?
+        .get("accessToken")?
+        .as_str()
+        .map(String::from)
 }
 
 /// Holds the managed local `aonyx serve api` child, if one is running.

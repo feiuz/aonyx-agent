@@ -36,4 +36,4 @@ export const KnowledgeGraph = () => <Stub icon={Database} title="Knowledge Graph
 export const Users = () => <Stub icon={UsersIcon} title="Utilisateurs" />;
 export const Permissions = () => <Stub icon={Shield} title="Permissions" />;
 export const Mcp = () => <Stub icon={Download} title="MCP" note="Serveurs MCP — à venir." />;
-export const Settings = () => <Stub icon={SettingsIcon} title="Paramètres" note="Provider / LLM / RAG / Embeddings — P2." />;
+export { default as Settings } from "./Settings";
