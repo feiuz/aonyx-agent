@@ -87,6 +87,11 @@ const fr = {
   "auth.modal.tauriOnly": "Connexion disponible uniquement dans l'app (Tauri).",
   "chat.untitled": "(sans titre)",
   "projects.default": "(défaut)",
+  "kg.nodes": "entités",
+  "kg.edges": "relations",
+  "kg.empty": "Graphe vide — ingère des documents pour le peupler.",
+  "mcp.tools": "outils",
+  "mcp.none": "Aucun outil enregistré.",
 };
 
 const en = {
@@ -177,6 +182,11 @@ const en = {
   "auth.modal.tauriOnly": "Sign-in is only available in the app (Tauri).",
   "chat.untitled": "(untitled)",
   "projects.default": "(default)",
+  "kg.nodes": "entities",
+  "kg.edges": "relations",
+  "kg.empty": "Empty graph — ingest documents to populate it.",
+  "mcp.tools": "tools",
+  "mcp.none": "No tools registered.",
 };
 
 export const DICTS = { fr, en };

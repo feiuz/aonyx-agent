@@ -46,6 +46,9 @@ export const listSessions = () => invoke("api_list_sessions", withArgs({ project
 export const getSession = (id) => invoke("api_get_session", withArgs({ session: id }));
 export const createSession = () => invoke("api_create_session", withArgs({ project: null }));
 export const memorySearch = (q, k = 8) => invoke("api_memory_search", withArgs({ q, k }));
+export const kgEntities = (limit = 300) => invoke("api_kg_entities", withArgs({ limit }));
+export const kgRelations = (limit = 800) => invoke("api_kg_relations", withArgs({ limit }));
+export const tools = () => invoke("api_tools", withArgs());
 
 /** Stream a turn. onFrame gets {type:"delta"|"tool_start"|"done"|"error", …}. */
 export async function streamMessage(session, content, onFrame) {

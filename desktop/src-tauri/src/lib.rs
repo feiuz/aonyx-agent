@@ -198,6 +198,38 @@ async fn api_memory_search(
     .await
 }
 
+/// `GET /v1/memory/kg/entities` — knowledge-graph entities (nodes).
+#[tauri::command]
+async fn api_kg_entities(base: String, token: String, limit: Option<u32>) -> Result<Value, String> {
+    let l = limit.unwrap_or(200);
+    send(
+        reqwest::Method::GET,
+        join(&base, &format!("/v1/memory/kg/entities?limit={l}")),
+        &token,
+        None,
+    )
+    .await
+}
+
+/// `GET /v1/memory/kg/relations` — knowledge-graph relations (edges).
+#[tauri::command]
+async fn api_kg_relations(base: String, token: String, limit: Option<u32>) -> Result<Value, String> {
+    let l = limit.unwrap_or(500);
+    send(
+        reqwest::Method::GET,
+        join(&base, &format!("/v1/memory/kg/relations?limit={l}")),
+        &token,
+        None,
+    )
+    .await
+}
+
+/// `GET /v1/tools` — registered tools (built-in, MCP, plugin).
+#[tauri::command]
+async fn api_tools(base: String, token: String) -> Result<Value, String> {
+    send(reqwest::Method::GET, join(&base, "/v1/tools"), &token, None).await
+}
+
 /// List the models a provider actually exposes — a **live** query, not a
 /// hardcoded list: ollama `/api/tags`, OpenAI-compatible `/v1/models`,
 /// OpenRouter's catalogue, Anthropic `/v1/models`. Claude Code reuses its own
@@ -654,6 +686,9 @@ pub fn run() {
             api_list_sessions,
             api_get_session,
             api_memory_search,
+            api_kg_entities,
+            api_kg_relations,
+            api_tools,
             start_local,
             stop_local,
             read_provider_config,

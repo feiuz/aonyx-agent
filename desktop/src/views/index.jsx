@@ -1,9 +1,9 @@
-import { LayoutDashboard, Users as UsersIcon, Shield, Download } from "lucide-react";
+import { Users as UsersIcon, Shield } from "lucide-react";
 import PageHeader from "../components/ui/PageHeader";
 import EmptyState from "../components/ui/EmptyState";
 import { useI18n } from "../context/LanguageContext";
 
-// Shared placeholder for sections not yet built out.
+// Shared placeholder for the remaining admin sections (pending OQ-c).
 function Stub({ icon, titleKey, noteKey }) {
   const { t } = useI18n();
   return (
@@ -14,16 +14,14 @@ function Stub({ icon, titleKey, noteKey }) {
   );
 }
 
-// Real views (their own files)
+export { default as Dashboard } from "./Dashboard";
 export { default as Chat } from "./Chat";
 export { default as Settings } from "./Settings";
 export { default as MemoryHealth } from "./MemoryHealth";
 export { default as KnowledgeGraph } from "./KnowledgeGraph";
 export { default as Projets } from "./Projets";
 export { default as Stats } from "./Stats";
+export { default as Mcp } from "./Mcp";
 
-// Placeholders
-export const Dashboard = () => <Stub icon={LayoutDashboard} titleKey="nav.dashboard" noteKey="stub.dashboard" />;
 export const Users = () => <Stub icon={UsersIcon} titleKey="nav.users" noteKey="stub.users" />;
 export const Permissions = () => <Stub icon={Shield} titleKey="nav.permissions" noteKey="stub.permissions" />;
-export const Mcp = () => <Stub icon={Download} titleKey="nav.mcp" noteKey="stub.mcp" />;
