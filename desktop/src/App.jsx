@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ThemeProvider } from "./context/ThemeContext";
 import { AuthProvider } from "./context/AuthContext";
 import { AgentProvider } from "./context/AgentContext";
+import { LanguageProvider } from "./context/LanguageContext";
 import AppShell from "./layout/AppShell";
 import {
   Dashboard,
@@ -37,7 +38,8 @@ export default function App() {
 
   return (
     <QueryClientProvider client={queryClient}>
-      <ThemeProvider>
+      <LanguageProvider>
+        <ThemeProvider>
         <AuthProvider>
           <AgentProvider>
             <HashRouter>
@@ -59,7 +61,8 @@ export default function App() {
             </HashRouter>
           </AgentProvider>
         </AuthProvider>
-      </ThemeProvider>
+        </ThemeProvider>
+      </LanguageProvider>
     </QueryClientProvider>
   );
 }

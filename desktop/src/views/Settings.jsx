@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Settings as SettingsIcon, RefreshCw } from "lucide-react";
 import PageHeader from "../components/ui/PageHeader";
 import { useAgent } from "../context/AgentContext";
+import { useI18n } from "../context/LanguageContext";
 import { readProviderConfig, saveProviderConfig, listModels } from "../services/configService";
 
 const PROVIDERS = [
@@ -44,6 +45,7 @@ function Field({ label, children }) {
 
 export default function Settings() {
   const { connect } = useAgent();
+  const { t } = useI18n();
 
   const [provider, setProvider] = useState("anthropic");
   const [model, setModel] = useState("");
@@ -147,20 +149,20 @@ export default function Settings() {
 
   return (
     <div className="flex flex-col h-full">
-      <PageHeader icon={SettingsIcon} title="Paramètres" />
+      <PageHeader icon={SettingsIcon} title={t("nav.settings")} />
       <div className="flex-1 overflow-y-auto p-6">
         <div className="max-w-2xl space-y-8">
           {/* Provider */}
           <section className="space-y-4">
-            <h2 className="font-cond uppercase tracking-wide text-sm text-aonyx-500">Fournisseur LLM</h2>
-            <Field label="Fournisseur">
+            <h2 className="font-cond uppercase tracking-wide text-sm text-aonyx-500">{t("settings.providerSection")}</h2>
+            <Field label={t("settings.provider")}>
               <select value={provider} onChange={(e) => onProviderChange(e.target.value)} className={inputCls}>
                 {PROVIDERS.map((p) => (
                   <option key={p.id} value={p.id}>{p.label}</option>
                 ))}
               </select>
             </Field>
-            <Field label="Modèle">
+            <Field label={t("settings.model")}>
               <div className="flex gap-2">
                 <select value={model} onChange={(e) => setModel(e.target.value)} className={`${inputCls} flex-1`}>
                   {models.map((m) => (
@@ -211,7 +213,7 @@ export default function Settings() {
 
           {/* Connection */}
           <section className="space-y-4">
-            <h2 className="font-cond uppercase tracking-wide text-sm text-aonyx-500">Connexion</h2>
+            <h2 className="font-cond uppercase tracking-wide text-sm text-aonyx-500">{t("settings.connectionSection")}</h2>
             <label className="flex items-center gap-2.5 text-sm text-aonyx-700 dark:text-aonyx-200">
               <input type="checkbox" checked={local} onChange={(e) => setLocal(e.target.checked)} className="accent-primary-600" />
               Agent local embarqué (lance <code className="font-mono text-xs text-aonyx-500">aonyx serve api</code>)
@@ -226,7 +228,7 @@ export default function Settings() {
 
           <div className="flex items-center gap-3 pb-4">
             <button onClick={save} disabled={saving} className="px-4 py-2 rounded-lg bg-primary-600 hover:bg-primary-700 text-white font-medium disabled:opacity-50">
-              Enregistrer &amp; connecter
+              {t("settings.save")}
             </button>
             {msg && <span className="text-sm text-aonyx-500">{msg}</span>}
           </div>

@@ -1,13 +1,15 @@
 import { LayoutDashboard, Users as UsersIcon, Shield, Download } from "lucide-react";
 import PageHeader from "../components/ui/PageHeader";
 import EmptyState from "../components/ui/EmptyState";
+import { useI18n } from "../context/LanguageContext";
 
 // Shared placeholder for sections not yet built out.
-function Stub({ icon, title, note }) {
+function Stub({ icon, titleKey, noteKey }) {
+  const { t } = useI18n();
   return (
     <div className="flex flex-col h-full">
-      <PageHeader icon={icon} title={title} />
-      <EmptyState icon={icon} note={note || "Section en construction."} />
+      <PageHeader icon={icon} title={t(titleKey)} />
+      <EmptyState icon={icon} note={t(noteKey)} />
     </div>
   );
 }
@@ -21,11 +23,7 @@ export { default as Projets } from "./Projets";
 export { default as Stats } from "./Stats";
 
 // Placeholders
-export const Dashboard = () => <Stub icon={LayoutDashboard} title="Dashboard" note="Vue d'ensemble — à venir." />;
-export const Users = () => (
-  <Stub icon={UsersIcon} title="Utilisateurs" note="Multi-utilisateurs — réservé à aonyx-account (à confirmer, OQ-c)." />
-);
-export const Permissions = () => (
-  <Stub icon={Shield} title="Permissions" note="Réservé à aonyx-account (à confirmer, OQ-c)." />
-);
-export const Mcp = () => <Stub icon={Download} title="MCP" note="Gestion des serveurs MCP — à venir." />;
+export const Dashboard = () => <Stub icon={LayoutDashboard} titleKey="nav.dashboard" noteKey="stub.dashboard" />;
+export const Users = () => <Stub icon={UsersIcon} titleKey="nav.users" noteKey="stub.users" />;
+export const Permissions = () => <Stub icon={Shield} titleKey="nav.permissions" noteKey="stub.permissions" />;
+export const Mcp = () => <Stub icon={Download} titleKey="nav.mcp" noteKey="stub.mcp" />;

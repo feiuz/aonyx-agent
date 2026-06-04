@@ -2,10 +2,12 @@ import { useState } from "react";
 import { Activity, Search } from "lucide-react";
 import PageHeader from "../components/ui/PageHeader";
 import { useAgent } from "../context/AgentContext";
+import { useI18n } from "../context/LanguageContext";
 import * as agent from "../services/agentService";
 
 export default function MemoryHealth() {
   const { status } = useAgent();
+  const { t } = useI18n();
   const [q, setQ] = useState("");
   const [hits, setHits] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -28,11 +30,7 @@ export default function MemoryHealth() {
 
   return (
     <div className="flex flex-col h-full">
-      <PageHeader
-        icon={Activity}
-        title="Memory Health"
-        subtitle="Recherche hybride dans le palais de mémoire (BM25 + vecteurs · RRF)"
-      />
+      <PageHeader icon={Activity} title={t("nav.memory")} subtitle={t("memory.subtitle")} />
       <div className="flex-1 overflow-y-auto p-6">
         <div className="max-w-3xl space-y-4">
           <div className="flex gap-2">
@@ -41,7 +39,7 @@ export default function MemoryHealth() {
               onChange={(e) => setQ(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && search()}
               disabled={status !== "ok"}
-              placeholder={status === "ok" ? "Cherche dans la mémoire…" : "Connecte-toi (Paramètres) pour chercher"}
+              placeholder={status === "ok" ? t("memory.search") : t("memory.connect")}
               className="flex-1 rounded-lg px-3 py-2 text-sm bg-white dark:bg-aonyx-950 border border-aonyx-300 dark:border-aonyx-700 focus:outline-none focus:border-primary-500 select-text disabled:opacity-50"
             />
             <button
@@ -57,9 +55,9 @@ export default function MemoryHealth() {
           {err && <p className="text-sm text-red-500 break-words">{err}</p>}
 
           {hits === null ? (
-            <p className="text-sm text-aonyx-500">Lance une recherche pour voir les passages les plus proches.</p>
+            <p className="text-sm text-aonyx-500">{t("memory.hint")}</p>
           ) : hits.length === 0 ? (
-            <p className="text-sm text-aonyx-500">{loading ? "recherche…" : "Aucun résultat."}</p>
+            <p className="text-sm text-aonyx-500">{loading ? t("memory.searching") : t("memory.none")}</p>
           ) : (
             <ul className="space-y-2">
               {hits.map((h, i) => (

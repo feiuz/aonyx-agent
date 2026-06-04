@@ -1,11 +1,13 @@
 import Markdown from "./Markdown";
+import { useI18n } from "../../context/LanguageContext";
 
 export default function Message({ role, content, tools, error, streaming }) {
+  const { t } = useI18n();
   const isUser = role === "user";
   return (
     <div className={`flex flex-col gap-1 max-w-[80%] ${isUser ? "self-end items-end" : "self-start"}`}>
       <span className="text-[11px] font-cond uppercase tracking-wider text-aonyx-500">
-        {isUser ? "vous" : "aonyx"}
+        {isUser ? t("chat.you") : "aonyx"}
       </span>
       <div
         className={`rounded-lg px-3.5 py-2.5 border select-text break-words ${

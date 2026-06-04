@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { MessageSquare, Plus, Send } from "lucide-react";
 import { useAgent } from "../context/AgentContext";
+import { useI18n } from "../context/LanguageContext";
 import * as agent from "../services/agentService";
 import Message from "../components/agent/Message";
 
@@ -16,6 +17,7 @@ export default function Chat() {
     ensureSession,
     createSession,
   } = useAgent();
+  const { t } = useI18n();
 
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
@@ -28,7 +30,6 @@ export default function Chat() {
     if (el) el.scrollTop = el.scrollHeight;
   }, [messages]);
 
-  // Load transcript when the active session changes.
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -145,19 +146,19 @@ export default function Chat() {
       {/* conversations sub-panel */}
       <aside className="w-60 flex-shrink-0 flex flex-col border-r border-aonyx-200 dark:border-aonyx-800">
         <div className="flex items-center justify-between h-14 px-3 flex-shrink-0 border-b border-aonyx-200 dark:border-aonyx-800">
-          <span className="text-[11px] font-cond uppercase tracking-wider text-aonyx-500">Conversations</span>
+          <span className="text-[11px] font-cond uppercase tracking-wider text-aonyx-500">
+            {t("chat.conversations")}
+          </span>
           <button
             onClick={onNew}
             className="flex items-center gap-1 text-xs px-2 py-1 rounded-md border border-aonyx-300 dark:border-aonyx-700 hover:bg-aonyx-200/60 dark:hover:bg-aonyx-900/50"
           >
-            <Plus className="w-3.5 h-3.5" /> New
+            <Plus className="w-3.5 h-3.5" /> {t("chat.new")}
           </button>
         </div>
         <ul className="flex-1 overflow-y-auto p-2 space-y-0.5">
           {sessions.length === 0 && (
-            <li className="text-xs text-aonyx-500 px-2 py-1.5">
-              {status === "ok" ? "Aucune conversation." : "—"}
-            </li>
+            <li className="text-xs text-aonyx-500 px-2 py-1.5">{status === "ok" ? t("chat.none") : "—"}</li>
           )}
           {sessions.map((s) => (
             <li key={s.id}>
@@ -171,7 +172,7 @@ export default function Chat() {
               >
                 <span className="block truncate text-sm">{s.title || "(sans titre)"}</span>
                 <span className="block text-[11px] font-mono text-aonyx-500">
-                  {s.turns} tour{s.turns === 1 ? "" : "s"}
+                  {s.turns} {s.turns === 1 ? t("chat.turn") : t("chat.turns")}
                 </span>
               </button>
             </li>
@@ -184,7 +185,7 @@ export default function Chat() {
         <header className="flex items-center justify-between h-14 px-5 flex-shrink-0 border-b border-aonyx-200 dark:border-aonyx-800">
           <div className="flex items-center gap-2.5">
             <MessageSquare className="w-5 h-5 text-aonyx-500" strokeWidth={1.75} />
-            <h1 className="font-cond uppercase tracking-wide text-lg text-aonyx-900 dark:text-aonyx-100">Chat</h1>
+            <h1 className="font-cond uppercase tracking-wide text-lg text-aonyx-900 dark:text-aonyx-100">{t("nav.chat")}</h1>
           </div>
           <div className="flex items-center gap-2 text-xs font-mono text-aonyx-500" title={error || ""}>
             <span
@@ -195,8 +196,8 @@ export default function Chat() {
             {status === "ok" && info
               ? `${info.provider} · ${info.model}`
               : status === "connecting"
-                ? "connexion…"
-                : "hors ligne"}
+                ? t("status.connecting")
+                : t("status.offline")}
           </div>
         </header>
 
@@ -207,9 +208,7 @@ export default function Chat() {
                 Aonyx Agent
               </h2>
               <p className="mt-2 text-sm">
-                {status === "ok"
-                  ? "Pose ta question — je stream la réponse et j'appelle mes outils."
-                  : error || "Configure le provider dans Paramètres."}
+                {status === "ok" ? t("chat.empty.ready") : error || t("chat.empty.configure")}
               </p>
             </div>
           ) : (
@@ -237,14 +236,14 @@ export default function Chat() {
             }}
             onKeyDown={onKey}
             disabled={status !== "ok"}
-            placeholder="Message Aonyx…  (Entrée pour envoyer · Maj+Entrée = nouvelle ligne)"
+            placeholder={t("chat.placeholder")}
             className="flex-1 resize-none max-h-40 rounded-lg px-3 py-2.5 text-sm select-text bg-white dark:bg-aonyx-950 border border-aonyx-300 dark:border-aonyx-700 focus:outline-none focus:border-primary-500 disabled:opacity-50"
           />
           <button
             onClick={send}
             disabled={busy || status !== "ok" || !input.trim()}
             className="flex items-center justify-center px-4 rounded-lg bg-primary-600 hover:bg-primary-700 text-white disabled:opacity-40 disabled:cursor-not-allowed"
-            aria-label="Envoyer"
+            aria-label={t("chat.new")}
           >
             <Send className="w-4 h-4" />
           </button>

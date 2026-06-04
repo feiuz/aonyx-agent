@@ -1,9 +1,11 @@
 import { FolderOpen } from "lucide-react";
 import PageHeader from "../components/ui/PageHeader";
 import { useAgent } from "../context/AgentContext";
+import { useI18n } from "../context/LanguageContext";
 
 export default function Projets() {
   const { sessions, status } = useAgent();
+  const { t } = useI18n();
 
   const counts = {};
   for (const s of sessions) {
@@ -14,12 +16,12 @@ export default function Projets() {
 
   return (
     <div className="flex flex-col h-full">
-      <PageHeader icon={FolderOpen} title="Projets" subtitle="Projets déduits des conversations" />
+      <PageHeader icon={FolderOpen} title={t("nav.projects")} subtitle={t("projects.subtitle")} />
       <div className="flex-1 overflow-y-auto p-6">
         {status !== "ok" ? (
-          <p className="text-sm text-aonyx-500">Connecte-toi (Paramètres).</p>
+          <p className="text-sm text-aonyx-500">{t("common.connect")}</p>
         ) : projects.length === 0 ? (
-          <p className="text-sm text-aonyx-500">Aucun projet — démarre une conversation dans Chat.</p>
+          <p className="text-sm text-aonyx-500">{t("projects.none")}</p>
         ) : (
           <ul className="max-w-2xl space-y-2">
             {projects.map(([p, n]) => (
@@ -32,7 +34,7 @@ export default function Projets() {
                   {p}
                 </span>
                 <span className="text-xs font-mono text-aonyx-500">
-                  {n} conv.
+                  {n} {t("projects.count")}
                 </span>
               </li>
             ))}
