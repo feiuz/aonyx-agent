@@ -7,7 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-_(nothing yet)_
+## [0.10.0] — 2026-06-04 — in-app document RAG (local embeddings + hybrid search)
+
+A self-contained, offline-capable RAG in the memory palace: local embeddings, a
+vector store, and RRF fusion with the existing BM25 — plus an ingest CLI and a
+built-in `rag_search` tool. Backend and embeddings are chosen at setup (local
+OSS vs provider). Clean-room (ADR-008/009).
+
+### Added
+- **Local embeddings** — `Embedder` trait + fastembed-rs (`rag` feature): ONNX,
+  multilingual, downloaded on first use; provider embeddings (OpenAI/Ollama)
+  opt-in. (ADR-005, ADR-009)
+- **Vector store + hybrid search** — `chunk_vectors` table, cosine top-k, and
+  **RRF (k=60)** fusion of BM25 + vectors in `Palace::hybrid_search`.
+- **`rag_search` built-in tool** — palace-backed retrieval returning
+  `{project, source, content, score}`; `auto_retrieve` now works fully local and
+  zero-server, with the same contract as the external MCP. (ADR-008)
+- **`aonyx ingest <path>`** — chunk + embed + index documents into the palace.
+- **Setup** — `[rag] backend` (local | external) + `embeddings` (local | provider)
+  prompts and config fields.
+
+### Notes
+- The desktop app (`desktop/`, unpublished) was rebuilt on a React + Vite +
+  Tailwind shell (movable nav rail, chat, settings, memory, knowledge graph,
+  FR/EN i18n, aonyx-account auth) — ships on its own cadence via the Desktop
+  workflow.
 
 ## [0.9.2] — 2026-06-04 — auto_retrieve (retrieve-then-generate)
 
