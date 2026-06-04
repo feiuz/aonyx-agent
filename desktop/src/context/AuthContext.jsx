@@ -23,6 +23,9 @@ export function AuthProvider({ children }) {
   const pollRef = useRef(null);
 
   const isAuthenticated = !!user;
+  // Licence gating primitive (ADR-013). FREE by default; PREMIUM/ENTERPRISE
+  // unlock cloud features once they exist (OQ4-bis defines the feature split).
+  const isPremium = user?.tier === "PREMIUM" || user?.tier === "ENTERPRISE";
 
   // Restore session on mount (token in keyring → fetch profile).
   useEffect(() => {
@@ -98,7 +101,7 @@ export function AuthProvider({ children }) {
   }, []);
 
   return (
-    <AuthContext.Provider value={{ user, isAuthenticated, pending, signIn, cancelSignIn, logout }}>
+    <AuthContext.Provider value={{ user, isAuthenticated, isPremium, pending, signIn, cancelSignIn, logout }}>
       {children}
     </AuthContext.Provider>
   );
