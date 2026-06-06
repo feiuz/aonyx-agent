@@ -23,8 +23,8 @@ export function AuthProvider({ children }) {
   const pollRef = useRef(null);
 
   const isAuthenticated = !!user;
-  // Licence gating primitive (ADR-013). FREE by default; PREMIUM/ENTERPRISE
-  // unlock cloud features once they exist (OQ4-bis defines the feature split).
+  // Licence gating primitive (ADR-013/015). FREE by default; PREMIUM/ENTERPRISE
+  // unlock cloud features (sync, cloud backup, cloud embeddings) once they exist.
   const isPremium = user?.tier === "PREMIUM" || user?.tier === "ENTERPRISE";
 
   // Restore session on mount (token in keyring → fetch profile).

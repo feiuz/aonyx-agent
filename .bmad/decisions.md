@@ -194,4 +194,20 @@ Format: `ADR-NNN — short title (date) — status`
 
 ---
 
+## ADR-015 — aonyx-agent FREE/PREMIUM feature split (2026-06-06) — accepted
+
+**Context**: ADR-013 registered `aonyx-agent` with FREE/PREMIUM licensing but left the feature split open (OQ4-bis). The agent is OSS/MIT and local-first (ADR-001/011): the local binary must never be gated; the premium tier monetizes the **cloud layer only**. The split is now live in the aonyx-account registry (`server/config/apps.config.ts` + the prod patch `patches/apps.config.js`, deployed 2026-06-06) and validated by the user.
+
+**Decision**:
+- **FREE** (`defaultTier`, `freeMaxDevices: 1`): agent local illimité (offline), mémoire + RAG documentaire locaux, multi-provider avec clés perso, 1 appareil.
+- **PREMIUM** (6.99 €/mois · 59.99 €/an, −30 %): sync multi-appareils, sauvegarde cloud chiffrée, embeddings cloud, historique partagé, support prioritaire, accès anticipé.
+- The license gates **only** cloud/account features; the local agent (chat, memory, RAG, providers) stays fully usable without any license. **Resolves OQ4-bis** (ADR-013).
+
+**Consequences**:
+- ✅ Clear monetization boundary: cloud = payant, local = libre pour toujours — préserve la promesse OSS/MIT + local-first.
+- ✅ Encoded once in `apps.config` (source of truth); the desktop reads the tier via `isPremium` (ADR-013) — no per-feature hardcoding.
+- ❌ Les fonctions premium (sync, backup cloud, embeddings cloud) ne sont **pas encore construites** : ce split en est la spec ; le gating `isPremium` est un no-op jusqu'à leur arrivée.
+
+---
+
 *Future decisions append here.*
