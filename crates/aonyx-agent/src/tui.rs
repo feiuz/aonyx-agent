@@ -838,6 +838,9 @@ pub async fn run(
         scroll: 0,
         auto_scroll: true,
         viewport_height: 0,
+        welcome_pose: (0, 0),
+        welcome_center: (0, 0),
+        last_mouse_tick: 0,
         history: Vec::new(),
         history_cursor: None,
         scratch: Vec::new(),
@@ -890,6 +893,14 @@ pub async fn run(
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    // Plan v6 — arm any-motion mouse tracking (?1003) + SGR (?1006) so the
+    // welcome otter can follow the cursor on hover; crossterm's
+    // EnableMouseCapture only arms button/normal tracking, not bare motion.
+    {
+        use std::io::Write as _;
+        let _ = stdout.write_all(b"\x1b[?1003h\x1b[?1006h");
+        let _ = stdout.flush();
+    }
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
@@ -908,6 +919,11 @@ pub async fn run(
         LeaveAlternateScreen,
         DisableMouseCapture
     )?;
+    {
+        use std::io::Write as _;
+        let _ = io::stdout().write_all(b"\x1b[?1003l");
+        let _ = io::stdout().flush();
+    }
     terminal.show_cursor()?;
 
     res
@@ -935,6 +951,13 @@ struct TuiApp {
     auto_scroll: bool,
     /// Updated on every `render()`; the auto-scroll math needs it.
     viewport_height: u16,
+    /// Plan v6 welcome screen: pose direction toward the cursor (dx, dy in
+    /// -1..=1) and the otter's centre cell, updated on mouse motion.
+    welcome_pose: (i8, i8),
+    welcome_center: (u16, u16),
+    /// Tick of the last welcome-screen mouse move — drives the idle
+    /// "return to centre" easing (W4).
+    last_mouse_tick: u64,
 
     history: Vec<String>,
     history_cursor: Option<usize>,
@@ -3529,6 +3552,12 @@ impl TuiApp {
                     }
                 }
             }
+            MouseEventKind::Moved if self.in_welcome() => {
+                // Plan v6 — the otter follows the cursor on the welcome screen.
+                self.welcome_pose =
+                    crate::welcome::direction((m.column, m.row), self.welcome_center, 3);
+                self.last_mouse_tick = self.tick;
+            }
             _ => {}
         }
     }
@@ -4004,6 +4033,86 @@ impl TuiApp {
             .clamp(MIN_COMPOSER_HEIGHT, MAX_COMPOSER_HEIGHT)
     }
 
+    /// Welcome (empty-conversation) screen is shown until the user sends a
+    /// first message.
+    fn in_welcome(&self) -> bool {
+        !self.messages.iter().any(|m| m.role == Role::User)
+    }
+
+    /// Render the centred otter welcome (plan v6) into `area`: the cursor-
+    /// following pose + tagline + hint. Records the otter centre so
+    /// `handle_mouse` can compute the gaze direction.
+    fn render_welcome(&mut self, f: &mut Frame<'_>, area: ratatui::layout::Rect) {
+        // W4 — ease the head back to centre once the mouse has been still.
+        if self.tick.saturating_sub(self.last_mouse_tick) > 24 && self.tick % 6 == 0 {
+            self.welcome_pose.0 -= self.welcome_pose.0.signum();
+            self.welcome_pose.1 -= self.welcome_pose.1.signum();
+        }
+        let pose_idx = crate::welcome::pose_index(self.welcome_pose.0, self.welcome_pose.1);
+        let pose = crate::welcome::OTTER_POSES[pose_idx];
+        // W4 — blink: briefly close the eyes every few seconds.
+        let blink = self.tick % 110 < 3;
+        let mut rows: Vec<Vec<char>> = pose.lines().map(|l| l.chars().collect()).collect();
+        if blink {
+            for &(ex, ey) in &crate::welcome::OTTER_EYES[pose_idx] {
+                let (ex, ey) = (ex as usize, ey as usize);
+                if let Some(row) = rows.get_mut(ey) {
+                    for x in ex.saturating_sub(1)..=ex + 1 {
+                        if let Some(cell) = row.get_mut(x) {
+                            *cell = '-';
+                        }
+                    }
+                }
+            }
+        }
+        let art: Vec<String> = rows.iter().map(|r| r.iter().collect()).collect();
+        let art_w = art.iter().map(|l| l.chars().count()).max().unwrap_or(0) as u16;
+        let art_h = art.len() as u16;
+        let total_h = art_h + 4; // art + blank + tagline + blank + hint
+        let top = area.y + area.height.saturating_sub(total_h) / 2;
+        self.welcome_center = (area.x + area.width / 2, top + art_h / 2);
+
+        let accent = self
+            .theme
+            .accents
+            .first()
+            .copied()
+            .unwrap_or(self.theme.header_fg);
+        let lpad = ((area.width.saturating_sub(art_w)) / 2) as usize;
+        let pad = " ".repeat(lpad);
+        let mut lines: Vec<Line> = Vec::new();
+        for l in &art {
+            lines.push(Line::from(Span::styled(
+                format!("{pad}{l}"),
+                Style::default().fg(accent),
+            )));
+        }
+        let centre = |s: &str, style: Style| {
+            let p = (area.width as usize).saturating_sub(s.chars().count()) / 2;
+            Line::from(Span::styled(format!("{}{}", " ".repeat(p), s), style))
+        };
+        lines.push(Line::default());
+        lines.push(centre(
+            "What can I do for you?",
+            Style::default()
+                .fg(self.theme.header_fg)
+                .add_modifier(Modifier::BOLD),
+        ));
+        lines.push(Line::default());
+        lines.push(centre(
+            "/ slash commands   @ files   Ctrl+P menu",
+            Style::default().fg(self.theme.dim),
+        ));
+
+        let rect = ratatui::layout::Rect {
+            x: area.x,
+            y: top,
+            width: area.width,
+            height: total_h.min(area.height),
+        };
+        f.render_widget(Paragraph::new(lines), rect);
+    }
+
     fn render(&mut self, f: &mut Frame<'_>) {
         let composer_h = self.composer_height();
         let suggestions_h = if self.suggestions.is_empty() {
@@ -4064,10 +4173,14 @@ impl TuiApp {
         ]));
         f.render_widget(header, chunks[0]);
 
-        let viewport = Paragraph::new(Text::from(self.viewport.clone()))
-            .wrap(Wrap { trim: false })
-            .scroll((self.scroll, 0));
-        f.render_widget(viewport, chunks[1]);
+        if self.in_welcome() {
+            self.render_welcome(f, chunks[1]);
+        } else {
+            let viewport = Paragraph::new(Text::from(self.viewport.clone()))
+                .wrap(Wrap { trim: false })
+                .scroll((self.scroll, 0));
+            f.render_widget(viewport, chunks[1]);
+        }
 
         // Suggestions popup (above the composer) — only rendered when active.
         if suggestions_h > 0 {

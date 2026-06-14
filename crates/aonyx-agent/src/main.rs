@@ -40,6 +40,7 @@ mod session;
 mod setup;
 mod theme;
 mod tui;
+mod welcome;
 
 use config::Config;
 use session::InteractiveSession;
@@ -52,9 +53,14 @@ struct Cli {
     #[arg(short, long, global = true)]
     verbose: bool,
 
-    /// Open the new full-screen TUI (Phase B preview) instead of the
-    /// legacy line-based REPL.
+    /// Force the legacy line-based REPL instead of the full-screen TUI
+    /// (the TUI is now the default interactive surface).
     #[arg(long)]
+    repl: bool,
+
+    /// Deprecated: the full-screen TUI is the default now. Kept hidden so
+    /// existing `aonyx --tui` invocations keep working.
+    #[arg(long, hide = true)]
     tui: bool,
 
     #[command(subcommand)]
@@ -212,7 +218,9 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     init_tracing(cli.verbose);
 
-    let use_tui = cli.tui;
+    // The full-screen TUI is the default interactive surface; `--repl` opts
+    // back into the legacy line REPL. `--tui` is kept as a no-op for compat.
+    let use_tui = !cli.repl || cli.tui;
     match cli.command {
         None => start_interactive(None, use_tui, StartMode::Default).await,
         Some(Command::New { path }) => start_interactive(path, use_tui, StartMode::Default).await,
