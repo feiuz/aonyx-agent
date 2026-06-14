@@ -4043,31 +4043,79 @@ impl TuiApp {
     /// following pose + tagline + hint. Records the otter centre so
     /// `handle_mouse` can compute the gaze direction.
     fn render_welcome(&mut self, f: &mut Frame<'_>, area: ratatui::layout::Rect) {
-        // W4 — ease the head back to centre once the mouse has been still.
+        // Ease the gaze back to centre once the mouse has been still.
         if self.tick.saturating_sub(self.last_mouse_tick) > 24 && self.tick % 6 == 0 {
             self.welcome_pose.0 -= self.welcome_pose.0.signum();
             self.welcome_pose.1 -= self.welcome_pose.1.signum();
         }
-        let pose_idx = crate::welcome::pose_index(self.welcome_pose.0, self.welcome_pose.1);
-        let pose = crate::welcome::OTTER_POSES[pose_idx];
-        // W4 — blink: briefly close the eyes every few seconds.
-        let blink = self.tick % 110 < 3;
-        let mut rows: Vec<Vec<char>> = pose.lines().map(|l| l.chars().collect()).collect();
-        if blink {
-            for &(ex, ey) in &crate::welcome::OTTER_EYES[pose_idx] {
-                let (ex, ey) = (ex as usize, ey as usize);
-                if let Some(row) = rows.get_mut(ey) {
-                    for x in ex.saturating_sub(1)..=ex + 1 {
-                        if let Some(cell) = row.get_mut(x) {
-                            *cell = '-';
-                        }
+
+        // Pad the otter so the whiskers have room to fan out into the margins.
+        const PAD: i32 = 13;
+        let src: Vec<&str> = crate::welcome::OTTER.lines().collect();
+        let pw = src.iter().map(|l| l.chars().count()).max().unwrap_or(0);
+        let gw = pw + 2 * PAD as usize;
+        let mut rows: Vec<Vec<char>> = src
+            .iter()
+            .map(|l| {
+                let mut v: Vec<char> =
+                    std::iter::repeat(' ').take(PAD as usize).chain(l.chars()).collect();
+                v.resize(gw, ' ');
+                v
+            })
+            .collect();
+        let gh = rows.len() as i32;
+        let put = |rows: &mut [Vec<char>], x: i32, y: i32, c: char| {
+            if c != ' ' && y >= 0 && y < gh && x >= 0 && (x as usize) < gw {
+                rows[y as usize][x as usize] = c;
+            }
+        };
+
+        // Pupils follow the cursor (welcome_pose = gaze); blink periodically.
+        let (gx, gy) = (self.welcome_pose.0 as i32, self.welcome_pose.1 as i32);
+        let blink = self.tick % 82 < 4;
+        for (ex, ey) in crate::welcome::EYES {
+            let (cx, cy) = (ex as i32 + PAD, ey as i32);
+            for dy in -1..=1 {
+                for dx in -2..=2 {
+                    let (x, y) = (cx + dx, cy + dy);
+                    if y >= 0 && y < gh && x >= 0 && (x as usize) < gw {
+                        rows[y as usize][x as usize] = ' ';
                     }
                 }
             }
+            put(&mut rows, cx - 2, cy, '(');
+            put(&mut rows, cx + 2, cy, ')');
+            if blink {
+                put(&mut rows, cx - 1, cy, '-');
+                put(&mut rows, cx, cy, '-');
+                put(&mut rows, cx + 1, cy, '-');
+            } else {
+                put(&mut rows, cx + gx, cy + gy, '@');
+            }
         }
-        let art: Vec<String> = rows.iter().map(|r| r.iter().collect()).collect();
-        let art_w = art.iter().map(|l| l.chars().count()).max().unwrap_or(0) as u16;
-        let art_h = art.len() as u16;
+
+        // Whiskers fan out from the cheeks and sway with the tick.
+        let t = self.tick as f32;
+        let (lox, rox, wy, lw) = (PAD + 5, PAD + 44, 15i32, 10i32);
+        for k in -1..=1 {
+            for j in 0..lw {
+                let sway = (t * 0.15 + k as f32 * 1.3).sin() * (j as f32 / lw as f32) * 1.5;
+                let yk = (k as f32 * 0.9 + j as f32 * 0.10 * k as f32 + sway).round() as i32;
+                let ch = if j > 7 { '.' } else if k == 0 { '~' } else { '-' };
+                put(&mut rows, lox - 3 - j, wy + yk, ch);
+                put(&mut rows, rox + 3 + j, wy + yk, ch);
+            }
+        }
+        // Ears twitch every few seconds.
+        if self.tick % 96 < 7 {
+            put(&mut rows, PAD + 9, 1, '^');
+            put(&mut rows, PAD + 8, 2, '\'');
+            put(&mut rows, PAD + 40, 1, '^');
+            put(&mut rows, PAD + 41, 2, '\'');
+        }
+
+        let art_w = gw as u16;
+        let art_h = rows.len() as u16;
         let total_h = art_h + 4; // art + blank + tagline + blank + hint
         let top = area.y + area.height.saturating_sub(total_h) / 2;
         self.welcome_center = (area.x + area.width / 2, top + art_h / 2);
@@ -4081,9 +4129,10 @@ impl TuiApp {
         let lpad = ((area.width.saturating_sub(art_w)) / 2) as usize;
         let pad = " ".repeat(lpad);
         let mut lines: Vec<Line> = Vec::new();
-        for l in &art {
+        for r in &rows {
+            let s: String = r.iter().collect();
             lines.push(Line::from(Span::styled(
-                format!("{pad}{l}"),
+                format!("{pad}{}", s.trim_end()),
                 Style::default().fg(accent),
             )));
         }
