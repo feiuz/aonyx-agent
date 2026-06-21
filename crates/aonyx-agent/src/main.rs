@@ -150,6 +150,9 @@ enum MemoryAction {
         #[arg(short, long)]
         force: bool,
     },
+    /// Download the local embedding model (bge-m3) so the palace can build
+    /// vectors offline. No-op when `[rag] embeddings = "provider"`.
+    PrepareEmbeddings,
 }
 
 #[derive(Debug, Subcommand)]
@@ -1018,6 +1021,8 @@ async fn handle_memory(action: MemoryAction) -> anyhow::Result<()> {
             println!("✓ palace restored from {}", file.display());
             return Ok(());
         }
+        // Global (no project palace) — just fetch the embedding model.
+        MemoryAction::PrepareEmbeddings => return handle_prepare_embeddings(),
         _ => {}
     }
 
@@ -1055,6 +1060,35 @@ async fn handle_memory(action: MemoryAction) -> anyhow::Result<()> {
         _ => {}
     }
     Ok(())
+}
+
+/// `aonyx memory prepare-embeddings` — download the local embedding model so the
+/// palace can vectorise offline. fastembed streams a download progress bar to
+/// stderr; the desktop wizard parses it for a real progress UI (ADR-016 / W4).
+#[cfg(feature = "rag")]
+fn handle_prepare_embeddings() -> anyhow::Result<()> {
+    let config = Config::load_or_init()?;
+    if config.rag.embeddings != "local" {
+        println!(
+            "aonyx: embeddings = '{}' — no local model to download.",
+            config.rag.embeddings
+        );
+        return Ok(());
+    }
+    let cache = Config::config_dir()?.join("models");
+    eprintln!(
+        "aonyx: preparing local embedding model into {} (one-time download)…",
+        cache.display()
+    );
+    aonyx_memory::LocalEmbedder::new(cache)
+        .map_err(|e| anyhow::anyhow!("prepare embeddings: {e}"))?;
+    println!("aonyx: embedding model ready — bge-m3 (dim 1024)");
+    Ok(())
+}
+
+#[cfg(not(feature = "rag"))]
+fn handle_prepare_embeddings() -> anyhow::Result<()> {
+    anyhow::bail!("this build has no local embeddings — rebuild with `--features rag`")
 }
 
 /// Prompt for a backup passphrase (with confirmation when `confirm`).

@@ -504,6 +504,102 @@ fn stop_local(state: tauri::State<'_, LocalAgent>) {
     }
 }
 
+/// Parse an indicatif/hf-hub progress fragment like "12.34 MiB/80.00 MiB" into
+/// (downloaded_bytes, total_bytes). Returns None when no size pair is present.
+fn parse_progress(s: &str) -> Option<(u64, u64)> {
+    use std::sync::OnceLock;
+    static RE: OnceLock<regex::Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| {
+        regex::Regex::new(r"([\d.]+)\s*([KMGT]?i?B)\s*/\s*([\d.]+)\s*([KMGT]?i?B)").unwrap()
+    });
+    let c = re.captures(s)?;
+    let unit = |u: &str| -> f64 {
+        match u {
+            "KiB" | "KB" => 1024.0,
+            "MiB" | "MB" => 1024.0 * 1024.0,
+            "GiB" | "GB" => 1024.0 * 1024.0 * 1024.0,
+            "TiB" | "TB" => 1024.0_f64.powi(4),
+            _ => 1.0,
+        }
+    };
+    let dn: f64 = c.get(1)?.as_str().parse().ok()?;
+    let tn: f64 = c.get(3)?.as_str().parse().ok()?;
+    let d = (dn * unit(c.get(2)?.as_str())) as u64;
+    let t = (tn * unit(c.get(4)?.as_str())) as u64;
+    if t > 0 {
+        Some((d, t))
+    } else {
+        None
+    }
+}
+
+/// Download the local embedding model via the bundled agent, relaying fastembed's
+/// stderr download progress to the frontend as structured events (ADR-016 / W4):
+/// `{phase:"downloading", downloaded, total, pct}`, then `{phase:"done"}` (or
+/// `{phase:"error"}`). Returns quickly when the model is already cached.
+#[tauri::command]
+async fn prepare_embeddings(on_event: tauri::ipc::Channel<Value>) -> Result<(), String> {
+    use std::io::Read;
+    use std::process::{Command, Stdio};
+
+    let mut cmd = Command::new(agent_binary());
+    cmd.args(["memory", "prepare-embeddings"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("could not launch the bundled agent: {e}"))?;
+    let mut stderr = child.stderr.take().ok_or("no stderr from the agent")?;
+
+    // fastembed's hf-hub bar is carriage-return updated on stderr. Read raw
+    // bytes (split on \r and \n), emit each "X/Y" size pair as progress, then
+    // wait for the child — all on a blocking task so the runtime stays free.
+    let ev = on_event.clone();
+    let status = tauri::async_runtime::spawn_blocking(move || {
+        let mut chunk = [0u8; 4096];
+        let mut acc: Vec<u8> = Vec::new();
+        while let Ok(n) = stderr.read(&mut chunk) {
+            if n == 0 {
+                break;
+            }
+            for &b in &chunk[..n] {
+                if b == b'\r' || b == b'\n' {
+                    if !acc.is_empty() {
+                        if let Some((d, t)) = parse_progress(&String::from_utf8_lossy(&acc)) {
+                            let pct = (d as f64 / t as f64 * 100.0).round() as u64;
+                            let _ = ev.send(serde_json::json!({
+                                "phase": "downloading", "downloaded": d, "total": t, "pct": pct
+                            }));
+                        }
+                        acc.clear();
+                    }
+                } else {
+                    acc.push(b);
+                }
+            }
+        }
+        child.wait()
+    })
+    .await
+    .map_err(|e| format!("join: {e}"))?
+    .map_err(|e| format!("agent wait: {e}"))?;
+
+    if status.success() {
+        let _ = on_event.send(serde_json::json!({ "phase": "done" }));
+        Ok(())
+    } else {
+        let _ = on_event.send(
+            serde_json::json!({ "phase": "error", "message": "prepare-embeddings failed" }),
+        );
+        Err(format!("prepare-embeddings exited with status {status}"))
+    }
+}
+
 /// Path to the agent's global config (`~/.aonyx/config.toml`).
 fn aonyx_config_path() -> Result<std::path::PathBuf, String> {
     dirs::home_dir()
@@ -879,6 +975,7 @@ pub fn run() {
             api_tools,
             start_local,
             stop_local,
+            prepare_embeddings,
             read_provider_config,
             save_provider_config,
             save_setup,

@@ -1,15 +1,16 @@
 import { useEffect, useRef, useState } from "react";
 import { Check, Loader2, X, Minus } from "lucide-react";
 import { useI18n } from "../../context/LanguageContext";
-import { saveSetup, startLocal, apiInfo } from "../../services/setupService";
+import { saveSetup, startLocal, apiInfo, prepareEmbeddings } from "../../services/setupService";
 import { listModels } from "../../services/configService";
 
 // Auto-bootstrap screen (the validated Hermes-style stepper). Runs the real
-// available steps now: detect/verify provider, write config, start the embedded
-// agent + probe it. The embedding-model download (W4) is represented honestly as
-// deferred until that backend command lands — no fake progress.
+// steps: detect/verify provider, write config, download the embedding model with
+// a live progress bar (W4 — fastembed progress streamed from the agent), then
+// start the embedded agent and probe it.
 const STEPS = ["engine", "detect", "palace", "config", "rag", "model", "agent"];
 const tick = (ms) => new Promise((r) => setTimeout(r, ms));
+const mb = (n) => Math.round((n || 0) / (1024 * 1024));
 
 function toCfg(d) {
   const cfg = { provider: d.provider, model: d.model, rag_backend: d.rag_backend, rag_embeddings: d.rag_embeddings };
@@ -45,11 +46,13 @@ function Marker({ state }) {
 export default function BootstrapStep({ draft, onDone }) {
   const { t } = useI18n();
   const [status, setStatus] = useState(() => Object.fromEntries(STEPS.map((s) => [s, { state: "pending" }])));
+  const [modelPct, setModelPct] = useState(0);
   const [failed, setFailed] = useState(false);
   const ran = useRef(false);
 
   const run = async () => {
     setFailed(false);
+    setModelPct(0);
     setStatus(Object.fromEntries(STEPS.map((s) => [s, { state: "pending" }])));
     const set = (id, state, note) => setStatus((p) => ({ ...p, [id]: { state, note } }));
     let current = "engine";
@@ -84,8 +87,19 @@ export default function BootstrapStep({ draft, onDone }) {
       set("rag", "done", t(`wizard.rag.${draft.rag_backend}.label`));
 
       current = "model";
-      set("model", "run");
-      set("model", "skip", draft.rag_embeddings === "local" ? t("wizard.boot.modelDeferred") : t("wizard.boot.modelProvider"));
+      if (draft.rag_embeddings === "local") {
+        set("model", "run");
+        setModelPct(0);
+        await prepareEmbeddings((ev) => {
+          if (ev?.phase === "downloading") {
+            setModelPct(ev.pct || 0);
+            set("model", "run", `${mb(ev.downloaded)} / ${mb(ev.total)} Mo`);
+          }
+        });
+        set("model", "done");
+      } else {
+        set("model", "skip", t("wizard.boot.modelProvider"));
+      }
 
       current = "agent";
       set("agent", "run");
@@ -129,18 +143,23 @@ export default function BootstrapStep({ draft, onDone }) {
         {STEPS.map((s) => {
           const st = status[s];
           const active = st.state === "run";
+          const showBar = s === "model" && active && modelPct > 0;
           return (
-            <div
-              key={s}
-              className={`flex items-center justify-between rounded-lg px-2.5 py-2 ${active ? "bg-aonyx-100 dark:bg-aonyx-900" : ""}`}
-            >
-              <span className="flex items-center gap-2.5 min-w-0">
-                <span className="w-[18px] flex items-center justify-center shrink-0"><Marker state={st.state} /></span>
-                <span className={`text-sm truncate ${st.state === "pending" ? "text-aonyx-400" : "text-aonyx-800 dark:text-aonyx-100"} ${active ? "font-medium" : ""}`}>
-                  {t(`wizard.boot.${s}`)}
+            <div key={s} className={`rounded-lg px-2.5 py-2 ${active ? "bg-aonyx-100 dark:bg-aonyx-900" : ""}`}>
+              <div className="flex items-center justify-between">
+                <span className="flex items-center gap-2.5 min-w-0">
+                  <span className="w-[18px] flex items-center justify-center shrink-0"><Marker state={st.state} /></span>
+                  <span className={`text-sm truncate ${st.state === "pending" ? "text-aonyx-400" : "text-aonyx-800 dark:text-aonyx-100"} ${active ? "font-medium" : ""}`}>
+                    {t(`wizard.boot.${s}`)}
+                  </span>
                 </span>
-              </span>
-              {st.note && <span className={`text-xs shrink-0 ml-2 ${st.state === "error" ? "text-red-500" : "text-aonyx-400"}`}>{st.note}</span>}
+                {st.note && <span className={`text-xs shrink-0 ml-2 ${st.state === "error" ? "text-red-500" : "text-aonyx-400"}`}>{st.note}</span>}
+              </div>
+              {showBar && (
+                <div className="mt-1.5 ml-[30px] h-1 rounded-full bg-aonyx-200 dark:bg-aonyx-800 overflow-hidden">
+                  <div className="h-full bg-primary-600 transition-all" style={{ width: `${modelPct}%` }} />
+                </div>
+              )}
             </div>
           );
         })}
