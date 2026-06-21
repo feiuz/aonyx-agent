@@ -77,7 +77,7 @@ mod api_imp {
         ApiAgent, ApiState, ApprovalHub, AuthConfig, ConfigInfo, ServerInfo, SkillInfo, StreamFrame,
         ToolInfo,
     };
-    use aonyx_core::{Message, SafetyClass, ToolCall};
+    use aonyx_core::{Message, Role, SafetyClass, ToolCall};
     use aonyx_memory::{Palace, SqliteSessionStore};
     use async_trait::async_trait;
     use tokio::sync::mpsc;
@@ -91,12 +91,29 @@ mod api_imp {
         tools: Vec<ToolInfo>,
         skills: Vec<SkillInfo>,
         config: ConfigInfo,
+        /// The architect's standing system prompt (persona + delegation briefing).
+        system_prompt: Option<String>,
+    }
+
+    impl ApiRunner {
+        /// Prepend the architect's system prompt when the session history doesn't
+        /// already open with one. Desktop sessions are created without a system
+        /// message, so without this the architect would run with no standing
+        /// instructions (no persona, no delegation briefing).
+        fn seed(&self, mut history: Vec<Message>) -> Vec<Message> {
+            if let Some(p) = &self.system_prompt {
+                if !history.first().is_some_and(|m| matches!(m.role, Role::System)) {
+                    history.insert(0, Message::new(Role::System, p.clone()));
+                }
+            }
+            history
+        }
     }
 
     #[async_trait]
     impl ApiAgent for ApiRunner {
         async fn run_turn(&self, history: Vec<Message>) -> aonyx_core::Result<Vec<Message>> {
-            Ok(self.runner.run(history).await?.messages)
+            Ok(self.runner.run(self.seed(history)).await?.messages)
         }
 
         async fn run_turn_streaming(
@@ -115,7 +132,7 @@ mod api_imp {
                     }
                 }
             };
-            let drive = self.runner.run_streaming(history, etx);
+            let drive = self.runner.run_streaming(self.seed(history), etx);
             let (res, _) = tokio::join!(drive, forward);
             Ok(res?.messages)
         }
@@ -295,11 +312,19 @@ mod api_imp {
             )
             .with_project(&project);
 
+        // Brief the architect on its sub-agents so it actually delegates — the
+        // dispatch_agent tool alone isn't enough, the model needs the nudge in
+        // its standing instructions.
+        let agents = aonyx_agent::agents::load_all(Config::config_dir()?.join("agents"));
+        let system_prompt =
+            aonyx_agent::subagent::augment_with_delegation(config.system_prompt.clone(), &agents);
+
         let api_runner = ApiRunner {
             runner,
             tools,
             skills: skill_list,
             config: config_info,
+            system_prompt,
         };
 
         // Memory palace (current dir) + cross-run session store.

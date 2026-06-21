@@ -190,3 +190,29 @@ pub fn register_dispatch_agent(
     let dispatch = DispatchAgent::new(base, provider, default_model, agents);
     registry.register(Arc::new(dispatch));
 }
+
+/// Append a delegation briefing to the architect's system prompt, listing the
+/// available sub-agents so the model proactively reaches for `dispatch_agent`
+/// instead of doing every task itself. Returns `base` unchanged when there are
+/// no agents.
+pub fn augment_with_delegation(base: Option<String>, agents: &[AgentDefinition]) -> Option<String> {
+    if agents.is_empty() {
+        return base;
+    }
+    let roster = agents
+        .iter()
+        .map(|a| format!("- {}: {}", a.id, a.description))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let section = format!(
+        "\n\n## Your team\nYou are the architect. Delegate self-contained sub-tasks to specialist \
+         sub-agents with the `dispatch_agent` tool:\n{roster}\n\nWhen a request needs substantial \
+         coding, review, or research that fits one of them, hand it to the matching specialist with \
+         a complete, standalone instruction (the sub-agent does not see this conversation), then \
+         synthesize the result for the user. Keep quick answers and coordination for yourself."
+    );
+    Some(match base {
+        Some(b) if !b.trim().is_empty() => format!("{}{}", b.trim_end(), section),
+        _ => format!("You are Aonyx Agent — the agent with a real memory palace.{section}"),
+    })
+}
