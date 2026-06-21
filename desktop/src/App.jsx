@@ -9,6 +9,9 @@ import { safeInvoke } from "./config/bridge";
 import AppShell from "./layout/AppShell";
 import Wizard from "./views/wizard/Wizard";
 import Chat from "./views/Chat";
+import SkillsTools from "./views/SkillsTools";
+import Agents from "./views/Agents";
+import MemoryHealth from "./views/MemoryHealth";
 import SettingsHub from "./views/SettingsHub";
 
 // First-run gate (ADR-016): render the onboarding wizard until setup is complete
@@ -57,6 +60,9 @@ export default function App() {
             <Routes>
               <Route element={<AppShell />}>
                 <Route path="/" element={<Chat />} />
+                <Route path="/skills" element={<SkillsTools />} />
+                <Route path="/agents" element={<Agents />} />
+                <Route path="/memory" element={<MemoryHealth />} />
                 <Route path="/settings" element={<SettingsHub />} />
                 <Route path="*" element={<Navigate to="/" replace />} />
               </Route>

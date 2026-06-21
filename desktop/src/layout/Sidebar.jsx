@@ -1,10 +1,13 @@
 import { useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useLocation } from "react-router-dom";
 import {
   PanelLeft,
   Sun,
   Moon,
-  Plus,
+  MessageSquarePlus,
+  Wrench,
+  Bot,
+  Brain,
   Search,
   Settings as SettingsIcon,
   User,
@@ -49,6 +52,7 @@ export default function Sidebar() {
   const { t, lang, toggle: toggleLang } = useI18n();
   const { sessions, sessionId, setSessionId, createSession } = useAgent();
   const navigate = useNavigate();
+  const loc = useLocation();
   const [update, setUpdate] = useState(null);
   const [llm, setLlm] = useState(null);
   const [query, setQuery] = useState("");
@@ -151,6 +155,13 @@ export default function Sidebar() {
     </div>
   );
 
+  const NAV = [
+    { id: "new", icon: MessageSquarePlus, label: t("sidebar.newChat"), action: newConversation, kbd: ["Ctrl", "N"] },
+    { id: "skills", icon: Wrench, label: t("nav.skills"), to: "/skills" },
+    { id: "agents", icon: Bot, label: t("nav.agents"), to: "/agents" },
+    { id: "memory", icon: Brain, label: t("nav.memory"), to: "/memory" },
+  ];
+
   return (
     <aside
       className={`${collapsed ? "w-14" : "w-64"} flex-shrink-0 flex flex-col bg-aonyx-100 dark:bg-aonyx-950 border-r border-aonyx-200 dark:border-aonyx-800 transition-[width] duration-200`}
@@ -166,24 +177,38 @@ export default function Sidebar() {
         )}
       </div>
 
-      <div className="px-2">
-        <button
-          onClick={newConversation}
-          title={collapsed ? t("sidebar.newChat") : ""}
-          className={`w-full flex items-center ${collapsed ? "justify-center" : "gap-2.5"} px-2.5 py-2 rounded-lg text-sm font-medium hover:bg-aonyx-200/60 dark:hover:bg-aonyx-900/50 transition-colors`}
-        >
-          <Plus className="w-[18px] h-[18px] flex-shrink-0" strokeWidth={1.75} />
-          {!collapsed && (
-            <>
-              <span>{t("sidebar.newChat")}</span>
-              <span className="ml-auto flex items-center gap-1 text-[10px] text-aonyx-400">
-                <kbd className="px-1 py-0.5 rounded border border-aonyx-300 dark:border-aonyx-700 font-sans">Ctrl</kbd>
-                <kbd className="px-1 py-0.5 rounded border border-aonyx-300 dark:border-aonyx-700 font-sans">N</kbd>
-              </span>
-            </>
-          )}
-        </button>
-      </div>
+      <nav className="px-2 space-y-0.5">
+        {NAV.map((n) => {
+          const Icon = n.icon;
+          const active = n.to && loc.pathname === n.to;
+          return (
+            <button
+              key={n.id}
+              onClick={n.action || (() => navigate(n.to))}
+              title={collapsed ? n.label : ""}
+              className={`w-full flex items-center ${collapsed ? "justify-center" : "gap-2.5"} px-2.5 py-2 rounded-lg text-sm transition-colors ${
+                active
+                  ? "bg-aonyx-200/70 dark:bg-aonyx-800/70 text-aonyx-900 dark:text-aonyx-100 font-medium"
+                  : "text-aonyx-700 dark:text-aonyx-300 hover:bg-aonyx-200/60 dark:hover:bg-aonyx-900/50"
+              }`}
+            >
+              <Icon className="w-[18px] h-[18px] flex-shrink-0" strokeWidth={1.75} />
+              {!collapsed && (
+                <>
+                  <span>{n.label}</span>
+                  {n.kbd && (
+                    <span className="ml-auto flex items-center gap-1 text-[10px] text-aonyx-400">
+                      {n.kbd.map((k) => (
+                        <kbd key={k} className="px-1 py-0.5 rounded border border-aonyx-300 dark:border-aonyx-700 font-sans">{k}</kbd>
+                      ))}
+                    </span>
+                  )}
+                </>
+              )}
+            </button>
+          );
+        })}
+      </nav>
 
       {!collapsed && (
         <div className="px-2 pt-1">

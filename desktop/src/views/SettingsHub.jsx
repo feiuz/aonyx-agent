@@ -1,8 +1,6 @@
 import { useState } from "react";
 import {
   SlidersHorizontal,
-  Bot,
-  Activity,
   Database,
   Download,
   FolderOpen,
@@ -16,9 +14,7 @@ import ProviderConfig from "./Settings";
 import Dashboard from "./Dashboard";
 import Projets from "./Projets";
 import Stats from "./Stats";
-import MemoryHealth from "./MemoryHealth";
 import KnowledgeGraph from "./KnowledgeGraph";
-import Agents from "./Agents";
 import Mcp from "./Mcp";
 import { Users, Permissions } from "./index";
 
@@ -26,8 +22,6 @@ import { Users, Permissions } from "./index";
 // everything else lives here as sections.
 const SECTIONS = [
   { id: "provider", key: "settings.section.provider", icon: SlidersHorizontal, El: ProviderConfig },
-  { id: "agents", key: "nav.agents", icon: Bot, El: Agents },
-  { id: "memory", key: "nav.memory", icon: Activity, El: MemoryHealth },
   { id: "kg", key: "nav.kg", icon: Database, El: KnowledgeGraph },
   { id: "mcp", key: "nav.mcp", icon: Download, El: Mcp },
   { id: "projects", key: "nav.projects", icon: FolderOpen, El: Projets },
