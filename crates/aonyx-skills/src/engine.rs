@@ -93,6 +93,11 @@ mod tests {
         Skill {
             id: id.into(),
             name: id.into(),
+            description: None,
+            category: None,
+            tags: Vec::new(),
+            version: None,
+            author: None,
             enabled: true,
             tools: Vec::new(),
             trigger,

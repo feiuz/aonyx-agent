@@ -69,7 +69,13 @@ impl SkillLoader {
         let path = path.as_ref();
         let raw = std::fs::read_to_string(path)
             .map_err(|e| AonyxError::Skill(format!("read {}: {e}", path.display())))?;
-        Self::parse(&raw).map_err(|e| AonyxError::Skill(format!("parse {}: {e}", path.display())))
+        let mut skill = Self::parse(&raw)
+            .map_err(|e| AonyxError::Skill(format!("parse {}: {e}", path.display())))?;
+        // Infer the catalogue category from a `<category>/<skill>/SKILL.md` layout.
+        if skill.category.is_none() {
+            skill.category = category_from_path(path);
+        }
+        Ok(skill)
     }
 
     /// Parse a SKILL.md from its raw text.
@@ -79,7 +85,76 @@ impl SkillLoader {
         let mut skill: Skill = serde_yaml::from_str(frontmatter)
             .map_err(|e| AonyxError::Skill(format!("parse frontmatter: {e}")))?;
         skill.body = body.to_string();
+        normalize(&mut skill);
         Ok(skill)
+    }
+}
+
+/// Fill the Aonyx-native fields a portable (Hermes-style) skill omits: derive
+/// `id` from `name`, and — when no trigger is given — activate on the skill's
+/// tags + id words so it still surfaces on relevant queries.
+fn normalize(skill: &mut Skill) {
+    if skill.id.trim().is_empty() {
+        skill.id = slugify(&skill.name);
+    }
+    let t = &skill.trigger;
+    let untriggered = t.keywords.is_empty()
+        && t.query_matches.is_empty()
+        && t.project_matches.is_none()
+        && !t.manual
+        && !t.always_on;
+    if untriggered {
+        skill.trigger.keywords = derive_keywords(skill);
+    }
+}
+
+/// Lowercase, hyphenate, collapse — `"GitHub PR Workflow"` → `"github-pr-workflow"`.
+fn slugify(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut dash = false;
+    for c in s.chars() {
+        if c.is_ascii_alphanumeric() {
+            out.extend(c.to_lowercase());
+            dash = false;
+        } else if !out.is_empty() && !dash {
+            out.push('-');
+            dash = true;
+        }
+    }
+    out.trim_matches('-').to_string()
+}
+
+/// Keywords for a skill without an explicit trigger: its tags plus the
+/// significant words of its id.
+fn derive_keywords(skill: &Skill) -> Vec<String> {
+    let mut kws: Vec<String> = Vec::new();
+    let mut push = |w: String| {
+        if !w.is_empty() && !kws.contains(&w) {
+            kws.push(w);
+        }
+    };
+    for tag in &skill.tags {
+        push(tag.to_lowercase());
+    }
+    for word in skill.id.split('-') {
+        if word.len() > 3 {
+            push(word.to_lowercase());
+        }
+    }
+    kws
+}
+
+/// Infer the catalogue category from a `…/<category>/<skill>/SKILL.md` layout.
+/// Returns `None` for a flat `<name>.skill.md` file or an un-nested skill.
+fn category_from_path(path: &Path) -> Option<String> {
+    if path.file_name()?.to_str()? != "SKILL.md" {
+        return None;
+    }
+    let cat = path.parent()?.parent()?.file_name()?.to_str()?;
+    if cat == "skills" || cat == "built_in" {
+        None
+    } else {
+        Some(cat.to_string())
     }
 }
 
@@ -136,6 +211,38 @@ You say hi back.
         assert!(skill.enabled);
         assert_eq!(skill.trigger.keywords, vec!["hi"]);
         assert!(skill.body.contains("You say hi back."));
+    }
+
+    #[test]
+    fn parses_portable_hermes_skill() {
+        // No `id`, no `trigger`, plus portable fields — id + keywords are derived
+        // and unknown keys (version/author/license/platforms/metadata) are ignored.
+        let raw = r#"---
+name: GitHub PR Workflow
+description: "GitHub PR lifecycle: branch, commit, open, CI, merge."
+version: 1.0.0
+author: Hermes Agent
+license: MIT
+platforms: [linux, macos, windows]
+tags: [GitHub, PR, Review]
+metadata:
+  hermes:
+    related_skills: [github-issues]
+---
+
+Open a PR, watch CI, merge.
+"#;
+        let skill = SkillLoader::parse(raw).unwrap();
+        assert_eq!(skill.id, "github-pr-workflow");
+        assert_eq!(
+            skill.description.as_deref(),
+            Some("GitHub PR lifecycle: branch, commit, open, CI, merge.")
+        );
+        assert_eq!(skill.author.as_deref(), Some("Hermes Agent"));
+        assert!(skill.tags.contains(&"GitHub".to_string()));
+        // keywords derived from tags + id words
+        assert!(skill.trigger.keywords.contains(&"github".to_string()));
+        assert!(skill.trigger.keywords.contains(&"workflow".to_string()));
     }
 
     #[test]

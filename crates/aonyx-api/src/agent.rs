@@ -97,8 +97,17 @@ pub struct ToolInfo {
 pub struct SkillInfo {
     /// Skill id (the `SKILL.md` slug).
     pub id: String,
+    /// Human-readable name.
+    #[serde(default)]
+    pub name: String,
     /// Short description.
     pub description: String,
+    /// Catalogue category (`software-development`, `creative`, …), if any.
+    #[serde(default)]
+    pub category: Option<String>,
+    /// Free-form tags.
+    #[serde(default)]
+    pub tags: Vec<String>,
     /// Trigger labels (keywords / patterns / `always`).
     pub triggers: Vec<String>,
 }

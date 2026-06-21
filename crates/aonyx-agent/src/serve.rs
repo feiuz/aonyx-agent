@@ -254,7 +254,10 @@ mod api_imp {
                 }
                 SkillInfo {
                     id: s.id.clone(),
-                    description: s.name.clone(),
+                    name: s.name.clone(),
+                    description: s.description.clone().unwrap_or_else(|| s.name.clone()),
+                    category: s.category.clone(),
+                    tags: s.tags.clone(),
                     triggers,
                 }
             })
