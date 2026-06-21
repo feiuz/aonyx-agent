@@ -1,0 +1,3 @@
+# Agent sidecar binaries are built/staged (scripts/stage-sidecar.sh), never committed.
+*
+!.gitignore
