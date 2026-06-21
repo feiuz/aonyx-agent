@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { MessageSquare, Send, Cpu } from "lucide-react";
+import { Send, Cpu } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { useAgent } from "../context/AgentContext";
 import { useI18n } from "../context/LanguageContext";
@@ -126,26 +126,13 @@ export default function Chat() {
 
   return (
     <section className="flex flex-col h-full">
-        <header className="flex items-center justify-between h-14 px-5 flex-shrink-0 border-b border-aonyx-200 dark:border-aonyx-800">
-          <div className="flex items-center gap-2.5">
-            <MessageSquare className="w-5 h-5 text-aonyx-500" strokeWidth={1.75} />
-            <h1 className="font-cond uppercase tracking-wide text-lg text-aonyx-900 dark:text-aonyx-100">{t("nav.chat")}</h1>
-          </div>
-          <div className="flex items-center gap-2 text-xs font-mono text-aonyx-500" title={error || ""}>
-            <span
-              className={`w-2 h-2 rounded-full ${
-                status === "ok" ? "bg-emerald-500" : status === "connecting" ? "bg-amber-500" : "bg-red-500"
-              }`}
-            />
-            {status === "ok" && info
-              ? `${info.provider} · ${info.model}`
-              : status === "connecting"
-                ? t("status.connecting")
-                : t("status.offline")}
-          </div>
-        </header>
-
         <main ref={logRef} className="flex-1 overflow-y-auto p-6 flex flex-col gap-4">
+          {messages.length > 0 && status !== "ok" && (
+            <div className="flex items-center justify-center gap-2 text-xs font-mono text-aonyx-500">
+              <span className={`w-2 h-2 rounded-full ${status === "connecting" ? "bg-amber-500" : "bg-red-500"}`} />
+              {status === "connecting" ? t("status.connecting") : error || t("status.offline")}
+            </div>
+          )}
           {messages.length === 0 ? (
             <div className="relative m-auto w-full max-w-xl flex flex-col items-center justify-center text-center px-6 py-10">
               <img
