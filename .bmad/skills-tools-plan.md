@@ -1,8 +1,9 @@
-# Plan — Outils activables + Catalogue de skills façon Hermes
+# Plan — Parité Hermes : Outils · Skills · Messaging · RAG local
 
-> Objectif (Damien) : (1) pouvoir activer/désactiver les **outils** dans la vue
-> Compétences & outils ; (2) **répliquer le catalogue de skills d'Hermes Agent**
-> sur Aonyx. Recherche faite 2026-06-21.
+> Objectif (Damien) : rapprocher Aonyx Agent de Hermes sur 4 axes — (A) activer/
+> désactiver les **outils**, (B) **catalogue de skills**, (C) **messaging multi-
+> plateforme**, (D) **RAG local dans le menu** (projets, consultation, ingestion).
+> Recherche faite 2026-06-21.
 
 ## Contexte
 
@@ -59,13 +60,45 @@ réécrire 75 skills à la main → on peut alors *consommer* les skills Hermes/
 - **B4 — Import / marketplace** *(différé)* : installer un skill depuis un repo/URL
   (`awesome-hermes-skills`) vers `~/.aonyx/skills/`, avec validation. *Effort L.*
 
+## C. Messaging — passerelle multi-plateforme  *(en partie déjà là)*
+
+**Déjà pré-implémenté** : adaptateurs **Telegram** + **Discord** (`crates/aonyx-adapters`)
++ wizards CLI (`aonyx setup telegram|discord` : token en keyring, chats autorisés) +
+`aonyx serve telegram|discord`. Plus le serveur **OpenAI-compat** et l'**API REST/WS**.
+Hermes expose ~16 canaux ; Aonyx en a 2 (+ serveurs).
+
+- **C1 — Vue Messaging desktop** (façon Hermes) : liste des canaux à gauche, config à
+  droite (token, IDs autorisés, home channel), badges *Disabled / Needs setup / Running*,
+  **Save** → écrit la config + keyring. *Effort M.*
+- **C2 — Start/stop de la passerelle** : commande desktop qui lance/arrête `aonyx serve
+  <channel>` en sidecar (comme le sidecar API), statut live. *Effort M.*
+- **C3 — Canaux additionnels** *(roadmap)* : Slack, Matrix, WhatsApp, Signal… chacun un
+  adaptateur `AgentHandler` + wizard, à prioriser selon besoin. *Effort L / canal.*
+
+## D. RAG local dans le menu  *(moteur déjà là, UI à faire)*
+
+**Déjà là** : moteur RAG (embeddings bge-m3, chunk store SQLite + vecteurs, RRF, tool
+`rag_search`, `aonyx ingest <dossier>`) + vues desktop Memory Health / KG / Projets.
+**Manque** : une vraie **vue projets → documents** façon la capture RAG (consulter +
+ingérer depuis l'app — aujourd'hui l'ingestion est **CLI-only**, pas d'endpoint HTTP).
+
+- **D1 — Endpoint d'ingestion** : `POST /v1/memory/ingest {project, text|path, kind}` →
+  chunk + embed dans le palais (le pipeline existe, juste pas exposé en HTTP). *Effort M.*
+- **D2 — Vue Projets enrichie** : par projet → stats (docs/chunks, dim, modèle), **liste
+  des documents ingérés** (consulter / éditer / supprimer un chunk), onglets *Texte /
+  Fichiers / Documents*. *Effort M-L.*
+- **D3 — Ingestion d'instructions + fichiers** : coller du texte (instructions) ou déposer
+  des fichiers → ingérés dans le projet courant ; réutilise l'upload `+` du chat. *Effort M.*
+- **D4 — Consultation / recherche** : recherche RAG dans un projet depuis la vue (le tool
+  `rag_search` + `/v1/memory/search` existent déjà). *Effort S.*
+
 ## Séquencement proposé
 
 1. **A** — toggle outils (quick win, visible tout de suite).
-2. **B1** — schéma superset (débloque tout le reste).
-3. **B2** — vue Skills : catégories + recherche + toggle.
-4. **B3** — seed starter set.
-5. **B4** — import/marketplace (plus tard).
+2. **B1 → B2 → B3** — skills : schéma superset, vue catégories/recherche/toggle, starter set.
+3. **D1 → D2/D3** — RAG : endpoint d'ingestion, puis vue projets/documents + ingestion.
+4. **C1 → C2** — messaging : vue de config des canaux, puis start/stop de la passerelle.
+5. **Différés** : B4 (marketplace skills), C3 (canaux additionnels).
 
 ## Risques / garde-fous
 
