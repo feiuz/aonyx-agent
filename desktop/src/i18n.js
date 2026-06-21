@@ -61,6 +61,11 @@ const fr = {
   "status.ready": "Agent local prêt",
   "status.memoryLocal": "Mémoire locale",
   "status.session": "Durée de session",
+  "status.context": "Contexte",
+  "turn.thinking": "réflexion",
+  "turn.writing": "rédaction",
+  "turn.tasks": "tâche(s) en cours",
+  "turn.approval": "en attente d'approbation",
   "status.connecting": "connexion…",
 
   "stub.dashboard": "Vue d'ensemble — à venir.",
@@ -237,6 +242,11 @@ const en = {
   "status.ready": "Local agent ready",
   "status.memoryLocal": "Local memory",
   "status.session": "Session uptime",
+  "status.context": "Context",
+  "turn.thinking": "thinking",
+  "turn.writing": "writing",
+  "turn.tasks": "task(s) running",
+  "turn.approval": "awaiting approval",
   "status.connecting": "connecting…",
 
   "stub.dashboard": "Overview — coming soon.",

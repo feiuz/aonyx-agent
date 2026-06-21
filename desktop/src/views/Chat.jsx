@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Send, Cpu, Plus, Mic, X } from "lucide-react";
+import { Send, Cpu, Plus, Mic, X, Loader2 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { useAgent } from "../context/AgentContext";
 import { useI18n } from "../context/LanguageContext";
@@ -8,8 +8,20 @@ import Message from "../components/agent/Message";
 import ApprovalCard from "../components/agent/ApprovalCard";
 import logo from "../assets/logo.png";
 
+// Rough token estimate (~4 chars/token) — good enough for the live activity line
+// and the context gauge until the backend surfaces real usage.
+const estTokens = (s) => Math.ceil((s || "").length / 4);
+const fmtTokens = (n) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n));
+const fmtElapsed = (s) => (s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, "0")}s`);
+const contextWindow = (model) => {
+  if (!model) return 200000;
+  if (/gpt-4o|gpt-4-turbo|gpt-4|gpt-5/i.test(model)) return 128000;
+  if (/gpt-3\.5/i.test(model)) return 16000;
+  return 200000; // claude opus/sonnet + default
+};
+
 export default function Chat() {
-  const { status, info, error, sessionId, refreshSessions, ensureSession } = useAgent();
+  const { status, info, error, sessionId, refreshSessions, ensureSession, setUsage } = useAgent();
   const { t, lang } = useI18n();
   const navigate = useNavigate();
 
@@ -19,6 +31,7 @@ export default function Chat() {
   const [approvals, setApprovals] = useState([]);
   const [attachments, setAttachments] = useState([]);
   const [listening, setListening] = useState(false);
+  const [turnElapsed, setTurnElapsed] = useState(0);
   const logRef = useRef(null);
   const taRef = useRef(null);
   const fileRef = useRef(null);
@@ -28,6 +41,23 @@ export default function Chat() {
     const el = logRef.current;
     if (el) el.scrollTop = el.scrollHeight;
   }, [messages]);
+
+  // Live turn timer for the activity line (ticks only while a turn runs).
+  useEffect(() => {
+    if (!busy) {
+      setTurnElapsed(0);
+      return;
+    }
+    const start = Date.now();
+    const id = setInterval(() => setTurnElapsed(Math.floor((Date.now() - start) / 1000)), 1000);
+    return () => clearInterval(id);
+  }, [busy]);
+
+  // Estimated context usage → bottom status bar.
+  useEffect(() => {
+    const tokens = messages.reduce((n, m) => n + estTokens(m.content), 0);
+    setUsage({ tokens, max: contextWindow(info?.model) });
+  }, [messages, info, setUsage]);
 
   useEffect(() => {
     let cancelled = false;
@@ -242,6 +272,33 @@ export default function Chat() {
           {approvals.map((req) => (
             <ApprovalCard key={req.id} req={req} onDecide={decide} />
           ))}
+          {busy &&
+            (() => {
+              const last = messages[messages.length - 1];
+              const tokens = estTokens(last?.content);
+              const tasks = (last?.events || []).filter((e) => !e.done).length + approvals.length;
+              const running = (last?.events || []).find((e) => !e.done);
+              const activity = approvals.length
+                ? t("turn.approval")
+                : running
+                  ? running.name
+                  : last?.content
+                    ? t("turn.writing")
+                    : t("turn.thinking");
+              return (
+                <div className="flex items-center gap-2 text-xs text-aonyx-500 px-1 self-start">
+                  <Loader2 className="w-3.5 h-3.5 animate-spin text-primary-500 flex-shrink-0" />
+                  <span className="font-mono">{fmtElapsed(turnElapsed)}</span>
+                  <span>· {fmtTokens(tokens)} tokens</span>
+                  {tasks > 0 && (
+                    <span>
+                      · {tasks} {t("turn.tasks")}
+                    </span>
+                  )}
+                  <span className="text-aonyx-400 truncate">· {activity}…</span>
+                </div>
+              );
+            })()}
         </main>
 
         <footer className="p-4 flex-shrink-0">

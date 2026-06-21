@@ -10,6 +10,9 @@ export function AgentProvider({ children }) {
   const [error, setError] = useState(null);
   const [sessions, setSessions] = useState([]);
   const [sessionId, setSessionId] = useState(null);
+  // Estimated context usage (tokens of the active conversation vs the model's
+  // window) — surfaced in the bottom status bar. Chat updates it.
+  const [usage, setUsage] = useState({ tokens: 0, max: 200000 });
 
   const refreshSessions = useCallback(async () => {
     try {
@@ -66,6 +69,8 @@ export function AgentProvider({ children }) {
         sessions,
         sessionId,
         setSessionId,
+        usage,
+        setUsage,
         connect,
         refreshSessions,
         createSession,
