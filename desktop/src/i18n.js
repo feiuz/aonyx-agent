@@ -72,6 +72,7 @@ const fr = {
   "projects.none": "Aucun projet — démarre une conversation dans Chat.",
   "projects.count": "conv.",
 
+  "settings.section.provider": "Fournisseur",
   "settings.providerSection": "Fournisseur LLM",
   "settings.provider": "Fournisseur",
   "settings.model": "Modèle",
@@ -226,6 +227,7 @@ const en = {
   "projects.none": "No projects — start a conversation in Chat.",
   "projects.count": "conv.",
 
+  "settings.section.provider": "Provider",
   "settings.providerSection": "LLM Provider",
   "settings.provider": "Provider",
   "settings.model": "Model",

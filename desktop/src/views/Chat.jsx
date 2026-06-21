@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { MessageSquare, Plus, Send, Cpu } from "lucide-react";
+import { MessageSquare, Send, Cpu } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { useAgent } from "../context/AgentContext";
 import { useI18n } from "../context/LanguageContext";
@@ -8,17 +8,7 @@ import Message from "../components/agent/Message";
 import logo from "../assets/logo.png";
 
 export default function Chat() {
-  const {
-    status,
-    info,
-    error,
-    sessions,
-    sessionId,
-    setSessionId,
-    refreshSessions,
-    ensureSession,
-    createSession,
-  } = useAgent();
+  const { status, info, error, sessionId, refreshSessions, ensureSession } = useAgent();
   const { t } = useI18n();
   const navigate = useNavigate();
 
@@ -64,16 +54,6 @@ export default function Chat() {
     if (ta) {
       ta.style.height = "auto";
       ta.style.height = Math.min(ta.scrollHeight, 160) + "px";
-    }
-  };
-
-  const onNew = async () => {
-    if (busy) return;
-    try {
-      await createSession();
-      setMessages([]);
-    } catch {
-      /* ignore */
     }
   };
 
@@ -145,46 +125,7 @@ export default function Chat() {
   };
 
   return (
-    <div className="flex h-full">
-      {/* conversations sub-panel */}
-      <aside className="w-60 flex-shrink-0 flex flex-col border-r border-aonyx-200 dark:border-aonyx-800">
-        <div className="flex items-center justify-between h-14 px-3 flex-shrink-0 border-b border-aonyx-200 dark:border-aonyx-800">
-          <span className="text-[11px] font-cond uppercase tracking-wider text-aonyx-500">
-            {t("chat.conversations")}
-          </span>
-          <button
-            onClick={onNew}
-            className="flex items-center gap-1 text-xs px-2 py-1 rounded-md border border-aonyx-300 dark:border-aonyx-700 hover:bg-aonyx-200/60 dark:hover:bg-aonyx-900/50"
-          >
-            <Plus className="w-3.5 h-3.5" /> {t("chat.new")}
-          </button>
-        </div>
-        <ul className="flex-1 overflow-y-auto p-2 space-y-0.5">
-          {sessions.length === 0 && (
-            <li className="text-xs text-aonyx-500 px-2 py-1.5">{status === "ok" ? t("chat.none") : "—"}</li>
-          )}
-          {sessions.map((s) => (
-            <li key={s.id}>
-              <button
-                onClick={() => !busy && setSessionId(s.id)}
-                className={`w-full text-left px-2.5 py-2 rounded-md transition-colors ${
-                  s.id === sessionId
-                    ? "bg-aonyx-200/70 dark:bg-aonyx-800/70 text-aonyx-900 dark:text-aonyx-100"
-                    : "text-aonyx-600 dark:text-aonyx-400 hover:bg-aonyx-200/50 dark:hover:bg-aonyx-900/50"
-                }`}
-              >
-                <span className="block truncate text-sm">{s.title || t("chat.untitled")}</span>
-                <span className="block text-[11px] font-mono text-aonyx-500">
-                  {s.turns} {s.turns === 1 ? t("chat.turn") : t("chat.turns")}
-                </span>
-              </button>
-            </li>
-          ))}
-        </ul>
-      </aside>
-
-      {/* chat column */}
-      <section className="flex-1 min-w-0 flex flex-col">
+    <section className="flex flex-col h-full">
         <header className="flex items-center justify-between h-14 px-5 flex-shrink-0 border-b border-aonyx-200 dark:border-aonyx-800">
           <div className="flex items-center gap-2.5">
             <MessageSquare className="w-5 h-5 text-aonyx-500" strokeWidth={1.75} />
@@ -273,6 +214,5 @@ export default function Chat() {
           </div>
         </footer>
       </section>
-    </div>
   );
 }

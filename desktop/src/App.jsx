@@ -8,19 +8,8 @@ import { LanguageProvider } from "./context/LanguageContext";
 import { safeInvoke } from "./config/bridge";
 import AppShell from "./layout/AppShell";
 import Wizard from "./views/wizard/Wizard";
-import {
-  Dashboard,
-  Chat,
-  Projets,
-  Stats,
-  MemoryHealth,
-  KnowledgeGraph,
-  Users,
-  Permissions,
-  Mcp,
-  Agents,
-  Settings,
-} from "./views";
+import Chat from "./views/Chat";
+import SettingsHub from "./views/SettingsHub";
 
 // First-run gate (ADR-016): render the onboarding wizard until setup is complete
 // (a marker in ~/.aonyx/config.toml). Navigating to #/welcome forces it (preview
@@ -39,8 +28,9 @@ function SetupGate({ children }) {
   return children;
 }
 
-// HashRouter: the active route lives in location.hash, which works under the
-// tauri:// origin (like Electron's file://) — BrowserRouter would 404 on reload.
+// Hermes-style IA: the main sidebar shows only conversations; the chat is the
+// landing (/), and every other surface lives under Settings (/settings).
+// HashRouter: the active route lives in location.hash (works under tauri://).
 export default function App() {
   const [queryClient] = useState(
     () =>
@@ -67,16 +57,7 @@ export default function App() {
             <Routes>
               <Route element={<AppShell />}>
                 <Route path="/" element={<Chat />} />
-                <Route path="/dashboard" element={<Dashboard />} />
-                <Route path="/projects" element={<Projets />} />
-                <Route path="/stats" element={<Stats />} />
-                <Route path="/memory-health" element={<MemoryHealth />} />
-                <Route path="/kg" element={<KnowledgeGraph />} />
-                <Route path="/users" element={<Users />} />
-                <Route path="/permissions" element={<Permissions />} />
-                <Route path="/mcp" element={<Mcp />} />
-                <Route path="/agents" element={<Agents />} />
-                <Route path="/settings" element={<Settings />} />
+                <Route path="/settings" element={<SettingsHub />} />
                 <Route path="*" element={<Navigate to="/" replace />} />
               </Route>
             </Routes>
