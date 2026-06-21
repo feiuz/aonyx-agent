@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
-import { Settings as SettingsIcon, RefreshCw } from "lucide-react";
+import { Settings as SettingsIcon, RefreshCw, LogIn } from "lucide-react";
 import PageHeader from "../components/ui/PageHeader";
 import { useAgent } from "../context/AgentContext";
 import { useI18n } from "../context/LanguageContext";
-import { readProviderConfig, saveProviderConfig, listModels } from "../services/configService";
+import { readProviderConfig, saveProviderConfig, listModels, claudeLogin } from "../services/configService";
 
 const PROVIDERS = [
   { id: "anthropic", label: "Anthropic — Claude" },
@@ -53,6 +53,7 @@ export default function Settings() {
   const [models, setModels] = useState([]);
   const [modelNote, setModelNote] = useState("");
   const [loadingModels, setLoadingModels] = useState(false);
+  const [authIssue, setAuthIssue] = useState(false);
   const [apiKey, setApiKey] = useState("");
   const [base, setBase] = useState("");
   const [binary, setBinary] = useState("");
@@ -72,12 +73,22 @@ export default function Settings() {
         const list = (await listModels(prov, baseVal || DEFAULT_BASE[prov] || "", keyVal || "")) || [];
         const finalList = current && !list.includes(current) ? [current, ...list] : list;
         setModels(finalList);
+        setAuthIssue(false);
         if (!current && finalList.length) setModel(finalList[0]);
         setModelNote(list.length ? `${list.length} ${t("settings.model.available")}` : t("settings.model.none"));
       } catch (e) {
         const m = String(e);
         setModels(current ? [current] : []);
-        setModelNote(m.includes("API_KEY_REQUIRED") ? t("settings.model.keyRequired") : t("settings.model.fetchFail") + m);
+        setAuthIssue(m.includes("CLAUDE_CODE_EXPIRED") || m.includes("CLAUDE_CODE_ABSENT"));
+        setModelNote(
+          m.includes("API_KEY_REQUIRED")
+            ? t("settings.model.keyRequired")
+            : m.includes("CLAUDE_CODE_EXPIRED")
+              ? t("settings.model.ccExpired")
+              : m.includes("CLAUDE_CODE_ABSENT")
+                ? t("settings.model.ccAbsent")
+                : t("settings.model.fetchFail") + m,
+        );
       } finally {
         setLoadingModels(false);
       }
@@ -108,6 +119,16 @@ export default function Settings() {
 
   const selectedModel = () => (model === CUSTOM ? customModel.trim() : model);
 
+  const relogin = async () => {
+    try {
+      await claudeLogin(binary);
+      setModelNote(t("settings.model.ccRelaunched"));
+      setTimeout(() => loadModels(provider, selectedModel() || null, apiKey, base), 5000);
+    } catch (e) {
+      setModelNote(String(e));
+    }
+  };
+
   const save = async () => {
     const m = selectedModel();
     if (!m) return setMsg(t("settings.save.pickModel"));
@@ -129,6 +150,7 @@ export default function Settings() {
     setMsg(t("settings.save.saving"));
     try {
       await saveProviderConfig(cfg);
+      window.dispatchEvent(new Event("aonyx:provider-changed"));
       const ok = await connect();
       setMsg(ok ? t("settings.save.connected") : t("settings.save.unreachable"));
     } catch (e) {
@@ -171,6 +193,16 @@ export default function Settings() {
                 </button>
               </div>
               {modelNote && <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">{modelNote}</p>}
+              {authIssue && (
+                <button
+                  type="button"
+                  onClick={relogin}
+                  className="mt-2 inline-flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg border border-amber-500/50 text-amber-700 dark:text-amber-300 hover:bg-amber-500/10"
+                >
+                  <LogIn className="w-3.5 h-3.5" />
+                  {t("settings.model.ccRelogin")}
+                </button>
+              )}
             </Field>
             {model === CUSTOM && (
               <Field label={t("settings.customModel")}>
