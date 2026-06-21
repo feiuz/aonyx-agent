@@ -114,15 +114,18 @@ async fn api_stream(
     token: String,
     session: String,
     content: String,
+    attachments: Option<Value>,
     on_event: tauri::ipc::Channel<Value>,
 ) -> Result<(), String> {
     use futures_util::StreamExt;
 
     let url = join(&base, &format!("/v1/sessions/{session}/messages/stream"));
     let client = reqwest::Client::new();
-    let mut rb = client
-        .post(&url)
-        .json(&serde_json::json!({ "content": content }));
+    let mut body = serde_json::json!({ "content": content });
+    if let Some(att) = attachments {
+        body["attachments"] = att;
+    }
+    let mut rb = client.post(&url).json(&body);
     if !token.is_empty() {
         rb = rb.bearer_auth(token);
     }

@@ -53,11 +53,15 @@ export const tools = () => invoke("api_tools", withArgs());
 /** Resolve a paused destructive tool call (interactive approval). */
 export const approve = (id, approved) => invoke("api_approve", withArgs({ id, approved }));
 
-/** Stream a turn. onFrame gets {type:"delta"|"tool_start"|"done"|"error", …}. */
-export async function streamMessage(session, content, onFrame) {
+/** Stream a turn. onFrame gets {type:"delta"|"tool_start"|"done"|"error", …}.
+ *  `attachments` is an optional array of {type:"image", media_type, data}. */
+export async function streamMessage(session, content, attachments, onFrame) {
   const ch = channel();
   if (ch) ch.onmessage = onFrame;
-  return invoke("api_stream", withArgs({ session, content, onEvent: ch }));
+  return invoke(
+    "api_stream",
+    withArgs({ session, content, attachments: attachments?.length ? attachments : null, onEvent: ch }),
+  );
 }
 
 export const toolNamesOf = (msg) =>

@@ -1,5 +1,6 @@
-import { Outlet } from "react-router-dom";
-import { Database } from "lucide-react";
+import { useEffect, useState } from "react";
+import { Outlet, useNavigate } from "react-router-dom";
+import { Database, Bot, Clock } from "lucide-react";
 import TitleBar from "./TitleBar";
 import Sidebar from "./Sidebar";
 import SignInModal from "../components/auth/SignInModal";
@@ -7,27 +8,45 @@ import { useAgent } from "../context/AgentContext";
 import { useI18n } from "../context/LanguageContext";
 import pkg from "../../package.json";
 
-// Hermes-style bottom status bar: agent health, memory mode, app version.
+// Hermes-style bottom status bar: agent health, the live model, quick links to
+// Agents and Memory, the session clock, and the app version.
 function StatusBar() {
   const { status, info } = useAgent();
   const { t } = useI18n();
+  const navigate = useNavigate();
+  const [elapsed, setElapsed] = useState(0);
+  useEffect(() => {
+    const start = Date.now();
+    const id = setInterval(() => setElapsed(Math.floor((Date.now() - start) / 1000)), 1000);
+    return () => clearInterval(id);
+  }, []);
+  const clock = `${String(Math.floor(elapsed / 60)).padStart(2, "0")}:${String(elapsed % 60).padStart(2, "0")}`;
   const label =
     status === "ok" ? t("status.ready") : status === "connecting" ? t("status.connecting") : t("status.offline");
   const dot = status === "ok" ? "bg-emerald-500" : status === "connecting" ? "bg-amber-500" : "bg-red-500";
+  const cell = "flex items-center gap-1 hover:text-aonyx-700 dark:hover:text-aonyx-300 transition-colors";
   return (
     <div className="flex items-center gap-3 h-6 px-3 flex-shrink-0 border-t border-aonyx-200 dark:border-aonyx-800 bg-aonyx-100 dark:bg-aonyx-950 text-[11px] text-aonyx-500">
-      <span className="flex items-center gap-1.5">
+      <button onClick={() => navigate("/settings")} className={cell} title={info ? `${info.provider} · ${info.model}` : ""}>
         <span className={`w-1.5 h-1.5 rounded-full ${dot}`} />
         {label}
-      </span>
+      </button>
       {status === "ok" && info?.model && (
-        <span className="hidden sm:inline font-mono truncate max-w-[200px]">{info.model}</span>
+        <span className="hidden md:inline font-mono truncate max-w-[160px]">{info.model}</span>
       )}
-      <span className="hidden sm:flex items-center gap-1">
+      <button onClick={() => navigate("/agents")} className={`hidden sm:flex ${cell}`}>
+        <Bot className="w-3 h-3" />
+        {t("nav.agents")}
+      </button>
+      <button onClick={() => navigate("/memory")} className={`hidden sm:flex ${cell}`}>
         <Database className="w-3 h-3" />
         {t("status.memoryLocal")}
-      </span>
+      </button>
       <span className="flex-1" />
+      <span className="flex items-center gap-1 font-mono" title={t("status.session")}>
+        <Clock className="w-3 h-3" />
+        {clock}
+      </span>
       <span className="font-mono">v{pkg.version}</span>
     </div>
   );

@@ -47,7 +47,9 @@ const fr = {
 
   "chat.conversations": "Conversations",
   "chat.new": "Nouveau",
-  "chat.placeholder": "Message Aonyx…  (Entrée pour envoyer · Maj+Entrée = nouvelle ligne)",
+  "chat.placeholder": "Message Aonyx…",
+  "chat.attach": "Joindre une image",
+  "chat.voice": "Dicter",
   "chat.empty.ready": "Pose ta question — je stream la réponse et j'appelle mes outils.",
   "chat.empty.configure": "Configure le provider dans Paramètres.",
   "home.tagline": "Décris ta tâche avec tes mots — je me souviens de ton projet, je planifie, et je confirme avant les actions risquées.",
@@ -58,6 +60,7 @@ const fr = {
   "status.offline": "hors ligne",
   "status.ready": "Agent local prêt",
   "status.memoryLocal": "Mémoire locale",
+  "status.session": "Durée de session",
   "status.connecting": "connexion…",
 
   "stub.dashboard": "Vue d'ensemble — à venir.",
@@ -220,7 +223,9 @@ const en = {
 
   "chat.conversations": "Conversations",
   "chat.new": "New",
-  "chat.placeholder": "Message Aonyx…  (Enter to send · Shift+Enter for a newline)",
+  "chat.placeholder": "Message Aonyx…",
+  "chat.attach": "Attach an image",
+  "chat.voice": "Dictate",
   "chat.empty.ready": "Ask away — I stream the reply and call my tools.",
   "chat.empty.configure": "Configure the provider in Settings.",
   "home.tagline": "Describe your task in your own words — I remember your project, I plan, and I confirm before risky steps.",
@@ -231,6 +236,7 @@ const en = {
   "status.offline": "offline",
   "status.ready": "Local agent ready",
   "status.memoryLocal": "Local memory",
+  "status.session": "Session uptime",
   "status.connecting": "connecting…",
 
   "stub.dashboard": "Overview — coming soon.",

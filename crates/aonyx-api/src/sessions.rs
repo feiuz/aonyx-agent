@@ -74,6 +74,21 @@ pub struct NewSessionRequest {
 pub struct SendMessageRequest {
     /// The user message text.
     pub content: String,
+    /// Optional multimodal attachments (images for vision-capable providers).
+    /// Defaults to empty so text-only clients are unaffected.
+    #[serde(default)]
+    pub attachments: Vec<aonyx_core::Attachment>,
+}
+
+impl SendMessageRequest {
+    /// Build the user [`Message`] for this request, attaching any images.
+    pub(crate) fn into_message(self) -> Message {
+        if self.attachments.is_empty() {
+            Message::new(Role::User, self.content)
+        } else {
+            Message::with_attachments(Role::User, self.content, self.attachments)
+        }
+    }
 }
 
 /// Response of a blocking turn: the assistant reply plus the canonical,
@@ -150,7 +165,7 @@ pub async fn send_message(
         .ok_or_else(|| ApiError::NotFound(format!("no session {id}")))?;
 
     let mut history = record.messages;
-    history.push(Message::new(Role::User, req.content));
+    history.push(req.into_message());
 
     let new_log = state.agent.run_turn(history).await?;
     let reply = last_assistant_text(&new_log);

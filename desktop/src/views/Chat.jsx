@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Send, Cpu } from "lucide-react";
+import { Send, Cpu, Plus, Mic, X } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { useAgent } from "../context/AgentContext";
 import { useI18n } from "../context/LanguageContext";
@@ -10,15 +10,19 @@ import logo from "../assets/logo.png";
 
 export default function Chat() {
   const { status, info, error, sessionId, refreshSessions, ensureSession } = useAgent();
-  const { t } = useI18n();
+  const { t, lang } = useI18n();
   const navigate = useNavigate();
 
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [approvals, setApprovals] = useState([]);
+  const [attachments, setAttachments] = useState([]);
+  const [listening, setListening] = useState(false);
   const logRef = useRef(null);
   const taRef = useRef(null);
+  const fileRef = useRef(null);
+  const recognitionRef = useRef(null);
 
   useEffect(() => {
     const el = logRef.current;
@@ -61,18 +65,20 @@ export default function Chat() {
 
   const send = async () => {
     const text = input.trim();
-    if (!text || busy || status !== "ok") return;
+    if ((!text && attachments.length === 0) || busy || status !== "ok") return;
     let sid;
     try {
       sid = await ensureSession();
     } catch {
       return;
     }
+    const atts = attachments.map((a) => ({ type: "image", media_type: a.media_type, data: a.data }));
     setInput("");
+    setAttachments([]);
     grow();
     setMessages((m) => [
       ...m,
-      { role: "user", content: text },
+      { role: "user", content: text || `📎 ${atts.length}` },
       { role: "assistant", content: "", events: [], streaming: true },
     ]);
     setBusy(true);
@@ -88,7 +94,7 @@ export default function Chat() {
       });
 
     try {
-      await agent.streamMessage(sid, text, (frame) => {
+      await agent.streamMessage(sid, text, atts, (frame) => {
         switch (frame?.type) {
           case "delta":
             acc += frame.text || "";
@@ -145,6 +151,48 @@ export default function Chat() {
     }
   };
 
+  const pickFiles = () => fileRef.current?.click();
+  const onFiles = (e) => {
+    Array.from(e.target.files || []).forEach((file) => {
+      if (!file.type.startsWith("image/")) return;
+      const reader = new FileReader();
+      reader.onload = () => {
+        const data = String(reader.result).split(",")[1] || "";
+        setAttachments((a) => [...a, { name: file.name, media_type: file.type, data, url: reader.result }]);
+      };
+      reader.readAsDataURL(file);
+    });
+    e.target.value = "";
+  };
+  const removeAttachment = (i) => setAttachments((a) => a.filter((_, j) => j !== i));
+
+  const voiceSupported =
+    typeof window !== "undefined" && !!(window.SpeechRecognition || window.webkitSpeechRecognition);
+  const toggleVoice = () => {
+    if (!voiceSupported) return;
+    if (listening) {
+      recognitionRef.current?.stop();
+      return;
+    }
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    const rec = new SR();
+    rec.lang = lang === "fr" ? "fr-FR" : "en-US";
+    rec.interimResults = true;
+    rec.continuous = false;
+    const base = input ? input + " " : "";
+    rec.onresult = (e) => {
+      let txt = "";
+      for (let i = 0; i < e.results.length; i++) txt += e.results[i][0].transcript;
+      setInput(base + txt);
+      grow();
+    };
+    rec.onend = () => setListening(false);
+    rec.onerror = () => setListening(false);
+    recognitionRef.current = rec;
+    setListening(true);
+    rec.start();
+  };
+
   const onKey = (e) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
@@ -197,38 +245,82 @@ export default function Chat() {
         </main>
 
         <footer className="p-4 flex-shrink-0">
-          <div className="flex items-end gap-2 max-w-3xl mx-auto rounded-2xl border border-aonyx-300 dark:border-aonyx-700 bg-white dark:bg-aonyx-950 px-3 py-2 transition-colors focus-within:border-primary-500 focus-within:ring-1 focus-within:ring-primary-500/25">
-            <textarea
-              ref={taRef}
-              rows={1}
-              value={input}
-              onChange={(e) => {
-                setInput(e.target.value);
-                grow();
-              }}
-              onKeyDown={onKey}
-              disabled={status !== "ok"}
-              placeholder={t("chat.placeholder")}
-              className="flex-1 resize-none max-h-40 bg-transparent px-1 py-1.5 text-sm select-text focus:outline-none disabled:opacity-50"
-            />
-            {info?.model && (
-              <button
-                onClick={() => navigate("/settings")}
-                title={t("nav.settings")}
-                className="hidden sm:flex items-center gap-1.5 mb-0.5 shrink-0 max-w-[170px] text-[11px] font-mono text-aonyx-500 border border-aonyx-300 dark:border-aonyx-700 rounded-lg px-2 py-1 hover:bg-aonyx-100 dark:hover:bg-aonyx-900 transition-colors"
-              >
-                <Cpu className="w-3 h-3 shrink-0" />
-                <span className="truncate">{info.model}</span>
-              </button>
+          <div className="max-w-3xl mx-auto">
+            {attachments.length > 0 && (
+              <div className="flex flex-wrap gap-2 mb-2 px-1">
+                {attachments.map((a, i) => (
+                  <div key={i} className="relative">
+                    <img
+                      src={a.url}
+                      alt={a.name}
+                      className="w-14 h-14 object-cover rounded-lg border border-aonyx-300 dark:border-aonyx-700"
+                    />
+                    <button
+                      onClick={() => removeAttachment(i)}
+                      className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full bg-aonyx-800 text-white flex items-center justify-center hover:bg-aonyx-900"
+                    >
+                      <X className="w-2.5 h-2.5" />
+                    </button>
+                  </div>
+                ))}
+              </div>
             )}
-            <button
-              onClick={send}
-              disabled={busy || status !== "ok" || !input.trim()}
-              className="flex items-center justify-center w-9 h-9 rounded-xl bg-primary-600 hover:bg-primary-700 text-white disabled:opacity-40 disabled:cursor-not-allowed shrink-0"
-              aria-label={t("chat.new")}
-            >
-              <Send className="w-4 h-4" />
-            </button>
+            <div className="flex items-end gap-1 rounded-2xl border border-aonyx-300 dark:border-aonyx-700 bg-white dark:bg-aonyx-950 pl-1.5 pr-2 py-1.5 transition-colors focus-within:border-primary-500 focus-within:ring-1 focus-within:ring-primary-500/25">
+              <input ref={fileRef} type="file" accept="image/*" multiple className="hidden" onChange={onFiles} />
+              <button
+                onClick={pickFiles}
+                disabled={status !== "ok"}
+                title={t("chat.attach")}
+                className="flex items-center justify-center w-8 h-8 rounded-lg text-aonyx-500 hover:bg-aonyx-100 dark:hover:bg-aonyx-900 disabled:opacity-40 shrink-0 mb-0.5"
+              >
+                <Plus className="w-5 h-5" strokeWidth={1.75} />
+              </button>
+              <textarea
+                ref={taRef}
+                rows={1}
+                value={input}
+                onChange={(e) => {
+                  setInput(e.target.value);
+                  grow();
+                }}
+                onKeyDown={onKey}
+                disabled={status !== "ok"}
+                placeholder={t("chat.placeholder")}
+                className="flex-1 resize-none max-h-40 bg-transparent px-1 py-1.5 text-sm select-text focus:outline-none disabled:opacity-50"
+              />
+              {info?.model && (
+                <button
+                  onClick={() => navigate("/settings")}
+                  title={t("nav.settings")}
+                  className="hidden sm:flex items-center gap-1.5 mb-0.5 shrink-0 max-w-[150px] text-[11px] font-mono text-aonyx-500 border border-aonyx-300 dark:border-aonyx-700 rounded-lg px-2 py-1 hover:bg-aonyx-100 dark:hover:bg-aonyx-900 transition-colors"
+                >
+                  <Cpu className="w-3 h-3 shrink-0" />
+                  <span className="truncate">{info.model}</span>
+                </button>
+              )}
+              {voiceSupported && (
+                <button
+                  onClick={toggleVoice}
+                  disabled={status !== "ok"}
+                  title={t("chat.voice")}
+                  className={`flex items-center justify-center w-8 h-8 rounded-lg shrink-0 mb-0.5 disabled:opacity-40 ${
+                    listening
+                      ? "bg-red-500/15 text-red-500 animate-pulse"
+                      : "text-aonyx-500 hover:bg-aonyx-100 dark:hover:bg-aonyx-900"
+                  }`}
+                >
+                  <Mic className="w-[18px] h-[18px]" strokeWidth={1.75} />
+                </button>
+              )}
+              <button
+                onClick={send}
+                disabled={busy || status !== "ok" || (!input.trim() && attachments.length === 0)}
+                className="flex items-center justify-center w-9 h-9 rounded-xl bg-primary-600 hover:bg-primary-700 text-white disabled:opacity-40 disabled:cursor-not-allowed shrink-0"
+                aria-label={t("chat.new")}
+              >
+                <Send className="w-4 h-4" />
+              </button>
+            </div>
           </div>
         </footer>
       </section>

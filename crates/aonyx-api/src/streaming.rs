@@ -178,7 +178,7 @@ pub async fn sse_message(
     };
 
     let mut history = record.messages;
-    history.push(Message::new(Role::User, req.content));
+    history.push(req.into_message());
     let turns = record.turns + 1;
 
     let (tx, rx) = mpsc::channel::<StreamFrame>(128);
