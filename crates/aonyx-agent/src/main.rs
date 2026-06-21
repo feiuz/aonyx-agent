@@ -29,7 +29,6 @@ use aonyx_llm::{
 use aonyx_memory::{Palace, SessionStore, SqliteSessionStore};
 use clap::{Parser, Subcommand};
 
-mod agents;
 mod backup;
 mod config;
 mod images;
@@ -652,6 +651,18 @@ async fn build_serve_registry() -> anyhow::Result<aonyx_tools::ToolRegistry> {
     // (Telegram / Discord / API) only offers the intended tools.
     apply_tool_policy(&registry, &config.tools_allow, &config.tools_deny);
 
+    // Architect (ADR-017): hand the agent a `dispatch_agent` tool over the
+    // configured sub-agents, sharing this policy-filtered registry (memory tools
+    // included) so they delegate against the same project palace.
+    if let (Ok(provider), Ok(dir)) = (build_provider(&config), Config::config_dir()) {
+        aonyx_agent::subagent::register_dispatch_agent(
+            &mut registry,
+            provider,
+            config.model.clone(),
+            dir.join("agents"),
+        );
+    }
+
     Ok(registry)
 }
 
@@ -1089,7 +1100,7 @@ fn handle_agents_list() {
             return;
         }
     };
-    let agents = agents::load_all(&dir);
+    let agents = aonyx_agent::agents::load_all(&dir);
     println!("agents dir: {}", dir.display());
     if agents.is_empty() {
         println!("(no agents)");

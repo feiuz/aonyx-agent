@@ -203,7 +203,16 @@ impl InteractiveSession {
     ) -> Self {
         let project = project_slug.into();
         let model_name = model.clone();
-        let runner = AgentRunner::new(provider, ToolRegistry::default_set(), model)
+        let mut registry = ToolRegistry::default_set();
+        if let Ok(dir) = crate::config::Config::config_dir() {
+            aonyx_agent::subagent::register_dispatch_agent(
+                &mut registry,
+                Arc::clone(&provider),
+                model.clone(),
+                dir.join("agents"),
+            );
+        }
+        let runner = AgentRunner::new(provider, registry, model)
             .with_max_iterations(max_iterations)
             .with_approval(ApprovalPolicy::DenyDestructive)
             .with_skills(skills)

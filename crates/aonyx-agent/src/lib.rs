@@ -29,6 +29,7 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs, rust_2018_idioms)]
 
+pub mod agents;
 pub mod approval;
 pub mod classifier;
 pub mod compaction;

@@ -121,6 +121,35 @@ impl ToolRegistry {
         r.register(Arc::new(WebSearch));
         r
     }
+
+    /// Build an **isolated** registry containing only the tools whose names
+    /// match `patterns` — exact names, a trailing-`*` prefix (`git_*`), or a
+    /// bare `*` for everything. An empty pattern list inherits every enabled
+    /// tool. The returned registry has its own disabled set, so toggling it
+    /// never touches the parent — used to scope a sub-agent's toolset (ADR-017).
+    pub fn subset(&self, patterns: &[String]) -> ToolRegistry {
+        let keep = |name: &str| -> bool {
+            if patterns.is_empty() {
+                return true;
+            }
+            patterns.iter().any(|p| {
+                if p == "*" {
+                    true
+                } else if let Some(prefix) = p.strip_suffix('*') {
+                    name.starts_with(prefix)
+                } else {
+                    name == p
+                }
+            })
+        };
+        let mut out = ToolRegistry::new();
+        for (name, h) in &self.handlers {
+            if keep(name) && !self.is_disabled(name) {
+                out.handlers.insert(name.clone(), Arc::clone(h));
+            }
+        }
+        out
+    }
 }
 
 #[cfg(test)]
@@ -195,5 +224,29 @@ mod tests {
         a.disable("bash");
         assert!(b.is_disabled("bash"));
         assert!(b.get("bash").is_none());
+    }
+
+    #[test]
+    fn subset_filters_by_exact_and_wildcard() {
+        let r = ToolRegistry::default_set();
+        let sub = r.subset(&["bash".to_string(), "git_*".to_string()]);
+        let mut names: Vec<&str> = sub.names().collect();
+        names.sort();
+        assert_eq!(
+            names,
+            vec!["bash", "git_diff", "git_log", "git_show", "git_status"]
+        );
+        assert!(sub.get("fs_read").is_none());
+        // Empty patterns inherit the whole toolset.
+        assert_eq!(r.subset(&[]).len(), r.len());
+    }
+
+    #[test]
+    fn subset_has_an_isolated_disabled_set() {
+        let r = ToolRegistry::default_set();
+        let sub = r.subset(&[]);
+        sub.disable("bash");
+        assert!(sub.is_disabled("bash"));
+        assert!(!r.is_disabled("bash")); // parent untouched — no shared toggle leak
     }
 }
