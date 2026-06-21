@@ -77,6 +77,52 @@ impl Palace {
         self.embedder = Some(embedder);
         self
     }
+
+    /// Ingest free text under `project` / `source`: split it, append the chunks
+    /// (BM25), and — when an embedder is configured — embed and store the vectors
+    /// so the document joins hybrid search. Returns the number of chunks written.
+    pub async fn ingest_text(&self, project: &str, source: &str, text: &str) -> Result<usize> {
+        let parts = split_text(text);
+        if parts.is_empty() {
+            return Ok(0);
+        }
+        let mut ids = Vec::with_capacity(parts.len());
+        for p in &parts {
+            ids.push(
+                self.chunks
+                    .append(Chunk::new(project, source, p.as_str()).with_kind("doc"))
+                    .await?,
+            );
+        }
+        if let Some(emb) = &self.embedder {
+            let vecs = emb.embed(&parts).await?;
+            for (id, v) in ids.iter().zip(vecs) {
+                self.chunks.upsert_vector(*id, emb.model_id(), &v).await?;
+            }
+        }
+        Ok(parts.len())
+    }
+}
+
+/// Split text into retrieval-sized chunks: paragraph boundaries (blank lines),
+/// merged up to a target length so each chunk is a coherent unit.
+fn split_text(text: &str) -> Vec<String> {
+    const TARGET: usize = 1500;
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    for para in text.split("\n\n").map(str::trim).filter(|p| !p.is_empty()) {
+        if !cur.is_empty() && cur.len() + para.len() + 2 > TARGET {
+            out.push(std::mem::take(&mut cur));
+        }
+        if !cur.is_empty() {
+            cur.push_str("\n\n");
+        }
+        cur.push_str(para);
+    }
+    if !cur.is_empty() {
+        out.push(cur);
+    }
+    out
 }
 
 #[async_trait]

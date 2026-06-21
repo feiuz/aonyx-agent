@@ -48,6 +48,39 @@ pub async fn search(
     ))
 }
 
+/// Body for `POST /v1/memory/ingest`.
+#[derive(Debug, Deserialize)]
+pub struct IngestRequest {
+    /// Project to ingest into; defaults to the server project.
+    pub project: Option<String>,
+    /// Source label for the document (file path, title, …).
+    pub source: String,
+    /// The raw text to chunk, embed, and store.
+    pub text: String,
+}
+
+/// `POST /v1/memory/ingest` — chunk + embed a document into the project's palace
+/// so `rag_search` / `memory_search` find it. Returns the chunk count.
+pub async fn ingest(
+    State(state): State<ApiState>,
+    Json(req): Json<IngestRequest>,
+) -> ApiResult<(StatusCode, Json<serde_json::Value>)> {
+    if req.text.trim().is_empty() {
+        return Err(ApiError::BadRequest("empty text".into()));
+    }
+    let source = if req.source.trim().is_empty() {
+        "uploaded".to_string()
+    } else {
+        req.source.clone()
+    };
+    let project = state.project_or_default(req.project);
+    let chunks = state.palace.ingest_text(&project, &source, &req.text).await?;
+    Ok((
+        StatusCode::CREATED,
+        Json(serde_json::json!({ "project": project, "source": source, "chunks": chunks })),
+    ))
+}
+
 /// Query for `GET /v1/memory/diary`.
 #[derive(Debug, Deserialize)]
 pub struct DiaryParams {

@@ -127,6 +127,24 @@ async fn api_skill_enabled(
     .await
 }
 
+/// `POST /v1/memory/ingest` — chunk + embed a document into the project's palace.
+#[tauri::command]
+async fn api_ingest(
+    base: String,
+    token: String,
+    project: Option<String>,
+    source: String,
+    text: String,
+) -> Result<Value, String> {
+    send(
+        reqwest::Method::POST,
+        join(&base, "/v1/memory/ingest"),
+        &token,
+        Some(serde_json::json!({ "project": project, "source": source, "text": text })),
+    )
+    .await
+}
+
 /// `POST /v1/sessions/{id}/messages` — run one blocking turn.
 #[tauri::command]
 async fn api_send(
@@ -1154,6 +1172,7 @@ pub fn run() {
             api_tool_enabled,
             api_skills,
             api_skill_enabled,
+            api_ingest,
             api_send,
             api_stream,
             api_list_sessions,

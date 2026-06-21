@@ -338,7 +338,13 @@ mod api_imp {
         };
 
         // Memory palace (current dir) + cross-run session store.
+        // Build the palace with the local embedder (when configured) so the
+        // `/v1/memory/ingest` endpoint embeds documents into hybrid search.
         let palace = Palace::open(Palace::default_project_dir(&cwd))?;
+        let palace = match crate::build_local_embedder(&config) {
+            Some(emb) => palace.with_embedder(emb),
+            None => palace,
+        };
         let sessions = SqliteSessionStore::open(Config::config_dir()?.join("sessions.db"))?;
 
         // Token: flag → keyring → env.
