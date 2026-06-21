@@ -1,6 +1,7 @@
 import { useState } from "react";
 import {
   SlidersHorizontal,
+  MessagesSquare,
   Database,
   Download,
   FolderOpen,
@@ -16,6 +17,7 @@ import Projets from "./Projets";
 import Stats from "./Stats";
 import KnowledgeGraph from "./KnowledgeGraph";
 import Mcp from "./Mcp";
+import Messaging from "./Messaging";
 import { Users, Permissions } from "./index";
 
 // Settings hub (Hermes-style IA): the main sidebar shows only conversations;
@@ -24,6 +26,7 @@ const SECTIONS = [
   { id: "provider", key: "settings.section.provider", icon: SlidersHorizontal, El: ProviderConfig },
   { id: "kg", key: "nav.kg", icon: Database, El: KnowledgeGraph },
   { id: "mcp", key: "nav.mcp", icon: Download, El: Mcp },
+  { id: "messaging", key: "nav.messaging", icon: MessagesSquare, El: Messaging },
   { id: "projects", key: "nav.projects", icon: FolderOpen, El: Projets },
   { id: "dashboard", key: "nav.dashboard", icon: LayoutDashboard, El: Dashboard },
   { id: "stats", key: "nav.stats", icon: BarChart3, El: Stats },

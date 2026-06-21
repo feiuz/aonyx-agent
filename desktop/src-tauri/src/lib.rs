@@ -769,6 +769,74 @@ fn save_provider_config(cfg: Value) -> Result<(), String> {
     std::fs::write(&path, doc.to_string()).map_err(|e| e.to_string())
 }
 
+/// Read messaging-channel config: allowed ids (from `config.toml`) and whether a
+/// bot token is stored (in the OS keyring) for Telegram and Discord.
+#[tauri::command]
+fn read_messaging() -> Result<Value, String> {
+    let path = aonyx_config_path()?;
+    let table: toml::value::Table = if path.exists() {
+        toml::from_str(&std::fs::read_to_string(&path).map_err(|e| e.to_string())?)
+            .map_err(|e| format!("parse config: {e}"))?
+    } else {
+        toml::value::Table::new()
+    };
+    let ids = |k: &str| -> Vec<i64> {
+        table
+            .get(k)
+            .and_then(|v| v.as_array())
+            .map(|a| a.iter().filter_map(|x| x.as_integer()).collect())
+            .unwrap_or_default()
+    };
+    let has_token = |k: &str| {
+        account_entry(k)
+            .ok()
+            .and_then(|e| e.get_password().ok())
+            .is_some()
+    };
+    Ok(serde_json::json!({
+        "telegram": { "allowed": ids("telegram_allowed_chats"), "hasToken": has_token("telegram_bot_token") },
+        "discord": { "allowed": ids("discord_allowed_channels"), "hasToken": has_token("discord_bot_token") },
+    }))
+}
+
+/// Save a messaging channel's config: allowed ids → `config.toml`, and (when
+/// provided) the bot token → the OS keyring under the same key the agent reads.
+#[tauri::command]
+fn save_messaging(channel: String, allowed: Vec<i64>, token: Option<String>) -> Result<(), String> {
+    let (cfg_key, token_key) = match channel.as_str() {
+        "telegram" => ("telegram_allowed_chats", "telegram_bot_token"),
+        "discord" => ("discord_allowed_channels", "discord_bot_token"),
+        other => return Err(format!("unknown channel: {other}")),
+    };
+    let path = aonyx_config_path()?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let content = if path.exists() {
+        std::fs::read_to_string(&path).map_err(|e| e.to_string())?
+    } else {
+        String::new()
+    };
+    let mut doc = content
+        .parse::<toml_edit::DocumentMut>()
+        .map_err(|e| format!("parse config: {e}"))?;
+    let mut arr = toml_edit::Array::new();
+    for id in &allowed {
+        arr.push(*id);
+    }
+    doc[cfg_key] = toml_edit::Item::Value(toml_edit::Value::Array(arr));
+    std::fs::write(&path, doc.to_string()).map_err(|e| e.to_string())?;
+
+    if let Some(tok) = token {
+        if !tok.trim().is_empty() {
+            account_entry(token_key)?
+                .set_password(tok.trim())
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
+
 /// Read whether first-run setup has completed: a `setup_complete = true` marker
 /// in `~/.aonyx/config.toml` together with a non-empty `provider` + `model`. The
 /// desktop gates the first-run wizard on this (ADR-016).
@@ -1186,6 +1254,8 @@ pub fn run() {
             prepare_embeddings,
             read_provider_config,
             save_provider_config,
+            read_messaging,
+            save_messaging,
             save_setup,
             setup_state,
             agents_list,
