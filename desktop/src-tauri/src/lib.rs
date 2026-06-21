@@ -279,24 +279,28 @@ async fn list_models(provider: String, base: String, key: String) -> Result<Vec<
                 .header("anthropic-version", "2023-06-01")
         }
         "claude-code" => {
-            // Real live fetch: reuse Claude Code's own OAuth session token
+            // Reuse Claude Code's own OAuth session token
             // (~/.claude/.credentials.json) against the Anthropic Models API,
-            // else fall back to ANTHROPIC_API_KEY. No hardcoded list.
-            if let Some(token) = read_claude_code_token() {
-                client
+            // else fall back to ANTHROPIC_API_KEY. The stored token can be expired
+            // (Claude Code rotates it) — detect that and ask the user to refresh
+            // instead of firing a doomed request that returns a raw 401.
+            match read_claude_code_auth() {
+                ClaudeCodeAuth::Token(token) => client
                     .get("https://api.anthropic.com/v1/models?limit=1000")
                     .header("authorization", format!("Bearer {token}"))
-                    .header("anthropic-version", "2023-06-01")
-            } else if let Ok(api_key) = std::env::var("ANTHROPIC_API_KEY") {
-                client
-                    .get("https://api.anthropic.com/v1/models?limit=1000")
-                    .header("x-api-key", api_key)
-                    .header("anthropic-version", "2023-06-01")
-            } else {
-                return Err(
-                    "Claude Code non connecté — lance `claude` puis /login (ou définis ANTHROPIC_API_KEY)."
-                        .to_string(),
-                );
+                    .header("anthropic-version", "2023-06-01"),
+                other => {
+                    if let Ok(api_key) = std::env::var("ANTHROPIC_API_KEY") {
+                        client
+                            .get("https://api.anthropic.com/v1/models?limit=1000")
+                            .header("x-api-key", api_key)
+                            .header("anthropic-version", "2023-06-01")
+                    } else if matches!(other, ClaudeCodeAuth::Expired) {
+                        return Err("CLAUDE_CODE_EXPIRED".to_string());
+                    } else {
+                        return Err("CLAUDE_CODE_ABSENT".to_string());
+                    }
+                }
             }
         }
         other => return Err(format!("unknown provider: {other}")),
@@ -334,20 +338,93 @@ async fn list_models(provider: String, base: String, key: String) -> Result<Vec<
     Ok(models)
 }
 
-/// Read Claude Code's stored OAuth access token (`~/.claude/.credentials.json`,
-/// key `claudeAiOauth.accessToken`) so models can be listed from the Anthropic
-/// Models API using the user's existing Claude Code session — no separate key.
-fn read_claude_code_token() -> Option<String> {
-    let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"))?;
+/// Launch the Claude Code CLI so the user can refresh / re-login its OAuth
+/// session. Claude Code owns its own credentials — on startup it silently
+/// refreshes an expired access token (and prompts `/login` only if the refresh
+/// token is also dead), then persists fresh creds the desktop re-reads. We never
+/// reimplement Anthropic's OAuth nor write `~/.claude/.credentials.json`.
+#[tauri::command]
+fn claude_login(binary: Option<String>) -> Result<(), String> {
+    let bin = binary
+        .filter(|b| !b.trim().is_empty())
+        .unwrap_or_else(|| "claude".to_string());
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("cmd")
+            .args(["/C", "start", "Aonyx - reconnexion Claude Code", "cmd", "/K", &bin])
+            .spawn()
+            .map_err(|e| format!("could not launch `{bin}`: {e}"))?;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .args(["-a", "Terminal", &bin])
+            .spawn()
+            .map_err(|e| format!("could not launch Terminal: {e}"))?;
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let term = std::env::var("TERMINAL").unwrap_or_else(|_| "x-terminal-emulator".to_string());
+        std::process::Command::new(term)
+            .args(["-e", &bin])
+            .spawn()
+            .map_err(|e| format!("could not launch a terminal: {e}"))?;
+    }
+    Ok(())
+}
+
+/// Claude Code OAuth state read from `~/.claude/.credentials.json`.
+enum ClaudeCodeAuth {
+    /// A non-empty access token whose `expiresAt` is still in the future.
+    Token(String),
+    /// A token exists but `expiresAt` is in the past — Claude Code must refresh
+    /// it (`claude` / `/login`); sending it would only earn a 401.
+    Expired,
+    /// No usable token on disk.
+    Absent,
+}
+
+/// Read Claude Code's stored OAuth session (`~/.claude/.credentials.json`, key
+/// `claudeAiOauth`) so models can be listed from the Anthropic Models API using
+/// the user's existing Claude Code session — no separate key. Honours
+/// `expiresAt` (unix ms) so we never fire a request with a stale token.
+fn read_claude_code_auth() -> ClaudeCodeAuth {
+    let home = match std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) {
+        Some(h) => h,
+        None => return ClaudeCodeAuth::Absent,
+    };
     let path = std::path::Path::new(&home)
         .join(".claude")
         .join(".credentials.json");
-    let data = std::fs::read_to_string(path).ok()?;
-    let json: Value = serde_json::from_str(&data).ok()?;
-    json.get("claudeAiOauth")?
-        .get("accessToken")?
-        .as_str()
-        .map(String::from)
+    let data = match std::fs::read_to_string(path) {
+        Ok(d) => d,
+        Err(_) => return ClaudeCodeAuth::Absent,
+    };
+    let json: Value = match serde_json::from_str(&data) {
+        Ok(j) => j,
+        Err(_) => return ClaudeCodeAuth::Absent,
+    };
+    let oauth = match json.get("claudeAiOauth") {
+        Some(o) => o,
+        None => return ClaudeCodeAuth::Absent,
+    };
+    let token = oauth
+        .get("accessToken")
+        .and_then(|t| t.as_str())
+        .unwrap_or("");
+    if token.is_empty() {
+        return ClaudeCodeAuth::Absent;
+    }
+    if let Some(exp) = oauth.get("expiresAt").and_then(|e| e.as_i64()) {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        if exp <= now {
+            return ClaudeCodeAuth::Expired;
+        }
+    }
+    ClaudeCodeAuth::Token(token.to_string())
 }
 
 /// Holds the managed local `aonyx serve api` child, if one is running.
@@ -363,9 +440,25 @@ fn free_port() -> u16 {
         .unwrap_or(8788)
 }
 
-/// Launch a local `aonyx serve api` on a free loopback port and return its
-/// base URL. The desktop's "embedded" mode: no separate server to start.
-/// Requires `aonyx` (built with `--features api`) on the PATH.
+/// Resolve the `aonyx` agent binary: prefer the sidecar bundled next to the app
+/// executable (prod: Tauri's `externalBin`; dev: staged into `target/<profile>/`
+/// by `scripts/stage-sidecar.sh`), else fall back to `aonyx` on `PATH`.
+fn agent_binary() -> std::ffi::OsString {
+    let name = if cfg!(windows) { "aonyx.exe" } else { "aonyx" };
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let candidate = dir.join(name);
+            if candidate.exists() {
+                return candidate.into_os_string();
+            }
+        }
+    }
+    std::ffi::OsString::from("aonyx")
+}
+
+/// Launch a local `aonyx serve api` on a free loopback port and return its base
+/// URL. The desktop's "embedded" mode: the agent ships as a Tauri sidecar
+/// (`externalBin`), so nothing extra to install; falls back to `aonyx` on `PATH`.
 #[tauri::command]
 fn start_local(state: tauri::State<'_, LocalAgent>) -> Result<String, String> {
     let mut guard = state
@@ -376,7 +469,7 @@ fn start_local(state: tauri::State<'_, LocalAgent>) -> Result<String, String> {
         let _ = child.kill();
     }
     let port = free_port();
-    let mut cmd = std::process::Command::new("aonyx");
+    let mut cmd = std::process::Command::new(agent_binary());
     cmd.args([
         "serve",
         "api",
@@ -393,8 +486,8 @@ fn start_local(state: tauri::State<'_, LocalAgent>) -> Result<String, String> {
     }
     let child = cmd.spawn().map_err(|e| {
         format!(
-            "could not launch `aonyx serve api` — is `aonyx` on your PATH \
-             (built with `--features api`)? {e}"
+            "could not launch the bundled `aonyx` agent (sidecar) nor one on PATH \
+             (build with `--features api,rag`): {e}"
         )
     })?;
     *guard = Some(child);
@@ -498,6 +591,101 @@ fn save_provider_config(cfg: Value) -> Result<(), String> {
             None => {}
         }
     }
+
+    std::fs::write(&path, doc.to_string()).map_err(|e| e.to_string())
+}
+
+/// Read whether first-run setup has completed: a `setup_complete = true` marker
+/// in `~/.aonyx/config.toml` together with a non-empty `provider` + `model`. The
+/// desktop gates the first-run wizard on this (ADR-016).
+#[tauri::command]
+fn setup_state() -> Result<Value, String> {
+    let path = aonyx_config_path()?;
+    if !path.exists() {
+        return Ok(serde_json::json!({ "configured": false }));
+    }
+    let table: toml::value::Table =
+        toml::from_str(&std::fs::read_to_string(&path).map_err(|e| e.to_string())?)
+            .map_err(|e| format!("parse config: {e}"))?;
+    let non_empty = |k: &str| {
+        table
+            .get(k)
+            .and_then(|v| v.as_str())
+            .map(|s| !s.is_empty())
+            .unwrap_or(false)
+    };
+    let complete = table
+        .get("setup_complete")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    Ok(serde_json::json!({
+        "configured": complete && non_empty("provider") && non_empty("model")
+    }))
+}
+
+/// Persist the wizard's full choice set into `~/.aonyx/config.toml`: the provider
+/// fields (as `save_provider_config`) plus the RAG backend + embeddings under
+/// `[rag]` (ADR-008/009), and flips `setup_complete = true`. Format-preserving.
+#[tauri::command]
+fn save_setup(cfg: Value) -> Result<(), String> {
+    let path = aonyx_config_path()?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let content = if path.exists() {
+        std::fs::read_to_string(&path).map_err(|e| e.to_string())?
+    } else {
+        String::new()
+    };
+    let mut doc = content
+        .parse::<toml_edit::DocumentMut>()
+        .map_err(|e| format!("parse config: {e}"))?;
+
+    if let Some(p) = cfg.get("provider").and_then(|v| v.as_str()) {
+        doc["provider"] = toml_edit::value(p);
+    }
+    if let Some(m) = cfg
+        .get("model")
+        .and_then(|v| v.as_str())
+        .filter(|m| !m.is_empty())
+    {
+        doc["model"] = toml_edit::value(m);
+    }
+    for key in [
+        "anthropic_api_key",
+        "openai_api_key",
+        "openrouter_api_key",
+        "openai_base_url",
+        "ollama_base_url",
+        "lm_studio_base_url",
+        "claude_code_binary",
+    ] {
+        match cfg.get(key).and_then(|v| v.as_str()) {
+            Some(v) if !v.is_empty() => {
+                doc[key] = toml_edit::value(v);
+            }
+            Some(_) => {
+                doc.as_table_mut().remove(key);
+            }
+            None => {}
+        }
+    }
+
+    let backend = cfg
+        .get("rag_backend")
+        .and_then(|v| v.as_str())
+        .unwrap_or("local");
+    let embeddings = cfg
+        .get("rag_embeddings")
+        .and_then(|v| v.as_str())
+        .unwrap_or("local");
+    if !doc.as_table().contains_key("rag") {
+        doc["rag"] = toml_edit::Item::Table(toml_edit::Table::new());
+    }
+    doc["rag"]["backend"] = toml_edit::value(backend);
+    doc["rag"]["embeddings"] = toml_edit::value(embeddings);
+
+    doc["setup_complete"] = toml_edit::value(true);
 
     std::fs::write(&path, doc.to_string()).map_err(|e| e.to_string())
 }
@@ -693,7 +881,10 @@ pub fn run() {
             stop_local,
             read_provider_config,
             save_provider_config,
+            save_setup,
+            setup_state,
             list_models,
+            claude_login,
             check_for_update,
             install_update,
             account_device_start,

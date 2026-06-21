@@ -210,4 +210,20 @@ Format: `ADR-NNN — short title (date) — status`
 
 ---
 
+## ADR-016 — First-run setup wizard + bundled `aonyx` sidecar (2026-06-21) — accepted
+
+**Context**: The desktop is a thin GUI over an embedded `aonyx serve api` (`lib.rs` `start_local`), which today spawns `aonyx` **from the PATH**. A fresh user who only downloads the desktop app has no `aonyx` binary and no guided configuration — `App.jsx` routes straight to Dashboard, leaving provider/RAG/embeddings setup to the Settings page. Hermes Agent ships a polished first-launch installer (stepped checklist + per-step progress/timings). We want the same onboarding quality, **adapted to a single-binary Rust app** — Hermes' system-bootstrap steps (install uv/Python 3.11/venv/pip, clone repo, build) do NOT apply and must not be copied.
+
+**Decision** (both choices made by the user, 2026-06-21):
+1. **Bundle the `aonyx` binary as a Tauri sidecar** (`externalBin`, per-target-triple), built with `--features api,rag`. `start_local` spawns the sidecar, not a PATH lookup — the app is self-contained. A download-on-first-run variant was considered and rejected (reliability/offline).
+2. **Add a full first-run wizard**: gate the app on a `setup_complete` marker in `~/.aonyx/config.toml`; when unset, render the wizard instead of the router. Three interactive choice screens — **provider** (+ key/model, reusing `list_models`), **RAG backend** (local palace vs external MCP, ADR-008), **embeddings** (local fastembed vs provider, ADR-009) — then a **Hermes-style auto-bootstrap screen** (stepped checklist + progress) running the real steps: stage the sidecar, detect environment, init palace, write config, **download the embedding model (with progress)**, start the agent.
+
+**Consequences**:
+- ✅ True "download → first launch just works": no PATH dependency, guided config, memory-palace defaults set up offline.
+- ✅ Keeps the single-binary ethos; the only genuinely slow step (embedding model download ~30–130 MB, ADR-005/009) gets honest progress UI.
+- ❌ Installer grows by the agent binary + ONNX runtime (~25 MB) — accepted for self-containment.
+- ❌ New surface: Tauri `externalBin` build wiring per OS/arch, a `prepare-embeddings --progress` path in the agent, and four wizard screens. Phased W1 (sidecar) · W2 (gating+shell) · W3 (choice screens) · W4 (bootstrap+progress) · W5 (polish/i18n/tests). Plan: [`first-run-wizard-plan.md`](first-run-wizard-plan.md).
+
+---
+
 *Future decisions append here.*

@@ -1,11 +1,13 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { HashRouter, Routes, Route, Navigate } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ThemeProvider } from "./context/ThemeContext";
 import { AuthProvider } from "./context/AuthContext";
 import { AgentProvider } from "./context/AgentContext";
 import { LanguageProvider } from "./context/LanguageContext";
+import { safeInvoke } from "./config/bridge";
 import AppShell from "./layout/AppShell";
+import Wizard from "./views/wizard/Wizard";
 import {
   Dashboard,
   Chat,
@@ -18,6 +20,23 @@ import {
   Mcp,
   Settings,
 } from "./views";
+
+// First-run gate (ADR-016): render the onboarding wizard until setup is complete
+// (a marker in ~/.aonyx/config.toml). Navigating to #/welcome forces it (preview
+// / rerun). Outside Tauri (browser preview) we fall through to the app.
+function SetupGate({ children }) {
+  const [state, setState] = useState("loading");
+  useEffect(() => {
+    const force = window.location.hash.replace(/^#\/?/, "") === "welcome";
+    (async () => {
+      const s = await safeInvoke("setup_state", undefined, { configured: true });
+      setState(!s?.configured || force ? "wizard" : "app");
+    })();
+  }, []);
+  if (state === "loading") return <div className="h-screen bg-aonyx-50 dark:bg-aonyx-900" />;
+  if (state === "wizard") return <Wizard onDone={() => setState("app")} />;
+  return children;
+}
 
 // HashRouter: the active route lives in location.hash, which works under the
 // tauri:// origin (like Electron's file://) — BrowserRouter would 404 on reload.
@@ -42,6 +61,7 @@ export default function App() {
         <ThemeProvider>
         <AuthProvider>
           <AgentProvider>
+            <SetupGate>
             <HashRouter>
             <Routes>
               <Route element={<AppShell />}>
@@ -59,6 +79,7 @@ export default function App() {
               </Route>
             </Routes>
             </HashRouter>
+            </SetupGate>
           </AgentProvider>
         </AuthProvider>
         </ThemeProvider>
