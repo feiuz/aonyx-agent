@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { NavLink } from "react-router-dom";
+import { NavLink, useNavigate } from "react-router-dom";
 import {
   LayoutDashboard,
   MessageSquare,
@@ -18,11 +18,13 @@ import {
   ArrowUpCircle,
   User,
   Languages,
+  Cpu,
 } from "lucide-react";
 import { useTheme } from "../context/ThemeContext";
 import { useAuth } from "../context/AuthContext";
 import { useI18n } from "../context/LanguageContext";
 import { isTauri, safeInvoke } from "../config/bridge";
+import { readProviderConfig } from "../services/configService";
 
 const NAV = [
   { to: "/", key: "nav.dashboard", icon: LayoutDashboard, end: true },
@@ -37,6 +39,15 @@ const NAV = [
   { to: "/settings", key: "nav.settings", icon: SettingsIcon },
 ];
 
+const PROVIDER_LABEL = {
+  anthropic: "Anthropic",
+  openai: "OpenAI",
+  openrouter: "OpenRouter",
+  ollama: "Ollama",
+  "lm-studio": "LM Studio",
+  "claude-code": "Claude Code",
+};
+
 export default function Sidebar() {
   const [collapsed, setCollapsed] = useState(
     () => localStorage.getItem("aonyx.sidebarCollapsed") === "1",
@@ -45,6 +56,8 @@ export default function Sidebar() {
   const { isAuthenticated, user, signIn, logout } = useAuth();
   const { t, lang, toggle: toggleLang } = useI18n();
   const [update, setUpdate] = useState(null);
+  const [llm, setLlm] = useState(null); // { provider, model } chosen at setup / in Settings
+  const navigate = useNavigate();
 
   useEffect(() => {
     localStorage.setItem("aonyx.sidebarCollapsed", collapsed ? "1" : "0");
@@ -57,6 +70,17 @@ export default function Sidebar() {
       if (u?.version) setUpdate(u);
     }, 3000);
     return () => clearTimeout(tm);
+  }, []);
+
+  // Reflect the configured LLM; refresh when Settings saves a new provider/model.
+  useEffect(() => {
+    const read = async () => {
+      const c = await readProviderConfig();
+      setLlm(c?.model ? { provider: c.provider, model: c.model } : null);
+    };
+    read();
+    window.addEventListener("aonyx:provider-changed", read);
+    return () => window.removeEventListener("aonyx:provider-changed", read);
   }, []);
 
   const linkClass = ({ isActive }) =>
@@ -122,6 +146,24 @@ export default function Sidebar() {
             {collapsed ? <ChevronRight className="w-4 h-4" /> : <ChevronLeft className="w-4 h-4" />}
           </button>
         </div>
+
+        {llm && (
+          <button
+            onClick={() => navigate("/settings")}
+            title={`${PROVIDER_LABEL[llm.provider] || llm.provider} · ${llm.model}`}
+            className={`w-full flex items-center ${collapsed ? "justify-center" : "gap-2.5"} px-2.5 py-1.5 rounded-lg hover:bg-aonyx-200/50 dark:hover:bg-aonyx-900/60 transition-colors`}
+          >
+            <Cpu className="w-4 h-4 text-aonyx-500 flex-shrink-0" strokeWidth={1.75} />
+            {!collapsed && (
+              <span className="flex flex-col items-start min-w-0 leading-tight">
+                <span className="text-xs font-medium text-aonyx-700 dark:text-aonyx-300 truncate max-w-[176px]">
+                  {PROVIDER_LABEL[llm.provider] || llm.provider}
+                </span>
+                <span className="text-[10px] text-aonyx-500 truncate max-w-[176px]">{llm.model}</span>
+              </span>
+            )}
+          </button>
+        )}
 
         <button
           onClick={() => (isAuthenticated ? logout() : signIn())}
