@@ -44,6 +44,7 @@ pub fn build_router(state: ApiState) -> Router {
         )
         .route("/v1/memory/kg/relations", get(memory::kg_relations))
         .route("/v1/tools", get(meta::list_tools))
+        .route("/v1/tools/:name/enabled", post(set_tool_enabled))
         .route("/v1/skills", get(meta::list_skills))
         .route("/v1/config", get(meta::get_config))
         .route("/v1/chat/completions", post(openai::chat_completions))
@@ -84,6 +85,33 @@ async fn resolve_approval(
         StatusCode::NO_CONTENT
     } else {
         StatusCode::NOT_FOUND
+    }
+}
+
+/// A client's request to enable or disable a tool.
+#[derive(Deserialize)]
+struct ToolToggle {
+    enabled: bool,
+}
+
+/// Enable or disable a registered tool for the next turn (auth required). The
+/// runner's registry shares this set, so the change is live — a disabled tool
+/// stops being offered to the model.
+async fn set_tool_enabled(
+    State(state): State<ApiState>,
+    Path(name): Path<String>,
+    Json(body): Json<ToolToggle>,
+) -> StatusCode {
+    match state.tool_disabled.lock() {
+        Ok(mut d) => {
+            if body.enabled {
+                d.remove(&name);
+            } else {
+                d.insert(name);
+            }
+            StatusCode::NO_CONTENT
+        }
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
     }
 }
 

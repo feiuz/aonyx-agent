@@ -53,6 +53,9 @@ export const tools = () => invoke("api_tools", withArgs());
 /** Resolve a paused destructive tool call (interactive approval). */
 export const approve = (id, approved) => invoke("api_approve", withArgs({ id, approved }));
 
+/** Enable/disable a tool for the next turn. */
+export const toolEnabled = (name, enabled) => invoke("api_tool_enabled", withArgs({ name, enabled }));
+
 /** Stream a turn. onFrame gets {type:"delta"|"tool_start"|"done"|"error", …}.
  *  `attachments` is an optional array of {type:"image", media_type, data}. */
 export async function streamMessage(session, content, attachments, onFrame) {

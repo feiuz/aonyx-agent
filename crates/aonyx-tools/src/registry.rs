@@ -88,6 +88,13 @@ impl ToolRegistry {
         }
     }
 
+    /// Share the live disabled-set handle so an out-of-process surface (the
+    /// desktop's tool toggles via `POST /v1/tools/:name/enabled`) can flip a
+    /// tool on/off and have the runner pick it up on the next turn.
+    pub fn disabled_handle(&self) -> Arc<Mutex<HashSet<String>>> {
+        Arc::clone(&self.disabled)
+    }
+
     /// Flip the disabled state of `name`. Returns the new state
     /// (`true` = now disabled).
     pub fn toggle(&self, name: &str) -> bool {

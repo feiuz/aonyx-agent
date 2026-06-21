@@ -18,7 +18,33 @@ export default function SkillsTools() {
   const { info, status } = useAgent();
   const [tools, setTools] = useState([]);
   const [err, setErr] = useState(null);
+  const [disabled, setDisabled] = useState(() => {
+    try {
+      return new Set(JSON.parse(localStorage.getItem("aonyx.toolsDisabled") || "[]"));
+    } catch {
+      return new Set();
+    }
+  });
   const skills = info?.skills || [];
+
+  // Re-apply persisted toggles when the agent (re)connects, so the runner's
+  // disabled set matches the UI after a restart.
+  useEffect(() => {
+    if (status !== "ok" || disabled.size === 0) return;
+    disabled.forEach((name) => agent.toolEnabled(name, false).catch(() => {}));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status]);
+
+  const toggle = (name) =>
+    setDisabled((prev) => {
+      const next = new Set(prev);
+      const isOff = next.has(name);
+      if (isOff) next.delete(name);
+      else next.add(name);
+      localStorage.setItem("aonyx.toolsDisabled", JSON.stringify([...next]));
+      agent.toolEnabled(name, isOff).catch(() => {});
+      return next;
+    });
 
   useEffect(() => {
     let on = true;
@@ -100,12 +126,31 @@ export default function SkillsTools() {
                       <span className="text-xs opacity-60">{list.length}</span>
                     </div>
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                      {list.map((x) => (
-                        <div key={x.name} className={`rounded-lg border ${meta.ring} p-2.5`}>
-                          <code className="text-xs font-mono text-aonyx-800 dark:text-aonyx-200">{x.name}</code>
-                          {x.description && <p className="text-[11px] text-aonyx-500 mt-0.5 line-clamp-2">{x.description}</p>}
-                        </div>
-                      ))}
+                      {list.map((x) => {
+                        const isOff = disabled.has(x.name);
+                        return (
+                          <div
+                            key={x.name}
+                            className={`rounded-lg border ${meta.ring} p-2.5 transition-opacity ${isOff ? "opacity-50" : ""}`}
+                          >
+                            <div className="flex items-center justify-between gap-2">
+                              <code className="text-xs font-mono text-aonyx-800 dark:text-aonyx-200 truncate">{x.name}</code>
+                              <button
+                                onClick={() => toggle(x.name)}
+                                role="switch"
+                                aria-checked={!isOff}
+                                title={isOff ? t("tools.enable") : t("tools.disable")}
+                                className={`relative w-8 h-[18px] rounded-full transition-colors flex-shrink-0 ${isOff ? "bg-aonyx-300 dark:bg-aonyx-700" : "bg-primary-600"}`}
+                              >
+                                <span
+                                  className={`absolute top-0.5 w-3.5 h-3.5 rounded-full bg-white shadow transition-all ${isOff ? "left-0.5" : "left-[14px]"}`}
+                                />
+                              </button>
+                            </div>
+                            {x.description && <p className="text-[11px] text-aonyx-500 mt-0.5 line-clamp-2">{x.description}</p>}
+                          </div>
+                        );
+                      })}
                     </div>
                   </div>
                 );

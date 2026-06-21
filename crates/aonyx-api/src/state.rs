@@ -5,7 +5,7 @@
 //! objects so the binary injects its real implementations while tests use
 //! an in-memory store + a stub agent.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use aonyx_memory::{Palace, SessionStore};
@@ -141,6 +141,9 @@ pub struct ApiState {
     pub default_project: Arc<String>,
     /// Pending interactive tool approvals (resolved via `POST /v1/approvals/:id`).
     pub approvals: Arc<ApprovalHub>,
+    /// Live set of disabled tool names — shared with the runner's registry so
+    /// `POST /v1/tools/:name/enabled` flips a tool on/off for the next turn.
+    pub tool_disabled: Arc<Mutex<HashSet<String>>>,
 }
 
 impl ApiState {
@@ -161,6 +164,7 @@ impl ApiState {
             agent,
             default_project: Arc::new(default_project.into()),
             approvals: Arc::new(ApprovalHub::new()),
+            tool_disabled: Arc::new(Mutex::new(HashSet::new())),
         }
     }
 
@@ -168,6 +172,13 @@ impl ApiState {
     /// `POST /v1/approvals/:id` handler resolve the same pending decisions.
     pub fn with_approvals(mut self, hub: Arc<ApprovalHub>) -> Self {
         self.approvals = hub;
+        self
+    }
+
+    /// Inject the runner registry's live disabled-set handle so the
+    /// `POST /v1/tools/:name/enabled` endpoint toggles the same set.
+    pub fn with_tool_disabled(mut self, disabled: Arc<Mutex<HashSet<String>>>) -> Self {
+        self.tool_disabled = disabled;
         self
     }
 

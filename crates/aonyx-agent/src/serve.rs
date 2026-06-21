@@ -280,6 +280,9 @@ mod api_imp {
         // the chat adapters do.
         let provider = crate::build_provider(&config)?;
         let registry = crate::build_serve_registry().await?;
+        // Share the registry's live disabled-set with the API so the desktop's
+        // tool toggles flip the same tools the runner sees.
+        let tool_disabled = registry.disabled_handle();
         let skills = crate::load_all_skills();
 
         // Snapshot metadata BEFORE the registry/skills move into the runner.
@@ -360,7 +363,8 @@ mod api_imp {
             Arc::new(api_runner),
             project,
         )
-        .with_approvals(approvals);
+        .with_approvals(approvals)
+        .with_tool_disabled(tool_disabled);
 
         let addr = format!("{bind}:{port}");
         if token.is_some() {

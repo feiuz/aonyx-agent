@@ -87,6 +87,23 @@ async fn api_approve(
     .await
 }
 
+/// `POST /v1/tools/{name}/enabled` — enable/disable a tool for the next turn.
+#[tauri::command]
+async fn api_tool_enabled(
+    base: String,
+    token: String,
+    name: String,
+    enabled: bool,
+) -> Result<Value, String> {
+    send(
+        reqwest::Method::POST,
+        join(&base, &format!("/v1/tools/{name}/enabled")),
+        &token,
+        Some(serde_json::json!({ "enabled": enabled })),
+    )
+    .await
+}
+
 /// `POST /v1/sessions/{id}/messages` — run one blocking turn.
 #[tauri::command]
 async fn api_send(
@@ -1111,6 +1128,7 @@ pub fn run() {
             api_info,
             api_create_session,
             api_approve,
+            api_tool_enabled,
             api_send,
             api_stream,
             api_list_sessions,
