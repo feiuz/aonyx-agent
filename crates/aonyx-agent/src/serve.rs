@@ -69,12 +69,15 @@ pub async fn api(_port: u16, _token: Option<String>, _bind: String) -> anyhow::R
 #[cfg(feature = "api")]
 mod api_imp {
     use std::sync::Arc;
+    use std::time::Duration;
 
+    use aonyx_agent::approval::AsyncApprover;
     use aonyx_agent::{AgentRunner, ApprovalPolicy, TurnEvent};
     use aonyx_api::{
-        ApiAgent, ApiState, AuthConfig, ConfigInfo, ServerInfo, SkillInfo, StreamFrame, ToolInfo,
+        ApiAgent, ApiState, ApprovalHub, AuthConfig, ConfigInfo, ServerInfo, SkillInfo, StreamFrame,
+        ToolInfo,
     };
-    use aonyx_core::{Message, SafetyClass};
+    use aonyx_core::{Message, SafetyClass, ToolCall};
     use aonyx_memory::{Palace, SqliteSessionStore};
     use async_trait::async_trait;
     use tokio::sync::mpsc;
@@ -130,6 +133,30 @@ mod api_imp {
         }
     }
 
+    /// Bridges the runner's [`AsyncApprover`] to the HTTP layer: registers a
+    /// pending decision in the shared [`ApprovalHub`] and awaits the client's
+    /// `POST /v1/approvals/:id`. Denies on timeout so a vanished client never
+    /// wedges a turn.
+    #[derive(Debug)]
+    struct StreamApprover {
+        hub: Arc<ApprovalHub>,
+        timeout: Duration,
+    }
+
+    #[async_trait]
+    impl AsyncApprover for StreamApprover {
+        async fn approve(&self, id: &str, _call: &ToolCall, _class: SafetyClass) -> bool {
+            let rx = self.hub.register(id);
+            match tokio::time::timeout(self.timeout, rx).await {
+                Ok(Ok(decision)) => decision,
+                _ => {
+                    self.hub.forget(id);
+                    false
+                }
+            }
+        }
+    }
+
     fn class_str(c: SafetyClass) -> String {
         match c {
             SafetyClass::Safe => "safe",
@@ -153,6 +180,17 @@ mod api_imp {
             TurnEvent::ToolEnd { name, ok, summary } => StreamFrame::ToolEnd { name, ok, summary },
             TurnEvent::ToolRejected { name, class } => StreamFrame::ToolRejected {
                 name,
+                class: class_str(class),
+            },
+            TurnEvent::ApprovalRequest {
+                id,
+                name,
+                args,
+                class,
+            } => StreamFrame::ApprovalRequest {
+                id,
+                name,
+                args,
                 class: class_str(class),
             },
             TurnEvent::IterationStart(n) => StreamFrame::Iteration { n: n as u32 },
@@ -237,9 +275,18 @@ mod api_imp {
             skill_autogen: config.skill_autogen,
         };
 
+        // Interactive approval: destructive calls pause the turn until the
+        // desktop resolves them via `POST /v1/approvals/:id`. The same hub is
+        // shared into the API state below so the handler and the approver meet.
+        let approvals = Arc::new(ApprovalHub::new());
+        let approver: Arc<dyn AsyncApprover> = Arc::new(StreamApprover {
+            hub: Arc::clone(&approvals),
+            timeout: Duration::from_secs(300),
+        });
+
         let runner = AgentRunner::new(provider, registry, config.model.clone())
             .with_max_iterations(config.max_iterations)
-            .with_approval(ApprovalPolicy::DenyDestructive)
+            .with_approval(ApprovalPolicy::Interactive(approver))
             .with_skills(skills)
             .with_auto_retrieve(
                 config.auto_retrieve,
@@ -278,8 +325,7 @@ mod api_imp {
             config.model.clone(),
             api_features(),
         );
-        // Destructive tools are denied at the loop level (DenyDestructive);
-        // the direct tool-invoke endpoint is not exposed, so `false` here.
+        // The direct tool-invoke endpoint is not exposed, so `false` here.
         let auth = AuthConfig::new(token.clone(), false);
         let state = ApiState::new(
             auth,
@@ -288,7 +334,8 @@ mod api_imp {
             Arc::new(palace),
             Arc::new(api_runner),
             project,
-        );
+        )
+        .with_approvals(approvals);
 
         let addr = format!("{bind}:{port}");
         if token.is_some() {

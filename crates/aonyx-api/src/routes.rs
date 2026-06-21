@@ -1,9 +1,11 @@
 //! HTTP routes and the public router builder.
 
-use axum::extract::State;
+use axum::extract::{Path, State};
+use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use serde::Deserialize;
 use serde_json::json;
 
 use crate::auth::require_auth;
@@ -29,6 +31,7 @@ pub fn build_router(state: ApiState) -> Router {
         .route("/v1/sessions/:id/messages", post(send_message))
         .route("/v1/sessions/:id/messages/stream", post(sse_message))
         .route("/v1/sessions/:id/stream", get(ws_stream))
+        .route("/v1/approvals/:id", post(resolve_approval))
         .route("/v1/memory/search", get(memory::search))
         .route(
             "/v1/memory/diary",
@@ -61,6 +64,27 @@ async fn health() -> impl IntoResponse {
 /// Server identity + capabilities (auth required).
 async fn info(State(state): State<ApiState>) -> Json<ServerInfo> {
     Json((*state.info).clone())
+}
+
+/// A client's decision on a paused interactive approval.
+#[derive(Deserialize)]
+struct ApprovalDecision {
+    approved: bool,
+}
+
+/// Resolve a paused destructive tool call (auth required). `204` when the
+/// pending approval was found and resolved, `404` when `id` is unknown (already
+/// resolved, timed out, or never registered).
+async fn resolve_approval(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+    Json(body): Json<ApprovalDecision>,
+) -> StatusCode {
+    if state.approvals.resolve(&id, body.approved) {
+        StatusCode::NO_CONTENT
+    } else {
+        StatusCode::NOT_FOUND
+    }
 }
 
 #[cfg(test)]

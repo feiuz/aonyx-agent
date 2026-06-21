@@ -72,6 +72,18 @@ pub enum TurnEvent {
         /// Safety class that caused the rejection.
         class: SafetyClass,
     },
+    /// A destructive call is paused awaiting the user's approval (interactive
+    /// policy). The client prompts and resolves the decision keyed by `id`.
+    ApprovalRequest {
+        /// The tool call id — echo it back to resolve the decision.
+        id: String,
+        /// Tool name.
+        name: String,
+        /// JSON arguments the model wants to run with.
+        args: Value,
+        /// Safety class (destructive in V1).
+        class: SafetyClass,
+    },
     /// The loop finished — model emitted no tool call, or the iteration cap
     /// was hit.
     Done {
@@ -465,6 +477,24 @@ impl AgentRunner {
                     .get(&call.name)
                     .map(|h| h.classify())
                     .unwrap_or(SafetyClass::Safe);
+
+                // Approval gate. Interactive policies emit an ApprovalRequest and
+                // pause here for the user's decision; the others resolve
+                // synchronously (deny-destructive / auto-allow / custom).
+                if !self.approve_call(&call, class, &events).await {
+                    let _ = events
+                        .send(TurnEvent::ToolRejected {
+                            name: call.name.clone(),
+                            class,
+                        })
+                        .await;
+                    messages.push(Message::tool_result(
+                        call.id,
+                        format!("[approval rejected] {} ({:?})", call.name, class),
+                    ));
+                    continue;
+                }
+
                 let _ = events
                     .send(TurnEvent::ToolStart {
                         name: call.name.clone(),
@@ -603,14 +633,36 @@ impl AgentRunner {
             .tools
             .get(&call.name)
             .ok_or_else(|| AonyxError::Tool(format!("unknown tool: {}", call.name)))?;
-        let class = handler.classify();
-        if !self.approval.allow(&call, class).await {
-            return Err(AonyxError::ApprovalRejected(format!(
-                "{} ({:?})",
-                call.name, class
-            )));
-        }
+        // The approval gate runs in the turn loop (it needs the event channel to
+        // drive an interactive approver); by here the call is already cleared.
         handler.invoke(call).await
+    }
+
+    /// Run the approval gate for `call`. An [`ApprovalPolicy::Interactive`]
+    /// policy emits an [`TurnEvent::ApprovalRequest`] (keyed by the tool call
+    /// id) and awaits the user's decision; every other policy resolves
+    /// synchronously. Only destructive calls are ever paused.
+    async fn approve_call(
+        &self,
+        call: &ToolCall,
+        class: SafetyClass,
+        events: &mpsc::Sender<TurnEvent>,
+    ) -> bool {
+        if let ApprovalPolicy::Interactive(approver) = &self.approval {
+            if class == SafetyClass::Destructive {
+                let _ = events
+                    .send(TurnEvent::ApprovalRequest {
+                        id: call.id.clone(),
+                        name: call.name.clone(),
+                        args: call.args.clone(),
+                        class,
+                    })
+                    .await;
+                return approver.approve(&call.id, call, class).await;
+            }
+            return true;
+        }
+        self.approval.allow(call, class).await
     }
 }
 

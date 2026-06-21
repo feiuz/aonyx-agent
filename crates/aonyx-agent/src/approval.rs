@@ -18,8 +18,10 @@ pub type ApprovalPredicate = Arc<dyn Fn(&ToolCall, SafetyClass) -> bool + Send +
 /// it asks the user (Phase P).
 #[async_trait]
 pub trait AsyncApprover: Send + Sync + std::fmt::Debug {
-    /// Return `true` to let `call` proceed, `false` to reject it.
-    async fn approve(&self, call: &ToolCall, class: SafetyClass) -> bool;
+    /// Return `true` to let `call` proceed, `false` to reject it. `id` is the
+    /// tool call's id — transports that resolve the decision out of process
+    /// (the desktop's `POST /v1/approvals/:id`) key on it.
+    async fn approve(&self, id: &str, call: &ToolCall, class: SafetyClass) -> bool;
 }
 
 /// Approval policy for tool calls.
@@ -72,7 +74,7 @@ impl ApprovalPolicy {
             Self::AutoAllow => true,
             Self::DenyDestructive => class != SafetyClass::Destructive,
             Self::Custom(f) => f(call, class),
-            Self::Interactive(a) => a.approve(call, class).await,
+            Self::Interactive(a) => a.approve(&call.id, call, class).await,
         }
     }
 }
@@ -122,7 +124,7 @@ mod tests {
 
     #[async_trait]
     impl AsyncApprover for AlwaysApprove {
-        async fn approve(&self, _call: &ToolCall, _class: SafetyClass) -> bool {
+        async fn approve(&self, _id: &str, _call: &ToolCall, _class: SafetyClass) -> bool {
             true
         }
     }
@@ -132,7 +134,7 @@ mod tests {
 
     #[async_trait]
     impl AsyncApprover for AlwaysDeny {
-        async fn approve(&self, _call: &ToolCall, _class: SafetyClass) -> bool {
+        async fn approve(&self, _id: &str, _call: &ToolCall, _class: SafetyClass) -> bool {
             false
         }
     }

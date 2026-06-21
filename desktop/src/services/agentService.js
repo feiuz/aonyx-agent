@@ -50,6 +50,9 @@ export const kgEntities = (limit = 300) => invoke("api_kg_entities", withArgs({ 
 export const kgRelations = (limit = 800) => invoke("api_kg_relations", withArgs({ limit }));
 export const tools = () => invoke("api_tools", withArgs());
 
+/** Resolve a paused destructive tool call (interactive approval). */
+export const approve = (id, approved) => invoke("api_approve", withArgs({ id, approved }));
+
 /** Stream a turn. onFrame gets {type:"delta"|"tool_start"|"done"|"error", …}. */
 export async function streamMessage(session, content, onFrame) {
   const ch = channel();

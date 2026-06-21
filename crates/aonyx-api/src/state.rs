@@ -5,12 +5,59 @@
 //! objects so the binary injects its real implementations while tests use
 //! an in-memory store + a stub agent.
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 use aonyx_memory::{Palace, SessionStore};
 use serde::Serialize;
+use tokio::sync::oneshot;
 
 use crate::agent::ApiAgent;
+
+/// Pending interactive tool-approval requests.
+///
+/// The agent's approver registers a one-shot per destructive call (keyed by the
+/// tool call id) and awaits the client's decision; `POST /v1/approvals/:id`
+/// resolves it. Shared (via `Arc`) between the runner's approver and the HTTP
+/// handler so an out-of-process desktop can approve a paused turn.
+#[derive(Debug, Default)]
+pub struct ApprovalHub {
+    pending: Mutex<HashMap<String, oneshot::Sender<bool>>>,
+}
+
+impl ApprovalHub {
+    /// Fresh, empty hub.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Register a pending approval; the returned receiver resolves when the
+    /// client decides (or is dropped if the request is forgotten).
+    pub fn register(&self, id: impl Into<String>) -> oneshot::Receiver<bool> {
+        let (tx, rx) = oneshot::channel();
+        if let Ok(mut p) = self.pending.lock() {
+            p.insert(id.into(), tx);
+        }
+        rx
+    }
+
+    /// Resolve a pending approval. Returns `false` when `id` is unknown
+    /// (already resolved, timed out, or never registered).
+    pub fn resolve(&self, id: &str, approved: bool) -> bool {
+        let tx = self.pending.lock().ok().and_then(|mut p| p.remove(id));
+        match tx {
+            Some(tx) => tx.send(approved).is_ok(),
+            None => false,
+        }
+    }
+
+    /// Drop a pending approval without resolving (timeout / cleanup).
+    pub fn forget(&self, id: &str) {
+        if let Ok(mut p) = self.pending.lock() {
+            p.remove(id);
+        }
+    }
+}
 
 /// Authentication + authorization policy for the API.
 #[derive(Debug, Clone)]
@@ -92,6 +139,8 @@ pub struct ApiState {
     pub agent: Arc<dyn ApiAgent>,
     /// Project slug used when a request does not specify one.
     pub default_project: Arc<String>,
+    /// Pending interactive tool approvals (resolved via `POST /v1/approvals/:id`).
+    pub approvals: Arc<ApprovalHub>,
 }
 
 impl ApiState {
@@ -111,7 +160,15 @@ impl ApiState {
             palace,
             agent,
             default_project: Arc::new(default_project.into()),
+            approvals: Arc::new(ApprovalHub::new()),
         }
+    }
+
+    /// Inject a shared [`ApprovalHub`] so the runner's approver and the
+    /// `POST /v1/approvals/:id` handler resolve the same pending decisions.
+    pub fn with_approvals(mut self, hub: Arc<ApprovalHub>) -> Self {
+        self.approvals = hub;
+        self
     }
 
     /// The given project, or the server default when `None`/empty.

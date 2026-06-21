@@ -47,6 +47,18 @@ pub enum StreamFrame {
         /// Safety class that triggered the rejection.
         class: String,
     },
+    /// A destructive call is paused awaiting the user's approval. Resolve it
+    /// with `POST /v1/approvals/:id` (echo `id`).
+    ApprovalRequest {
+        /// Tool call id — echo it back to resolve the decision.
+        id: String,
+        /// Tool name.
+        name: String,
+        /// JSON arguments the model wants to run with.
+        args: serde_json::Value,
+        /// Safety class (`destructive` in V1).
+        class: String,
+    },
     /// A new loop iteration began.
     Iteration {
         /// 1-based iteration number.

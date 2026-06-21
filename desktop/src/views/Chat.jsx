@@ -5,6 +5,7 @@ import { useAgent } from "../context/AgentContext";
 import { useI18n } from "../context/LanguageContext";
 import * as agent from "../services/agentService";
 import Message from "../components/agent/Message";
+import ApprovalCard from "../components/agent/ApprovalCard";
 import logo from "../assets/logo.png";
 
 export default function Chat() {
@@ -15,6 +16,7 @@ export default function Chat() {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
+  const [approvals, setApprovals] = useState([]);
   const logRef = useRef(null);
   const taRef = useRef(null);
 
@@ -74,6 +76,7 @@ export default function Chat() {
       { role: "assistant", content: "", events: [], streaming: true },
     ]);
     setBusy(true);
+    setApprovals([]);
 
     let acc = "";
     const events = [];
@@ -106,6 +109,12 @@ export default function Chat() {
             }
             patchLast({ events: [...events] });
             break;
+          case "approval_request":
+            setApprovals((a) => [
+              ...a.filter((x) => x.id !== frame.id),
+              { id: frame.id, name: frame.name, args: frame.args, class: frame.class },
+            ]);
+            break;
           case "done":
             patchLast({ content: acc || frame.reply || "", events: [...events], streaming: false });
             break;
@@ -122,7 +131,17 @@ export default function Chat() {
       patchLast({ content: String(e), error: true, streaming: false });
     } finally {
       setBusy(false);
+      setApprovals([]);
       taRef.current?.focus();
+    }
+  };
+
+  const decide = async (id, approved) => {
+    setApprovals((a) => a.filter((x) => x.id !== id));
+    try {
+      await agent.approve(id, approved);
+    } catch {
+      /* the server-side timeout denies if this never lands */
     }
   };
 
@@ -172,6 +191,9 @@ export default function Chat() {
               />
             ))
           )}
+          {approvals.map((req) => (
+            <ApprovalCard key={req.id} req={req} onDecide={decide} />
+          ))}
         </main>
 
         <footer className="p-4 flex-shrink-0">

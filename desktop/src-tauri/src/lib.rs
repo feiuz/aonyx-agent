@@ -70,6 +70,23 @@ async fn api_create_session(
     .await
 }
 
+/// `POST /v1/approvals/{id}` — resolve a paused destructive tool call.
+#[tauri::command]
+async fn api_approve(
+    base: String,
+    token: String,
+    id: String,
+    approved: bool,
+) -> Result<Value, String> {
+    send(
+        reqwest::Method::POST,
+        join(&base, &format!("/v1/approvals/{id}")),
+        &token,
+        Some(serde_json::json!({ "approved": approved })),
+    )
+    .await
+}
+
 /// `POST /v1/sessions/{id}/messages` — run one blocking turn.
 #[tauri::command]
 async fn api_send(
@@ -1090,6 +1107,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             api_info,
             api_create_session,
+            api_approve,
             api_send,
             api_stream,
             api_list_sessions,

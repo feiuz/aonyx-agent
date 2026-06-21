@@ -243,7 +243,7 @@ struct TuiApprover {
 
 #[async_trait]
 impl AsyncApprover for TuiApprover {
-    async fn approve(&self, call: &ToolCall, class: SafetyClass) -> bool {
+    async fn approve(&self, _id: &str, call: &ToolCall, class: SafetyClass) -> bool {
         // Phase OO/PP — honour a persisted "always allow" rule without
         // bubbling a prompt up to the UI. A rule is a bare tool name or
         // `name:needle` (Phase PP) matching only when the call's args
@@ -5940,14 +5940,14 @@ mod tests {
             name: "fs_write".into(),
             args: serde_json::Value::Null,
         };
-        assert!(approver.approve(&allowed, SafetyClass::Destructive).await);
+        assert!(approver.approve("1", &allowed, SafetyClass::Destructive).await);
         // A tool NOT in the set would try to prompt → fail closed → false.
         let other = ToolCall {
             id: "2".into(),
             name: "bash_unseeded_oo".into(),
             args: serde_json::Value::Null,
         };
-        assert!(!approver.approve(&other, SafetyClass::Destructive).await);
+        assert!(!approver.approve("2", &other, SafetyClass::Destructive).await);
     }
 
     #[test]

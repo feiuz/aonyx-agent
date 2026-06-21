@@ -38,4 +38,4 @@ pub use agent::{ApiAgent, ConfigInfo, SkillInfo, StreamFrame, ToolInfo};
 pub use error::{ApiError, ApiResult};
 pub use routes::build_router;
 pub use server::serve;
-pub use state::{ApiState, AuthConfig, ServerInfo};
+pub use state::{ApiState, ApprovalHub, AuthConfig, ServerInfo};
