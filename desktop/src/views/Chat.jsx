@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from "react";
-import { MessageSquare, Plus, Send } from "lucide-react";
+import { MessageSquare, Plus, Send, Cpu } from "lucide-react";
+import { useNavigate } from "react-router-dom";
 import { useAgent } from "../context/AgentContext";
 import { useI18n } from "../context/LanguageContext";
 import * as agent from "../services/agentService";
 import Message from "../components/agent/Message";
+import logo from "../assets/logo.png";
 
 export default function Chat() {
   const {
@@ -18,6 +20,7 @@ export default function Chat() {
     createSession,
   } = useAgent();
   const { t } = useI18n();
+  const navigate = useNavigate();
 
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
@@ -203,13 +206,22 @@ export default function Chat() {
 
         <main ref={logRef} className="flex-1 overflow-y-auto p-6 flex flex-col gap-4">
           {messages.length === 0 ? (
-            <div className="m-auto text-center max-w-md text-aonyx-500">
-              <h2 className="font-cond uppercase tracking-wider text-2xl text-aonyx-700 dark:text-aonyx-200">
-                Aonyx Agent
-              </h2>
-              <p className="mt-2 text-sm">
-                {status === "ok" ? t("chat.empty.ready") : error || t("chat.empty.configure")}
-              </p>
+            <div className="relative m-auto w-full max-w-xl flex flex-col items-center justify-center text-center px-6 py-10">
+              <img
+                src={logo}
+                alt=""
+                aria-hidden="true"
+                className="pointer-events-none select-none absolute w-72 max-w-[70%] opacity-[0.06] dark:opacity-[0.09]"
+                style={{ top: "50%", left: "50%", transform: "translate(-50%, -60%)" }}
+              />
+              <div className="relative">
+                <h2 className="font-cond font-bold uppercase tracking-tight leading-none text-5xl sm:text-6xl text-aonyx-900 dark:text-aonyx-50">
+                  Aonyx Agent
+                </h2>
+                <p className="mt-4 text-sm text-aonyx-500 max-w-sm mx-auto leading-relaxed">
+                  {status === "ok" ? t("home.tagline") : error || t("chat.empty.configure")}
+                </p>
+              </div>
             </div>
           ) : (
             messages.map((m, i) => (
@@ -225,28 +237,40 @@ export default function Chat() {
           )}
         </main>
 
-        <footer className="flex gap-2 p-4 flex-shrink-0 border-t border-aonyx-200 dark:border-aonyx-800">
-          <textarea
-            ref={taRef}
-            rows={1}
-            value={input}
-            onChange={(e) => {
-              setInput(e.target.value);
-              grow();
-            }}
-            onKeyDown={onKey}
-            disabled={status !== "ok"}
-            placeholder={t("chat.placeholder")}
-            className="flex-1 resize-none max-h-40 rounded-lg px-3 py-2.5 text-sm select-text bg-white dark:bg-aonyx-950 border border-aonyx-300 dark:border-aonyx-700 focus:outline-none focus:border-primary-500 disabled:opacity-50"
-          />
-          <button
-            onClick={send}
-            disabled={busy || status !== "ok" || !input.trim()}
-            className="flex items-center justify-center px-4 rounded-lg bg-primary-600 hover:bg-primary-700 text-white disabled:opacity-40 disabled:cursor-not-allowed"
-            aria-label={t("chat.new")}
-          >
-            <Send className="w-4 h-4" />
-          </button>
+        <footer className="p-4 flex-shrink-0">
+          <div className="flex items-end gap-2 max-w-3xl mx-auto rounded-2xl border border-aonyx-300 dark:border-aonyx-700 bg-white dark:bg-aonyx-950 px-3 py-2 transition-colors focus-within:border-primary-500 focus-within:ring-1 focus-within:ring-primary-500/25">
+            <textarea
+              ref={taRef}
+              rows={1}
+              value={input}
+              onChange={(e) => {
+                setInput(e.target.value);
+                grow();
+              }}
+              onKeyDown={onKey}
+              disabled={status !== "ok"}
+              placeholder={t("chat.placeholder")}
+              className="flex-1 resize-none max-h-40 bg-transparent px-1 py-1.5 text-sm select-text focus:outline-none disabled:opacity-50"
+            />
+            {info?.model && (
+              <button
+                onClick={() => navigate("/settings")}
+                title={t("nav.settings")}
+                className="hidden sm:flex items-center gap-1.5 mb-0.5 shrink-0 max-w-[170px] text-[11px] font-mono text-aonyx-500 border border-aonyx-300 dark:border-aonyx-700 rounded-lg px-2 py-1 hover:bg-aonyx-100 dark:hover:bg-aonyx-900 transition-colors"
+              >
+                <Cpu className="w-3 h-3 shrink-0" />
+                <span className="truncate">{info.model}</span>
+              </button>
+            )}
+            <button
+              onClick={send}
+              disabled={busy || status !== "ok" || !input.trim()}
+              className="flex items-center justify-center w-9 h-9 rounded-xl bg-primary-600 hover:bg-primary-700 text-white disabled:opacity-40 disabled:cursor-not-allowed shrink-0"
+              aria-label={t("chat.new")}
+            >
+              <Send className="w-4 h-4" />
+            </button>
+          </div>
         </footer>
       </section>
     </div>

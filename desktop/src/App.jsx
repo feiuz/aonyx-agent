@@ -65,8 +65,8 @@ export default function App() {
             <HashRouter>
             <Routes>
               <Route element={<AppShell />}>
-                <Route path="/" element={<Dashboard />} />
-                <Route path="/chat" element={<Chat />} />
+                <Route path="/" element={<Chat />} />
+                <Route path="/dashboard" element={<Dashboard />} />
                 <Route path="/projects" element={<Projets />} />
                 <Route path="/stats" element={<Stats />} />
                 <Route path="/memory-health" element={<MemoryHealth />} />

@@ -27,8 +27,8 @@ import { isTauri, safeInvoke } from "../config/bridge";
 import { readProviderConfig } from "../services/configService";
 
 const NAV = [
-  { to: "/", key: "nav.dashboard", icon: LayoutDashboard, end: true },
-  { to: "/chat", key: "nav.chat", icon: MessageSquare },
+  { to: "/", key: "nav.chat", icon: MessageSquare, end: true },
+  { to: "/dashboard", key: "nav.dashboard", icon: LayoutDashboard },
   { to: "/projects", key: "nav.projects", icon: FolderOpen },
   { to: "/stats", key: "nav.stats", icon: BarChart3 },
   { to: "/memory-health", key: "nav.memory", icon: Activity },
