@@ -63,44 +63,56 @@
   d'édition des règles globales. *Effort M.*
 - **H4 — Diaries.** `diary_append` au fil de la conversation + endpoint/vue timeline
   par projet ; option d'auto-journalisation (résumé de tour). *Effort M.*
-- **H5 — Deux surfaces : « Palais de Mémoire » + « RAG ».** Renommer le nav
-  *Memory Health* → **Palais de Mémoire** (la console mémoire du projet courant),
-  et **ajouter un nav `RAG`** dédié à la **gestion des projets** + aux règles
-  globales. Voir ci-dessous. *Effort M-L.*
+- **H5 — Deux surfaces.** **Palais de Mémoire** = vue **globale / stats transverse**
+  (renommée depuis Memory Health, read-only) ; **RAG** (nouveau) = **console par
+  projet** + gestion + règles globales. Réutilise l'existant (KG, diary, stats,
+  sessions). Voir ci-dessous. *Effort M-L.*
+- **H6 — Time-machine.** Plomber `as_of` à travers KG / diary / search (le module
+  `time_machine` est un stub) + un curseur temporel dans le Palais. *Effort M.*
 
-## Deux surfaces : « Palais de Mémoire » + « RAG » (H5)
+## Deux surfaces : « Palais de Mémoire » (global) + « RAG » (par projet) (H5)
 
-Dans le sidebar : **renommer `Memory Health` → « Palais de Mémoire »** et **ajouter
-un item `RAG`**. Deux surfaces complémentaires.
+Sidebar : **renommer `Memory Health` → « Palais de Mémoire »** et **ajouter un item
+`RAG`**.
 
-**RAG (nouveau) — gestion des projets.** Le hub des projets de mémoire : liste des
-projets (stats docs/chunks · dimension · modèle d'embedding), **créer / renommer /
-supprimer**, définir le **projet actif**, et **édition des règles globales** (projet
-réservé `knowledge`, protégé/non-supprimable). C'est là qu'on gère les palais.
+### Palais de Mémoire — vue globale / statistiques (read-only)
 
-**Palais de Mémoire (ex-Memory Health) — la console du projet.** La mémoire du
-**projet courant** (sélectionné dans RAG / la conversation), façon la capture RAG :
+La **grande vision transverse** de toute la mémoire, **tous projets confondus** :
 
-```
-┌ MÉMOIRE ──────────────────────────────────────────────┐
-│ Projet : [ ▼ mon-projet ]  [+ Nouveau]   docs 123 · dim 384 · bge-m3 │
-├───────────────────────────────────────────────────────┤
-│ ⚙ Règles globales (projet `knowledge`)   [éditer]      │
-├──────────────┬──────────────┬─────────────┬───────────┤
-│  Ingérer     │  Documents   │  Recherche  │  Journal  │  (onglets)
-├───────────────────────────────────────────────────────┤
-│  …contenu de l'onglet, scopé au projet sélectionné…    │
-└───────────────────────────────────────────────────────┘
-```
+- **Stats globales** : nb de projets · total chunks/documents · entités + relations
+  (KG) · entrées de diary · conversations + tours.
+- **Diaries cross-projets** : timeline datée des décisions/actions, tous projets.
+- **Explorateur KG** : le knowledge-graph global (réutilise la vue KnowledgeGraph).
+- **Time-machine** : curseur `as_of` → l'état de la mémoire à une date passée.
+- **Répartition par projet** : tableau `projet | docs | entités | diary | dernière activité`.
 
-- **Barre de projet** : sélecteur (liste des projets) + « Nouveau » + stats
-  (docs/chunks, dimension, modèle d'embedding).
-- **Règles globales** : encart d'édition du projet `knowledge` (toujours injecté).
-- **Onglets scopés au projet** :
-  - **Ingérer** — le panneau actuel (texte / fichier), cible le projet.
-  - **Documents** — liste des documents ingérés (consulter / supprimer).
-  - **Recherche** — recherche hybride **scopée au projet**.
-  - **Journal** — le diary (timeline datée) du projet/des conversations.
+### RAG — console par projet (gestion + opérations)
+
+Le **hub des projets** + la console du projet sélectionné :
+
+- Liste / créer / renommer / supprimer un projet ; définir le **projet actif**.
+- **Règles globales** : édition du projet réservé `knowledge` (toujours injecté, protégé).
+- Par projet, en onglets : **Ingérer · Documents · Recherche (scopée) · Journal**.
+
+## Améliorations avec l'existant (déjà codé — à brancher)
+
+| Brique existante | État | À en faire |
+|---|---|---|
+| **Knowledge Graph** (`/v1/memory/kg/*` + vue KnowledgeGraph) | ✅ codé | Explorateur KG global (Palais) + compteurs ; KG par projet (RAG). |
+| **Diary** (`/v1/memory/diary`) | ✅ codé | Timeline cross-projets (Palais) ; par projet (RAG). |
+| **Sessions / turns** (`sessions.db`) | ✅ codé | Stats conversations (nb · tours), global + par projet. |
+| **Stats + Dashboard** (vues) | ✅ codé | **Consolider** dans le Palais (3 vues qui se recoupent → 1). |
+| **Recherche hybride** (`/v1/memory/search`) | ✅ codé | Globale (Palais) + scopée projet (RAG). |
+| **`time_machine`** (`as_of`) | ⚠️ **stub (TODO)** | **Le plomber** (KG + diary + search) → curseur temporel. Le moat « memory-first » à finir. |
+
+**Ce que tu oubliais sûrement** : le module **`time_machine`** (requêtes `as_of` —
+voir la mémoire à une date passée) est **prévu mais non branché** ; c'est LA feature
+mémoire-first à exposer dans le Palais. Idem le **KG timeline** et les **stats
+sessions/tours**, déjà là mais pas agrégés.
+
+**Endpoints à ajouter** pour alimenter le global : `GET /v1/memory/projects` (liste
++ stats par projet), `GET /v1/memory/stats` (agrégats globaux),
+`GET /v1/memory/timeline?as_of=` (time-machine).
 
 ## Risques / garde-fous
 
