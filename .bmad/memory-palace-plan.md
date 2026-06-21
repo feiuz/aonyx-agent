@@ -8,12 +8,14 @@
 
 ## L'idée, re-détaillée
 
-1. **Un projet RAG = un palais de mémoire.** Chaque projet a sa mémoire : ses
-   documents (chunks vectorisés), son knowledge-graph, son diary.
-2. **Choix du projet par conversation.** À la création d'une conversation (ou
-   dans la conversation), on **sélectionne ou crée** un projet RAG. Le palais
-   **auto-gère** : nouveau projet → créé à la 1ʳᵉ écriture ; projet existant →
-   retrouvé. L'utilisateur ne gère jamais de fichiers à la main.
+1. **Un projet RAG = un répertoire de travail (workspace).** Chaque projet est un
+   **dossier** que l'utilisateur définit ; son palais de mémoire vit à
+   **`<dossier>/.aonyx/`** (chunks vectorisés, KG, diary). L'agent **opère dans ce
+   dossier** (ses tools `fs_*` y sont rootés).
+2. **Choix du projet directement sur le chat.** Chaque **conversation** est
+   rattachée à un **répertoire**, choisi via un **sélecteur de dossier** (dialog
+   natif) à la création du chat (ou dans le chat). Le palais est **auto-créé** à
+   `<dossier>/.aonyx/` s'il n'existe pas, **retrouvé** sinon. Zéro fichier à gérer.
 3. **RAG scopé au projet.** Pendant la conversation, `rag_search` / `memory_search`
    et l'auto-retrieve **ne voient que la mémoire du projet choisi** → contexte
    pertinent, pas de pollution entre projets.
@@ -27,24 +29,25 @@
 
 ## État actuel (vérifié dans le code)
 
-- Le palais (`aonyx-memory`) stocke chunks + diary + KG + sessions dans des bases
-  SQLite, et **tout est déjà tagué par projet** : `Chunk.project`,
-  `DiaryEntry.project`, `Session.project` ; `search_bm25(Some(project), …)` sait
-  scoper. Donc « palais par projet » = **données taguées par projet** (un palais
-  physique, des palais *virtuels* par projet) — l'auto-création est gratuite.
-- **Ce qui manque** : le desktop crée les sessions **sans** projet ;
-  `Palace::search` appelle `search_bm25(None, …)` → **cherche tous projets
-  confondus** ; pas de projet `knowledge` ni d'injection globale ; pas de
-  sélecteur de projet ni de gestion des diaries côté UI.
+- `Palace::default_project_dir(root)` = **`<root>/.aonyx/`** : le modèle « un
+  dossier = un palais » **existe déjà** (la CLI ouvre le palais du cwd). Les bases
+  taguent aussi par projet (`Chunk.project`, `Session.project`).
+- **Ce qui manque** : le **sidecar n'ouvre qu'UN palais** (celui de son cwd) → il
+  faut un **registre de palais keyé par répertoire**, ouvert selon le dossier de la
+  session. Le desktop crée les sessions **sans** répertoire ; pas de **sélecteur de
+  dossier** ; `Palace::search` ne scope pas ; pas de projet `knowledge`/règles
+  globales ; diaries non exposés.
 
 ## Concept technique cible
 
-- **Sélecteur de projet** rattaché à la **session** (`session.project`). La
-  conversation porte son projet ; l'API `POST /v1/sessions` le prend déjà
-  (`project`), le desktop doit l'exposer.
-- **Scoping** : le runner / les tools `rag_search` & `memory_search` reçoivent le
-  **projet de la session courante** → `hybrid_search` scopé. L'**ingestion** cible
-  le projet courant (déjà le cas via `ingest_text(project, …)`).
+- **Répertoire rattaché à la session.** La conversation porte son **dossier**,
+  choisi via un **dialog de sélection de dossier** (plugin Tauri) **dans le chat**.
+  `session.project` = un slug dérivé du dossier ; le **chemin** est stocké.
+- **Registre de palais.** Le sidecar ouvre/cache un `Palace` par **répertoire**
+  (`<dir>/.aonyx/`) et utilise celui du dossier de la session au moment du tour.
+  L'ingestion, le RAG et les diaries passent par ce palais.
+- **Scoping** : `rag_search` / `memory_search` / auto-retrieve tournent sur le
+  palais du dossier courant → pas de pollution entre projets.
 - **Couche globale** : à chaque tour, injecter le top-k du projet **`knowledge`**
   (règles globales) **+** le top-k du projet courant. Règles globales aussi
   exposées comme un bloc éditable (≈ système prompt persistant).
@@ -53,11 +56,15 @@
 
 ## Phases
 
-- **H1 — Projet par conversation.** Sélecteur de projet à la création + dans la
-  conversation ; `session.project` posé ; le desktop liste les projets (depuis les
-  chunks/sessions distincts). *Effort M.*
-- **H2 — Scoping RAG.** Passer le projet courant à `hybrid_search` / `rag_search` /
-  auto-retrieve (runner + tool + endpoint `/v1/memory/search?project=`). *Effort M.*
+- **H1 — Projet (= répertoire) sur le chat.** Sélecteur de **dossier** (dialog
+  Tauri) **dans le chat** (header/composer de la conversation) ; le chemin + le slug
+  sont posés sur la session ; le sidecar ouvre le palais `<dir>/.aonyx/` via un
+  **registre par chemin**. ⚠️ *Le picker global du sidebar (v1) est à **déplacer
+  sur le chat** et à passer du nom de projet au **dossier**.* *Effort M-L.*
+- **H2 — Scoping RAG sur le palais du dossier.** Le runner / les tools (`rag_search`,
+  `memory_search`, ingest) + l'auto-retrieve utilisent le **palais du répertoire de
+  la session** (via le registre H1). `/v1/memory/*` accepte le dossier (ou le slug).
+  *Effort M.*
 - **H3 — Projet `knowledge` (règles globales).** Projet réservé ; injection de son
   contenu dans le contexte de chaque tour (par-dessus le projet courant) ; bloc
   d'édition des règles globales. *Effort M.*
