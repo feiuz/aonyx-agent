@@ -1,6 +1,8 @@
 ---
 id: doc-writer
 name: Documentation Writer
+category: writing
+tags: [Docs, Writing]
 enabled: true
 tools: [fs_read, fs_write, fs_edit, fs_glob]
 trigger:

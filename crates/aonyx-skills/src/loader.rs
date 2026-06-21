@@ -268,7 +268,9 @@ Open a PR, watch CI, merge.
                 "code-review",
                 "data-analyst",
                 "doc-writer",
-                "incident-response"
+                "incident-response",
+                "plan",
+                "systematic-debugging",
             ]
         );
     }

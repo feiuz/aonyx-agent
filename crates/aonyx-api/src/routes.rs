@@ -46,6 +46,7 @@ pub fn build_router(state: ApiState) -> Router {
         .route("/v1/tools", get(meta::list_tools))
         .route("/v1/tools/:name/enabled", post(set_tool_enabled))
         .route("/v1/skills", get(meta::list_skills))
+        .route("/v1/skills/:id/enabled", post(set_skill_enabled))
         .route("/v1/config", get(meta::get_config))
         .route("/v1/chat/completions", post(openai::chat_completions))
         .route("/v1/models", get(openai::models))
@@ -108,6 +109,26 @@ async fn set_tool_enabled(
                 d.remove(&name);
             } else {
                 d.insert(name);
+            }
+            StatusCode::NO_CONTENT
+        }
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
+    }
+}
+
+/// Enable or disable a skill for the next turn (auth required). The runner
+/// shares this set, so the change is live — a disabled skill stops matching.
+async fn set_skill_enabled(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+    Json(body): Json<ToolToggle>,
+) -> StatusCode {
+    match state.skill_disabled.lock() {
+        Ok(mut d) => {
+            if body.enabled {
+                d.remove(&id);
+            } else {
+                d.insert(id);
             }
             StatusCode::NO_CONTENT
         }

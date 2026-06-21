@@ -1,6 +1,8 @@
 ---
 id: data-analyst
 name: Data Analyst
+category: data-science
+tags: [Data, Analysis]
 enabled: true
 tools: [fs_read, fs_glob, exec, memory_search]
 trigger:

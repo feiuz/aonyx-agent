@@ -1,6 +1,8 @@
 ---
 id: code-review
 name: Code Review
+category: software-development
+tags: [Code-Review, Quality]
 enabled: true
 tools: [fs_read, fs_grep, git_diff, git_show]
 trigger:

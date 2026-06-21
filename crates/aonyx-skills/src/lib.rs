@@ -49,11 +49,13 @@ pub use schema::{Skill, Trigger};
 /// User-installed skills (e.g. under `~/.aonyx/skills/`) can be loaded
 /// separately via [`SkillLoader::load_dir`] and concatenated to this list.
 pub fn builtin_skills() -> Vec<Skill> {
-    const SOURCES: [&str; 4] = [
+    const SOURCES: [&str; 6] = [
         include_str!("../skills/built_in/code-review.skill.md"),
         include_str!("../skills/built_in/doc-writer.skill.md"),
         include_str!("../skills/built_in/data-analyst.skill.md"),
         include_str!("../skills/built_in/incident-response.skill.md"),
+        include_str!("../skills/built_in/plan.skill.md"),
+        include_str!("../skills/built_in/systematic-debugging.skill.md"),
     ];
     SOURCES
         .iter()
@@ -83,9 +85,9 @@ mod lib_tests {
     use super::*;
 
     #[test]
-    fn builtin_skills_loads_all_four() {
+    fn builtin_skills_load() {
         let skills = builtin_skills();
-        assert_eq!(skills.len(), 4);
+        assert_eq!(skills.len(), 6);
         let mut ids: Vec<&str> = skills.iter().map(|s| s.id.as_str()).collect();
         ids.sort();
         assert_eq!(
@@ -94,7 +96,9 @@ mod lib_tests {
                 "code-review",
                 "data-analyst",
                 "doc-writer",
-                "incident-response"
+                "incident-response",
+                "plan",
+                "systematic-debugging",
             ]
         );
     }

@@ -318,6 +318,10 @@ mod api_imp {
             )
             .with_project(&project);
 
+        // Share the runner's live skill-toggle set with the API so the desktop's
+        // skill toggles flip the same skills the runner matches against.
+        let skill_disabled = runner.skill_toggle_handle();
+
         // Brief the architect on its sub-agents so it actually delegates — the
         // dispatch_agent tool alone isn't enough, the model needs the nudge in
         // its standing instructions.
@@ -367,7 +371,8 @@ mod api_imp {
             project,
         )
         .with_approvals(approvals)
-        .with_tool_disabled(tool_disabled);
+        .with_tool_disabled(tool_disabled)
+        .with_skill_disabled(skill_disabled);
 
         let addr = format!("{bind}:{port}");
         if token.is_some() {

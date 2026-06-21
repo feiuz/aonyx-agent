@@ -144,6 +144,9 @@ pub struct ApiState {
     /// Live set of disabled tool names — shared with the runner's registry so
     /// `POST /v1/tools/:name/enabled` flips a tool on/off for the next turn.
     pub tool_disabled: Arc<Mutex<HashSet<String>>>,
+    /// Live set of disabled skill ids — shared with the runner so
+    /// `POST /v1/skills/:id/enabled` flips a skill on/off for the next turn.
+    pub skill_disabled: Arc<Mutex<HashSet<String>>>,
 }
 
 impl ApiState {
@@ -165,6 +168,7 @@ impl ApiState {
             default_project: Arc::new(default_project.into()),
             approvals: Arc::new(ApprovalHub::new()),
             tool_disabled: Arc::new(Mutex::new(HashSet::new())),
+            skill_disabled: Arc::new(Mutex::new(HashSet::new())),
         }
     }
 
@@ -179,6 +183,13 @@ impl ApiState {
     /// `POST /v1/tools/:name/enabled` endpoint toggles the same set.
     pub fn with_tool_disabled(mut self, disabled: Arc<Mutex<HashSet<String>>>) -> Self {
         self.tool_disabled = disabled;
+        self
+    }
+
+    /// Inject the runner's live skill-toggle handle so the
+    /// `POST /v1/skills/:id/enabled` endpoint toggles the same set.
+    pub fn with_skill_disabled(mut self, disabled: Arc<Mutex<HashSet<String>>>) -> Self {
+        self.skill_disabled = disabled;
         self
     }
 

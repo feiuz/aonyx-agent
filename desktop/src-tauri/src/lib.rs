@@ -104,6 +104,29 @@ async fn api_tool_enabled(
     .await
 }
 
+/// `GET /v1/skills` — registered skills (built-in + user).
+#[tauri::command]
+async fn api_skills(base: String, token: String) -> Result<Value, String> {
+    send(reqwest::Method::GET, join(&base, "/v1/skills"), &token, None).await
+}
+
+/// `POST /v1/skills/{id}/enabled` — enable/disable a skill for the next turn.
+#[tauri::command]
+async fn api_skill_enabled(
+    base: String,
+    token: String,
+    id: String,
+    enabled: bool,
+) -> Result<Value, String> {
+    send(
+        reqwest::Method::POST,
+        join(&base, &format!("/v1/skills/{id}/enabled")),
+        &token,
+        Some(serde_json::json!({ "enabled": enabled })),
+    )
+    .await
+}
+
 /// `POST /v1/sessions/{id}/messages` — run one blocking turn.
 #[tauri::command]
 async fn api_send(
@@ -1129,6 +1152,8 @@ pub fn run() {
             api_create_session,
             api_approve,
             api_tool_enabled,
+            api_skills,
+            api_skill_enabled,
             api_send,
             api_stream,
             api_list_sessions,

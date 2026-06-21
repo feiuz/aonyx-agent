@@ -1,6 +1,8 @@
 ---
 id: incident-response
 name: Incident Response
+category: devops
+tags: [Incident, Ops]
 enabled: true
 tools: [bash, fs_read, fs_grep, git_log, memory_search]
 trigger:
