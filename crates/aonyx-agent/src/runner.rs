@@ -121,6 +121,10 @@ pub struct AgentRunner {
     /// (and `summarize`) picks up the change.
     model: Arc<std::sync::Mutex<String>>,
     max_iterations: usize,
+    /// Max `dispatch_agent` calls the architect may make in a single turn (MA4).
+    /// Bounds sub-agent fan-out; recursion depth is already 1 by construction
+    /// (sub-agents carry no `dispatch_agent`).
+    max_dispatches: usize,
     /// Pre-fetch RAG context before each turn (retrieve-then-generate).
     auto_retrieve: bool,
     /// Chunks injected when [`Self::with_auto_retrieve`] is enabled.
@@ -146,6 +150,7 @@ impl AgentRunner {
             approval: ApprovalPolicy::default(),
             model: Arc::new(std::sync::Mutex::new(model.into())),
             max_iterations: 10,
+            max_dispatches: 8,
             auto_retrieve: false,
             auto_retrieve_top_k: 5,
             auto_retrieve_min_len: 12,
@@ -200,6 +205,13 @@ impl AgentRunner {
     /// Override the per-turn iteration cap.
     pub fn with_max_iterations(mut self, n: usize) -> Self {
         self.max_iterations = n.max(1);
+        self
+    }
+
+    /// Override the per-turn `dispatch_agent` budget (MA4). `0` disables
+    /// delegation entirely; the default is 8.
+    pub fn with_max_dispatches(mut self, n: usize) -> Self {
+        self.max_dispatches = n;
         self
     }
 
@@ -381,6 +393,7 @@ impl AgentRunner {
         self.inject_auto_retrieve(&mut messages).await;
         let tools = self.tools_schema();
         let mut iterations: usize = 0;
+        let mut dispatches: usize = 0;
 
         for i in 0..self.max_iterations {
             iterations = i + 1;
@@ -428,6 +441,25 @@ impl AgentRunner {
             let _ = events.send(TurnEvent::AssistantMessageEnd).await;
 
             for call in tool_calls {
+                // MA4 — bound sub-agent fan-out per turn. Depth is already 1
+                // (sub-agents carry no `dispatch_agent`); this caps breadth so
+                // the architect can't spawn an unbounded number of sub-agents.
+                if call.name == "dispatch_agent" {
+                    dispatches += 1;
+                    if dispatches > self.max_dispatches {
+                        messages.push(Message::tool_result(
+                            call.id,
+                            format!(
+                                "[delegation budget exhausted] You have reached the \
+                                 delegation limit ({} per turn). Do not call \
+                                 dispatch_agent again — complete the task yourself or \
+                                 summarise the sub-agents' results so far.",
+                                self.max_dispatches
+                            ),
+                        ));
+                        continue;
+                    }
+                }
                 let class = self
                     .tools
                     .get(&call.name)
@@ -959,6 +991,63 @@ mod tests {
             .unwrap();
         assert_eq!(res.iterations, 2);
         assert!(res.max_iterations_hit);
+    }
+
+    #[tokio::test]
+    async fn respects_max_dispatches() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        // A stand-in `dispatch_agent` that counts how often it actually runs.
+        struct CountingDispatch(Arc<AtomicUsize>);
+        #[async_trait::async_trait]
+        impl ToolHandler for CountingDispatch {
+            fn name(&self) -> &str {
+                "dispatch_agent"
+            }
+            fn schema(&self) -> Value {
+                json!({ "name": "dispatch_agent", "description": "stub" })
+            }
+            fn classify(&self) -> SafetyClass {
+                SafetyClass::Safe
+            }
+            async fn invoke(&self, call: ToolCall) -> Result<ToolResult> {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                Ok(ToolResult {
+                    call_id: call.id,
+                    output: json!("ok"),
+                    error: None,
+                })
+            }
+        }
+
+        let runs = Arc::new(AtomicUsize::new(0));
+        let mut registry = ToolRegistry::default_set();
+        registry.register(Arc::new(CountingDispatch(Arc::clone(&runs))));
+
+        // One turn that delegates three times, then a final text turn.
+        let provider = Arc::new(FakeProvider::new(vec![
+            vec![
+                tool_chunk("dispatch_agent", json!({ "agent": "coder", "task": "a" })),
+                tool_chunk("dispatch_agent", json!({ "agent": "coder", "task": "b" })),
+                tool_chunk("dispatch_agent", json!({ "agent": "coder", "task": "c" })),
+                stop_chunk(),
+            ],
+            vec![text_chunk("done."), stop_chunk()],
+        ]));
+        let runner = AgentRunner::new(provider, registry, "m")
+            .with_approval(ApprovalPolicy::AutoAllow)
+            .with_max_dispatches(2);
+        let res = runner
+            .run(vec![Message::new(Role::User, "delegate a lot")])
+            .await
+            .unwrap();
+
+        // Only two delegations executed; the third was budget-capped.
+        assert_eq!(runs.load(Ordering::SeqCst), 2);
+        assert!(res
+            .messages
+            .iter()
+            .any(|m| m.role == Role::Tool && m.content.contains("delegation budget exhausted")));
     }
 
     #[tokio::test]
