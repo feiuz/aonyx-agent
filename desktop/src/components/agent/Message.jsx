@@ -1,14 +1,9 @@
 import Markdown from "./Markdown";
-import { useI18n } from "../../context/LanguageContext";
 
 export default function Message({ role, content, tools, error, streaming }) {
-  const { t } = useI18n();
   const isUser = role === "user";
   return (
     <div className={`flex flex-col gap-1.5 ${isUser ? "self-end items-end max-w-[80%]" : "self-start w-full max-w-[88%]"}`}>
-      <span className="text-[11px] font-cond uppercase tracking-wider text-aonyx-500">
-        {isUser ? t("chat.you") : "aonyx"}
-      </span>
       {isUser ? (
         <div
           className={`rounded-2xl rounded-tr-md px-4 py-2.5 text-sm select-text break-words whitespace-pre-wrap ${
