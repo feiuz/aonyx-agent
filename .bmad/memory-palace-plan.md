@@ -63,12 +63,23 @@
   d'édition des règles globales. *Effort M.*
 - **H4 — Diaries.** `diary_append` au fil de la conversation + endpoint/vue timeline
   par projet ; option d'auto-journalisation (résumé de tour). *Effort M.*
-- **H5 — Réorg Memory Health (la page).** Voir ci-dessous. *Effort M-L.*
+- **H5 — Deux surfaces : « Palais de Mémoire » + « RAG ».** Renommer le nav
+  *Memory Health* → **Palais de Mémoire** (la console mémoire du projet courant),
+  et **ajouter un nav `RAG`** dédié à la **gestion des projets** + aux règles
+  globales. Voir ci-dessous. *Effort M-L.*
 
-## Réorganisation de la page Memory Health (H5)
+## Deux surfaces : « Palais de Mémoire » + « RAG » (H5)
 
-Aujourd'hui : un panneau d'ingestion + une recherche, **sans notion de projet**.
-Cible — une vraie console mémoire **par projet** (façon la capture RAG) :
+Dans le sidebar : **renommer `Memory Health` → « Palais de Mémoire »** et **ajouter
+un item `RAG`**. Deux surfaces complémentaires.
+
+**RAG (nouveau) — gestion des projets.** Le hub des projets de mémoire : liste des
+projets (stats docs/chunks · dimension · modèle d'embedding), **créer / renommer /
+supprimer**, définir le **projet actif**, et **édition des règles globales** (projet
+réservé `knowledge`, protégé/non-supprimable). C'est là qu'on gère les palais.
+
+**Palais de Mémoire (ex-Memory Health) — la console du projet.** La mémoire du
+**projet courant** (sélectionné dans RAG / la conversation), façon la capture RAG :
 
 ```
 ┌ MÉMOIRE ──────────────────────────────────────────────┐
