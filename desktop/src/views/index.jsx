@@ -22,6 +22,7 @@ export { default as KnowledgeGraph } from "./KnowledgeGraph";
 export { default as Projets } from "./Projets";
 export { default as Stats } from "./Stats";
 export { default as Mcp } from "./Mcp";
+export { default as Agents } from "./Agents";
 
 export const Users = () => <Stub icon={UsersIcon} titleKey="nav.users" noteKey="stub.users" />;
 export const Permissions = () => <Stub icon={Shield} titleKey="nav.permissions" noteKey="stub.permissions" />;

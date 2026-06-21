@@ -19,6 +19,7 @@ import {
   User,
   Languages,
   Cpu,
+  Bot,
 } from "lucide-react";
 import { useTheme } from "../context/ThemeContext";
 import { useAuth } from "../context/AuthContext";
@@ -36,6 +37,7 @@ const NAV = [
   { to: "/users", key: "nav.users", icon: UsersIcon },
   { to: "/permissions", key: "nav.permissions", icon: Shield },
   { to: "/mcp", key: "nav.mcp", icon: Download },
+  { to: "/agents", key: "nav.agents", icon: Bot },
   { to: "/settings", key: "nav.settings", icon: SettingsIcon },
 ];
 

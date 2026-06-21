@@ -786,6 +786,131 @@ fn save_setup(cfg: Value) -> Result<(), String> {
     std::fs::write(&path, doc.to_string()).map_err(|e| e.to_string())
 }
 
+// ─── Custom sub-agents (ADR-017 / MA2): CRUD over ~/.aonyx/agents/*.AGENT.md ──
+
+/// `~/.aonyx/agents`.
+fn aonyx_agents_dir() -> Result<std::path::PathBuf, String> {
+    dirs::home_dir()
+        .map(|h| h.join(".aonyx").join("agents"))
+        .ok_or_else(|| "could not resolve home directory".to_string())
+}
+
+fn slugify(s: &str) -> String {
+    let raw: String = s
+        .trim()
+        .to_lowercase()
+        .chars()
+        .map(|c| if c.is_alphanumeric() { c } else { '-' })
+        .collect();
+    raw.trim_matches('-').to_string()
+}
+
+/// The frontmatter of an `AGENT.md` file (the markdown body is handled
+/// separately). Mirrors `aonyx_agent::agents::AgentDefinition`'s file fields.
+#[derive(serde::Serialize, serde::Deserialize, Default)]
+struct AgentFile {
+    #[serde(default)]
+    id: String,
+    name: String,
+    #[serde(default)]
+    description: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    model: Option<String>,
+    #[serde(default)]
+    tools: Vec<String>,
+}
+
+/// Split `---\n…\n---\n<body>` → `(frontmatter, body)` (same as the agent loader).
+fn split_agent_md(raw: &str) -> Option<(&str, &str)> {
+    let after = raw.strip_prefix("---\r\n").or_else(|| raw.strip_prefix("---\n"))?;
+    let mut cur = 0;
+    while let Some(rel) = after[cur..].find("\n---") {
+        let abs = cur + rel;
+        let tail = &after[abs + 4..];
+        if tail.is_empty() || tail.starts_with('\n') || tail.starts_with('\r') {
+            return Some((&after[..abs], tail.trim_start_matches(['\r', '\n'])));
+        }
+        cur = abs + 4;
+    }
+    None
+}
+
+/// List the user-defined sub-agents in `~/.aonyx/agents/`. Built-in presets
+/// (coder/reviewer/researcher) live in the agent binary and are always
+/// available; this only manages the editable user files.
+#[tauri::command]
+fn agents_list() -> Result<Value, String> {
+    let dir = aonyx_agents_dir()?;
+    let mut agents = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        for e in entries.flatten() {
+            let path = e.path();
+            let lower = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("")
+                .to_ascii_lowercase();
+            if lower != "agent.md" && !lower.ends_with(".agent.md") {
+                continue;
+            }
+            let Ok(raw) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            let Some((fm, body)) = split_agent_md(&raw) else {
+                continue;
+            };
+            let Ok(a) = serde_yaml::from_str::<AgentFile>(fm) else {
+                continue;
+            };
+            if let Ok(mut v) = serde_json::to_value(&a) {
+                if let Some(o) = v.as_object_mut() {
+                    o.insert("body".into(), Value::String(body.to_string()));
+                    o.insert("file".into(), Value::String(path.display().to_string()));
+                }
+                agents.push(v);
+            }
+        }
+    }
+    Ok(serde_json::json!({ "dir": dir.display().to_string(), "agents": agents }))
+}
+
+/// Write a sub-agent to `~/.aonyx/agents/<id>.AGENT.md` (creates the dir).
+#[tauri::command]
+fn agents_save(agent: Value) -> Result<(), String> {
+    let dir = aonyx_agents_dir()?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let mut meta: AgentFile =
+        serde_json::from_value(agent.clone()).map_err(|e| format!("bad agent: {e}"))?;
+    if meta.name.trim().is_empty() {
+        return Err("the agent needs a name".to_string());
+    }
+    if meta.id.trim().is_empty() {
+        meta.id = slugify(&meta.name);
+    }
+    if meta.id.is_empty() {
+        return Err("the agent needs a valid id".to_string());
+    }
+    meta.tools.retain(|t| !t.trim().is_empty());
+    let body = agent.get("body").and_then(|v| v.as_str()).unwrap_or("").trim();
+    let fm = serde_yaml::to_string(&meta).map_err(|e| e.to_string())?;
+    let content = format!("---\n{fm}---\n\n{body}\n");
+    std::fs::write(dir.join(format!("{}.AGENT.md", meta.id)), content).map_err(|e| e.to_string())
+}
+
+/// Delete a sub-agent file by id.
+#[tauri::command]
+fn agents_delete(id: String) -> Result<(), String> {
+    let safe = slugify(&id);
+    if safe.is_empty() {
+        return Err("bad agent id".to_string());
+    }
+    let path = aonyx_agents_dir()?.join(format!("{safe}.AGENT.md"));
+    if path.exists() {
+        std::fs::remove_file(&path).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 /// Check the configured update endpoint. Returns the new version's metadata
 /// when an update is available, or `null` when the app is already current.
 /// Runs entirely Rust-side (the webview only calls this command), so no
@@ -980,6 +1105,9 @@ pub fn run() {
             save_provider_config,
             save_setup,
             setup_state,
+            agents_list,
+            agents_save,
+            agents_delete,
             list_models,
             claude_login,
             check_for_update,

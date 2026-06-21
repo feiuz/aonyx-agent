@@ -18,6 +18,7 @@ import {
   Users,
   Permissions,
   Mcp,
+  Agents,
   Settings,
 } from "./views";
 
@@ -74,6 +75,7 @@ export default function App() {
                 <Route path="/users" element={<Users />} />
                 <Route path="/permissions" element={<Permissions />} />
                 <Route path="/mcp" element={<Mcp />} />
+                <Route path="/agents" element={<Agents />} />
                 <Route path="/settings" element={<Settings />} />
                 <Route path="*" element={<Navigate to="/" replace />} />
               </Route>
