@@ -6,7 +6,7 @@ import { useI18n } from "../context/LanguageContext";
 import * as agent from "../services/agentService";
 
 export default function MemoryHealth() {
-  const { status } = useAgent();
+  const { status, project, refreshProjects } = useAgent();
   const { t } = useI18n();
   const [q, setQ] = useState("");
   const [hits, setHits] = useState(null);
@@ -34,9 +34,10 @@ export default function MemoryHealth() {
     setIngesting(true);
     setIngestMsg("");
     try {
-      const r = await agent.ingest(source.trim() || "uploaded", text.trim());
-      setIngestMsg(`✓ ${r?.chunks ?? 0} ${t("memory.ingestedChunks")}`);
+      const r = await agent.ingest(source.trim() || "uploaded", text.trim(), project || null);
+      setIngestMsg(`✓ ${r?.chunks ?? 0} ${t("memory.ingestedChunks")} (${r?.project || project || "défaut"})`);
       setText("");
+      refreshProjects();
     } catch (e) {
       setIngestMsg(String(e));
     } finally {

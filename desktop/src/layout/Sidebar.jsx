@@ -23,6 +23,7 @@ import { useI18n } from "../context/LanguageContext";
 import { useAgent } from "../context/AgentContext";
 import { isTauri, safeInvoke } from "../config/bridge";
 import { readProviderConfig } from "../services/configService";
+import ProjectPicker from "./ProjectPicker";
 
 const PROVIDER_LABEL = {
   anthropic: "Anthropic",
@@ -209,6 +210,12 @@ export default function Sidebar() {
           );
         })}
       </nav>
+
+      {!collapsed && (
+        <div className="px-2 pt-1">
+          <ProjectPicker />
+        </div>
+      )}
 
       {!collapsed && (
         <div className="px-2 pt-1">

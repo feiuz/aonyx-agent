@@ -34,6 +34,7 @@ pub fn build_router(state: ApiState) -> Router {
         .route("/v1/approvals/:id", post(resolve_approval))
         .route("/v1/memory/search", get(memory::search))
         .route("/v1/memory/ingest", post(memory::ingest))
+        .route("/v1/memory/projects", get(memory::projects))
         .route(
             "/v1/memory/diary",
             get(memory::diary_list).post(memory::diary_append),

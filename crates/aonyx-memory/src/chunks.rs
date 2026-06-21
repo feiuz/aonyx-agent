@@ -112,6 +112,9 @@ pub trait ChunksStore: Send + Sync {
 
     /// Total chunk count, optionally scoped to a project.
     async fn count(&self, project: Option<&str>) -> Result<usize>;
+
+    /// Distinct project slugs with their chunk counts (most chunks first).
+    async fn projects(&self) -> Result<Vec<(String, usize)>>;
 }
 
 /// SQLite-backed [`ChunksStore`] using FTS5 for BM25 ranking.
@@ -373,6 +376,29 @@ impl ChunksStore for SqliteChunksStore {
         })
         .await
         .map_err(|e| AonyxError::Memory(format!("chunks count join: {e}")))?
+    }
+
+    async fn projects(&self) -> Result<Vec<(String, usize)>> {
+        let conn = self.conn.clone();
+        tokio::task::spawn_blocking(move || -> Result<Vec<(String, usize)>> {
+            let lock = conn.lock().expect("chunks mutex poisoned");
+            let mut stmt = lock
+                .prepare(
+                    "SELECT project, COUNT(*) FROM chunks_fts GROUP BY project ORDER BY COUNT(*) DESC, project",
+                )
+                .map_err(|e| AonyxError::Memory(format!("projects: {e}")))?;
+            let rows = stmt
+                .query_map([], |r| {
+                    let p: String = r.get(0)?;
+                    let n: i64 = r.get(1)?;
+                    Ok((p, n.max(0) as usize))
+                })
+                .map_err(|e| AonyxError::Memory(format!("projects: {e}")))?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(|e| AonyxError::Memory(format!("projects: {e}")))
+        })
+        .await
+        .map_err(|e| AonyxError::Memory(format!("chunks projects join: {e}")))?
     }
 }
 

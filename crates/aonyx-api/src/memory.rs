@@ -4,7 +4,7 @@
 //! [`ApiState`](crate::ApiState)); no agent loop is involved.
 
 use aonyx_core::MemoryStore;
-use aonyx_memory::{DiaryEntry, DiaryStore, Entity, KgStore, Relation};
+use aonyx_memory::{ChunksStore, DiaryEntry, DiaryStore, Entity, KgStore, Relation};
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::Json;
@@ -78,6 +78,25 @@ pub async fn ingest(
     Ok((
         StatusCode::CREATED,
         Json(serde_json::json!({ "project": project, "source": source, "chunks": chunks })),
+    ))
+}
+
+/// One project's memory footprint.
+#[derive(Debug, Serialize)]
+pub struct ProjectInfo {
+    /// Project slug.
+    pub project: String,
+    /// Number of ingested chunks in this project.
+    pub chunks: usize,
+}
+
+/// `GET /v1/memory/projects` — distinct memory projects with their chunk counts.
+pub async fn projects(State(state): State<ApiState>) -> ApiResult<Json<Vec<ProjectInfo>>> {
+    let rows = state.palace.chunks.projects().await?;
+    Ok(Json(
+        rows.into_iter()
+            .map(|(project, chunks)| ProjectInfo { project, chunks })
+            .collect(),
     ))
 }
 

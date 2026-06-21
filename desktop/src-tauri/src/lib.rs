@@ -151,6 +151,12 @@ async fn api_ingest(
     .await
 }
 
+/// `GET /v1/memory/projects` — distinct memory projects + chunk counts.
+#[tauri::command]
+async fn api_projects(base: String, token: String) -> Result<Value, String> {
+    send(reqwest::Method::GET, join(&base, "/v1/memory/projects"), &token, None).await
+}
+
 /// `POST /v1/sessions/{id}/messages` — run one blocking turn.
 #[tauri::command]
 async fn api_send(
@@ -1248,6 +1254,7 @@ pub fn run() {
             api_skill_enabled,
             api_agents,
             api_ingest,
+            api_projects,
             api_send,
             api_stream,
             api_list_sessions,

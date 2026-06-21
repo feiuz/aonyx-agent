@@ -13,6 +13,13 @@ export function AgentProvider({ children }) {
   // Estimated context usage (tokens of the active conversation vs the model's
   // window) — surfaced in the bottom status bar. Chat updates it.
   const [usage, setUsage] = useState({ tokens: 0, max: 200000 });
+  // Active RAG project for new conversations (memory is scoped per project).
+  const [project, setProjectState] = useState(() => localStorage.getItem("aonyx.project") || "");
+  const [projects, setProjects] = useState([]);
+  const setProject = useCallback((p) => {
+    setProjectState(p || "");
+    localStorage.setItem("aonyx.project", p || "");
+  }, []);
 
   const refreshSessions = useCallback(async () => {
     try {
@@ -20,6 +27,15 @@ export function AgentProvider({ children }) {
       setSessions(Array.isArray(list) ? list : []);
     } catch {
       /* keep previous list */
+    }
+  }, []);
+
+  const refreshProjects = useCallback(async () => {
+    try {
+      const r = await agent.projects();
+      setProjects(Array.isArray(r) ? r : []);
+    } catch {
+      /* ignore */
     }
   }, []);
 
@@ -36,24 +52,25 @@ export function AgentProvider({ children }) {
       setInfo(i);
       setStatus("ok");
       await refreshSessions();
+      refreshProjects();
       return true;
     } catch (e) {
       setStatus("err");
       setError(String(e));
       return false;
     }
-  }, [refreshSessions]);
+  }, [refreshSessions, refreshProjects]);
 
   useEffect(() => {
     connect();
   }, [connect]);
 
   const createSession = useCallback(async () => {
-    const rec = await agent.createSession();
+    const rec = await agent.createSession(project || null);
     setSessionId(rec.id);
     refreshSessions();
     return rec.id;
-  }, [refreshSessions]);
+  }, [refreshSessions, project]);
 
   const ensureSession = useCallback(async () => {
     if (sessionId) return sessionId;
@@ -71,6 +88,10 @@ export function AgentProvider({ children }) {
         setSessionId,
         usage,
         setUsage,
+        project,
+        setProject,
+        projects,
+        refreshProjects,
         connect,
         refreshSessions,
         createSession,

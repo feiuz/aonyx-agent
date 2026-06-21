@@ -44,10 +44,13 @@ export async function connect() {
 
 export const listSessions = () => invoke("api_list_sessions", withArgs({ project: null }));
 export const getSession = (id) => invoke("api_get_session", withArgs({ session: id }));
-export const createSession = () => invoke("api_create_session", withArgs({ project: null }));
+export const createSession = (project = null) => invoke("api_create_session", withArgs({ project }));
 export const memorySearch = (q, k = 8) => invoke("api_memory_search", withArgs({ q, k }));
 export const ingest = (source, text, project = null) =>
   invoke("api_ingest", withArgs({ project, source, text }));
+
+/** Distinct memory projects (+ chunk counts). */
+export const projects = () => invoke("api_projects", withArgs());
 export const kgEntities = (limit = 300) => invoke("api_kg_entities", withArgs({ limit }));
 export const kgRelations = (limit = 800) => invoke("api_kg_relations", withArgs({ limit }));
 export const tools = () => invoke("api_tools", withArgs());
