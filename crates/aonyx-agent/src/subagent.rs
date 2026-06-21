@@ -160,9 +160,13 @@ impl ToolHandler for DispatchAgent {
             task,
         )
         .await?;
+        // Return the sub-agent's reply as a plain-string output: the architect
+        // already knows which agent it called (from its own tool call), and a
+        // string keeps the streamed `ToolEnd` summary clean (no JSON wrapper)
+        // for the chat's delegation block.
         Ok(ToolResult {
             call_id: call.id,
-            output: json!({ "agent": def.id, "reply": reply }),
+            output: json!(reply),
             error: None,
         })
     }

@@ -59,3 +59,11 @@ export async function streamMessage(session, content, onFrame) {
 
 export const toolNamesOf = (msg) =>
   (msg?.tool_calls || []).map((tc) => tc?.name).filter(Boolean);
+
+// Reconstruct tool events from a persisted assistant message (history). Args are
+// stored on each ToolCall, so the delegation block survives a reload; the result
+// summary isn't (it lives in the separate tool-result message) — done/ok only.
+export const toolEventsOf = (msg) =>
+  (msg?.tool_calls || [])
+    .filter((tc) => tc?.name)
+    .map((tc) => ({ name: tc.name, args: tc.args, done: true, ok: true }));

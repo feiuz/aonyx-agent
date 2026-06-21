@@ -35,8 +35,8 @@ export default function Chat() {
         if (cancelled) return;
         const msgs = (rec.messages || []).flatMap((m) => {
           if (m.role === "user" && m.content) return [{ role: "user", content: m.content }];
-          if (m.role === "assistant" && (m.content || agent.toolNamesOf(m).length))
-            return [{ role: "assistant", content: m.content || "", tools: agent.toolNamesOf(m) }];
+          if (m.role === "assistant" && (m.content || agent.toolEventsOf(m).length))
+            return [{ role: "assistant", content: m.content || "", events: agent.toolEventsOf(m) }];
           return [];
         });
         setMessages(msgs);
@@ -71,12 +71,12 @@ export default function Chat() {
     setMessages((m) => [
       ...m,
       { role: "user", content: text },
-      { role: "assistant", content: "", tools: [], streaming: true },
+      { role: "assistant", content: "", events: [], streaming: true },
     ]);
     setBusy(true);
 
     let acc = "";
-    const tools = [];
+    const events = [];
     const patchLast = (patch) =>
       setMessages((m) => {
         const copy = [...m];
@@ -93,12 +93,21 @@ export default function Chat() {
             break;
           case "tool_start":
             if (frame.name) {
-              tools.push(frame.name);
-              patchLast({ tools: [...tools] });
+              events.push({ name: frame.name, args: frame.args, done: false });
+              patchLast({ events: [...events] });
             }
             break;
+          case "tool_end":
+            for (let i = events.length - 1; i >= 0; i--) {
+              if (events[i].name === frame.name && !events[i].done) {
+                events[i] = { ...events[i], ok: frame.ok, summary: frame.summary, done: true };
+                break;
+              }
+            }
+            patchLast({ events: [...events] });
+            break;
           case "done":
-            patchLast({ content: acc || frame.reply || "", tools: [...tools], streaming: false });
+            patchLast({ content: acc || frame.reply || "", events: [...events], streaming: false });
             break;
           case "error":
             patchLast({ content: frame.message || "stream error", error: true, streaming: false });
@@ -157,7 +166,7 @@ export default function Chat() {
                 key={i}
                 role={m.role}
                 content={m.content || (m.streaming ? "…" : "")}
-                tools={m.tools}
+                events={m.events}
                 error={m.error}
                 streaming={m.streaming && !m.content}
               />
