@@ -112,6 +112,29 @@ pub struct SkillInfo {
     pub triggers: Vec<String>,
 }
 
+/// Metadata for one sub-agent the architect can delegate to (`GET /v1/agents`).
+#[derive(Debug, Clone, Serialize)]
+pub struct AgentInfo {
+    /// Agent id (the `AGENT.md` slug).
+    pub id: String,
+    /// Human-readable name.
+    pub name: String,
+    /// When to use this agent.
+    pub description: String,
+    /// Catalogue category, if any.
+    #[serde(default)]
+    pub category: Option<String>,
+    /// Free-form tags.
+    #[serde(default)]
+    pub tags: Vec<String>,
+    /// Tool whitelist (empty = inherits the parent registry).
+    #[serde(default)]
+    pub tools: Vec<String>,
+    /// `true` for a built-in catalogue preset, `false` for a user agent.
+    #[serde(default)]
+    pub builtin: bool,
+}
+
 /// Non-secret server configuration (`GET /v1/config`). Never carries keys.
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct ConfigInfo {
@@ -159,6 +182,11 @@ pub trait ApiAgent: Send + Sync + 'static {
 
     /// The loaded skills. Default: none (overridden by the binary).
     fn skills(&self) -> Vec<SkillInfo> {
+        Vec::new()
+    }
+
+    /// The available sub-agents (catalogue + user). Default: none.
+    fn agents(&self) -> Vec<AgentInfo> {
         Vec::new()
     }
 

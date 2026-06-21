@@ -858,6 +858,11 @@ mod tests {
         let mut s = Skill {
             id: id.to_string(),
             name: id.to_string(),
+            description: None,
+            category: None,
+            tags: Vec::new(),
+            version: None,
+            author: None,
             enabled: true,
             tools: Vec::new(),
             trigger: Default::default(),

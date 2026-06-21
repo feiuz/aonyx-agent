@@ -47,6 +47,7 @@ pub fn build_router(state: ApiState) -> Router {
         .route("/v1/tools", get(meta::list_tools))
         .route("/v1/tools/:name/enabled", post(set_tool_enabled))
         .route("/v1/skills", get(meta::list_skills))
+        .route("/v1/agents", get(meta::list_agents))
         .route("/v1/skills/:id/enabled", post(set_skill_enabled))
         .route("/v1/config", get(meta::get_config))
         .route("/v1/chat/completions", post(openai::chat_completions))

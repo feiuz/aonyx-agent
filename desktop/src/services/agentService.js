@@ -61,6 +61,9 @@ export const toolEnabled = (name, enabled) => invoke("api_tool_enabled", withArg
 /** Registered skills (built-in + user). */
 export const skills = () => invoke("api_skills", withArgs());
 
+/** Sub-agent catalogue (built-in presets + user agents). */
+export const agents = () => invoke("api_agents", withArgs());
+
 /** Enable/disable a skill for the next turn. */
 export const skillEnabled = (id, enabled) => invoke("api_skill_enabled", withArgs({ id, enabled }));
 

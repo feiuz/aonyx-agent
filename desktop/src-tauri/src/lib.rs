@@ -110,6 +110,12 @@ async fn api_skills(base: String, token: String) -> Result<Value, String> {
     send(reqwest::Method::GET, join(&base, "/v1/skills"), &token, None).await
 }
 
+/// `GET /v1/agents` — sub-agents the architect can delegate to (catalogue + user).
+#[tauri::command]
+async fn api_agents(base: String, token: String) -> Result<Value, String> {
+    send(reqwest::Method::GET, join(&base, "/v1/agents"), &token, None).await
+}
+
 /// `POST /v1/skills/{id}/enabled` — enable/disable a skill for the next turn.
 #[tauri::command]
 async fn api_skill_enabled(
@@ -1240,6 +1246,7 @@ pub fn run() {
             api_tool_enabled,
             api_skills,
             api_skill_enabled,
+            api_agents,
             api_ingest,
             api_send,
             api_stream,

@@ -74,8 +74,8 @@ mod api_imp {
     use aonyx_agent::approval::AsyncApprover;
     use aonyx_agent::{AgentRunner, ApprovalPolicy, TurnEvent};
     use aonyx_api::{
-        ApiAgent, ApiState, ApprovalHub, AuthConfig, ConfigInfo, ServerInfo, SkillInfo, StreamFrame,
-        ToolInfo,
+        AgentInfo, ApiAgent, ApiState, ApprovalHub, AuthConfig, ConfigInfo, ServerInfo, SkillInfo,
+        StreamFrame, ToolInfo,
     };
     use aonyx_core::{Message, Role, SafetyClass, ToolCall};
     use aonyx_memory::{Palace, SqliteSessionStore};
@@ -91,6 +91,7 @@ mod api_imp {
         tools: Vec<ToolInfo>,
         skills: Vec<SkillInfo>,
         config: ConfigInfo,
+        agents: Vec<AgentInfo>,
         /// The architect's standing system prompt (persona + delegation briefing).
         system_prompt: Option<String>,
     }
@@ -143,6 +144,10 @@ mod api_imp {
 
         fn skills(&self) -> Vec<SkillInfo> {
             self.skills.clone()
+        }
+
+        fn agents(&self) -> Vec<AgentInfo> {
+            self.agents.clone()
         }
 
         fn config(&self) -> ConfigInfo {
@@ -328,12 +333,27 @@ mod api_imp {
         let agents = aonyx_agent::agents::load_all(Config::config_dir()?.join("agents"));
         let system_prompt =
             aonyx_agent::subagent::augment_with_delegation(config.system_prompt.clone(), &agents);
+        let builtin_ids: std::collections::HashSet<String> =
+            aonyx_agent::agents::builtin().into_iter().map(|a| a.id).collect();
+        let agent_infos: Vec<AgentInfo> = agents
+            .iter()
+            .map(|a| AgentInfo {
+                id: a.id.clone(),
+                name: a.name.clone(),
+                description: a.description.clone(),
+                category: a.category.clone(),
+                tags: a.tags.clone(),
+                tools: a.tools.clone(),
+                builtin: builtin_ids.contains(&a.id),
+            })
+            .collect();
 
         let api_runner = ApiRunner {
             runner,
             tools,
             skills: skill_list,
             config: config_info,
+            agents: agent_infos,
             system_prompt,
         };
 

@@ -8,7 +8,7 @@ use axum::extract::State;
 use axum::Json;
 use serde_json::{json, Value};
 
-use crate::agent::{ConfigInfo, SkillInfo, ToolInfo};
+use crate::agent::{AgentInfo, ConfigInfo, SkillInfo, ToolInfo};
 use crate::state::ApiState;
 
 /// `GET /v1/tools` — list the registered tools.
@@ -19,6 +19,11 @@ pub async fn list_tools(State(state): State<ApiState>) -> Json<Vec<ToolInfo>> {
 /// `GET /v1/skills` — list the loaded skills.
 pub async fn list_skills(State(state): State<ApiState>) -> Json<Vec<SkillInfo>> {
     Json(state.agent.skills())
+}
+
+/// `GET /v1/agents` — list the sub-agents the architect can delegate to.
+pub async fn list_agents(State(state): State<ApiState>) -> Json<Vec<AgentInfo>> {
+    Json(state.agent.agents())
 }
 
 /// `GET /v1/config` — the non-secret config snapshot.
