@@ -226,4 +226,22 @@ Format: `ADR-NNN — short title (date) — status`
 
 ---
 
+## ADR-017 — Multi-agent: architect orchestrator + custom sub-agents (2026-06-21) — accepted
+
+**Context**: Users want Hermes-style multi-agent orchestration in the chat — an "architect" that decomposes a task and delegates to custom, configurable sub-agents (like Claude Code subagents). The architecture map confirms: the turn loop is `AgentRunner::run_streaming` (`crates/aonyx-agent/src/runner.rs`); skills (`Skill{id,name,tools,trigger,body}` from `~/.aonyx/skills/*.SKILL.md`) already model file-based, trigger-activated, prompt-injecting capabilities; `subagent.rs` is a TODO(V2) stub; tools are `ToolHandler` in a `ToolRegistry`; the `Palace` (memory) is cloneable. No orchestration exists yet — built from scratch.
+
+**Decision** (user choices, 2026-06-21):
+- **The chat agent is the architect**; it gains a built-in **`dispatch_agent(task, agent?)`** tool. **The LLM decides** when to delegate (like Claude Code's Task) — no deterministic keyword routing in v1.
+- **Custom sub-agents = `~/.aonyx/agents/*.AGENT.md`** (YAML frontmatter + markdown body, mirroring skills + Claude Code subagents): `{name, description (when-to-use), model, provider?, tools[] whitelist, system_prompt}`. Loaded parallel to skills.
+- A **`SubAgentRunner`** (fills the `subagent.rs` stub) reuses `AgentRunner` with a registry filtered to the agent's tool whitelist and its own model, **sharing the project's `Palace`** (memory-first: delegation keeps context) and inheriting the approval policy. Returns the final message + an execution trace.
+- **Configured via a dedicated "Agents" view** in the desktop (CRUD over the `.AGENT.md` files via Tauri commands). The chat renders each delegation as a collapsible "→ agent" block (sub-agent stream + result).
+
+**Consequences**:
+- ✅ Orchestration reusing skills/tools/registry/palace/approval — `dispatch_agent` is just another tool (no runner-signature change).
+- ✅ Memory-first differentiator vs Hermes: all agents share the project palace, so delegation never loses context.
+- ❌ Cost + recursion risk (multiple LLM turns; a sub-agent could itself dispatch) → depth + budget guards (MA4); tool isolation enforced at dispatch.
+- ❌ Significant backend work (`AgentDefinition`, loader, `SubAgentRunner`, `dispatch_agent`) + desktop UI; phased MA1→MA4. Plan: [`multi-agent-plan.md`](multi-agent-plan.md).
+
+---
+
 *Future decisions append here.*
