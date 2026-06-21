@@ -29,6 +29,7 @@ use aonyx_llm::{
 use aonyx_memory::{Palace, SessionStore, SqliteSessionStore};
 use clap::{Parser, Subcommand};
 
+mod agents;
 mod backup;
 mod config;
 mod images;
@@ -120,6 +121,11 @@ enum Command {
         /// File or directory to ingest (.md / .markdown / .txt).
         path: PathBuf,
     },
+    /// List the custom sub-agents the architect can delegate to (ADR-017).
+    Agents {
+        #[command(subcommand)]
+        action: AgentsAction,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -158,6 +164,12 @@ enum MemoryAction {
 #[derive(Debug, Subcommand)]
 enum SkillsAction {
     /// List known skills.
+    List,
+}
+
+#[derive(Debug, Subcommand)]
+enum AgentsAction {
+    /// List available sub-agents (built-in presets + `~/.aonyx/agents/`).
     List,
 }
 
@@ -259,6 +271,12 @@ async fn main() -> anyhow::Result<()> {
 
         Some(Command::Reflect { apply }) => reflect::run(apply).await,
         Some(Command::Ingest { path }) => ingest_path(path).await,
+        Some(Command::Agents { action }) => match action {
+            AgentsAction::List => {
+                handle_agents_list();
+                Ok(())
+            }
+        },
         Some(Command::Mcp { action }) => match action {
             McpAction::Serve { port, token } => {
                 // Phase HH/NN — expose the built-in tools plus the
@@ -1060,6 +1078,36 @@ async fn handle_memory(action: MemoryAction) -> anyhow::Result<()> {
         _ => {}
     }
     Ok(())
+}
+
+/// `aonyx agents list` — show the sub-agents the architect can delegate to.
+fn handle_agents_list() {
+    let dir = match Config::config_dir() {
+        Ok(d) => d.join("agents"),
+        Err(e) => {
+            eprintln!("aonyx: {e}");
+            return;
+        }
+    };
+    let agents = agents::load_all(&dir);
+    println!("agents dir: {}", dir.display());
+    if agents.is_empty() {
+        println!("(no agents)");
+        return;
+    }
+    for a in &agents {
+        let model = a.model.as_deref().unwrap_or("(inherit)");
+        let tools = if a.tools.is_empty() {
+            "(inherit)".to_string()
+        } else {
+            a.tools.join(", ")
+        };
+        println!("  {:<12} {}", a.id, a.name);
+        if !a.description.is_empty() {
+            println!("               {}", a.description);
+        }
+        println!("               model: {model} · tools: {tools}");
+    }
 }
 
 /// `aonyx memory prepare-embeddings` — download the local embedding model so the
